@@ -223,6 +223,9 @@ resources and saves terminal history before closing the foreground HTTP server.
 Repeated quit requests share the same operation. No independent execution service
 remains, and queued runs never auto-resume after restart. Ctrl+C (SIGINT) and
 SIGTERM use the same graceful path, without an interactive terminal prompt.
+Docker control clients use isolated process groups so terminal Ctrl+C cannot kill
+a setup client before its daemon reply. Their piped handles remain referenced and
+awaited; executing clients still support explicit abort, not an untracked service.
 
 Closing/reloading the browser tab is **not** server quit. A best-effort browser
 `beforeunload` warning uses the latest polled pending state; browser policies may

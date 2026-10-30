@@ -13,10 +13,12 @@ export function blockResources(r: Resources, blockId: string): Resources {
  validId(blockId);
  return { ...r, agent: r.isolation === 'block' ? `wf-${r.id}-block-${blockId}` : r.agent };
 }
-export function dockerCommand(socket = process.env.WORKFLOW_FACTORY_DOCKER_SOCKET || (process.platform === 'darwin' ? join(homedir(), '.docker/run/docker.sock') : '/var/run/docker.sock')): Command {
+export function dockerCommand(socket = process.env.WORKFLOW_FACTORY_DOCKER_SOCKET || (process.platform === 'darwin' ? join(homedir(), '.docker/run/docker.sock') : '/var/run/docker.sock'), spawnProcess: typeof spawn = spawn): Command {
  if (!isAbsolute(socket) || /[\r\n\0]/.test(socket)) throw new Error('Docker socket must be a local absolute path');
  return (args, input, timeout = 20000, signal) => new Promise((resolveResult, reject) => {
-  const child = spawn('docker', ['--host', `unix://${socket}`, ...args], { shell: false, env: { PATH: process.env.PATH, HOME: homedir() }, stdio: ['pipe','pipe','pipe'], timeout, killSignal: 'SIGKILL', ...(signal ? { signal } : {}) });
+  // A separate process group shields setup clients from terminal Ctrl+C. Keep
+  // all handles referenced and await them; this is not a detached service.
+  const child = spawnProcess('docker', ['--host', `unix://${socket}`, ...args], { shell: false, detached: true, env: { PATH: process.env.PATH, HOME: homedir() }, stdio: ['pipe','pipe','pipe'], timeout, killSignal: 'SIGKILL', ...(signal ? { signal } : {}) });
   let stdout = '', stderr = '', size = 0, overflow = false;
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   const capture = (target: 'stdout' | 'stderr', bytes: string) => {
