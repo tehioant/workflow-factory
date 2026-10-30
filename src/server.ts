@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { DefinitionStore, JsonStore } from './store.ts';
 import { validateConfiguration } from './configuration.ts';
 import { authenticationStatus } from './auth.ts';
+import { DockerRuntime } from './runtime.ts';
+import { RunService } from './runs.ts';
 import { handleRequest } from './http.ts';
 
 const port = Number(process.env.PORT ?? 4317);
@@ -15,7 +17,7 @@ const authority = { host, token: randomBytes(32).toString('hex') };
 const base = process.platform === 'darwin' ? join(homedir(), 'Library', 'Application Support') : (process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'));
 const directory = process.env.WORKFLOW_FACTORY_DATA_DIR || join(base, 'workflow-factory');
 const store = new DefinitionStore(join(directory, 'definitions'));
-const services = { configurations: new JsonStore(join(directory, 'configurations'), validateConfiguration), authentication: authenticationStatus };
+const services = { configurations: new JsonStore(join(directory, 'configurations'), validateConfiguration), authentication: authenticationStatus, runs: new RunService(new DockerRuntime(join(directory, 'run-resources'))) };
 const assets: Record<string, [string, string]> = {
  '/': ['public/index.html', 'text/html; charset=utf-8'],
  '/style.css': ['public/style.css', 'text/css; charset=utf-8'],
@@ -24,6 +26,7 @@ const assets: Record<string, [string, string]> = {
  '/inputs.js': ['public/inputs.js', 'text/javascript; charset=utf-8'],
  '/configuration.js': ['configuration.js', 'text/javascript; charset=utf-8'],
  '/configurations.js': ['public/configurations.js', 'text/javascript; charset=utf-8'],
+ '/runs.js': ['public/runs.js', 'text/javascript; charset=utf-8'],
  '/definition.js': ['definition.js', 'text/javascript; charset=utf-8'],
 };
 const server = createServer(async (incoming, outgoing) => {
