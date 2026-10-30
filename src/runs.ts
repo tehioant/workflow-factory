@@ -36,7 +36,7 @@ export class RunService {
   try {
    const block = nextBlock(run); if (!block) return false;
    result = beginBlock(run, block.id, resolveBlockPrompt(run, block));
-   const completed = await this.runtime.execute(resource, result.prompt, run.configurations[block.id]!);
+   const completed = await this.runtime.execute(resource, result.prompt, run.configurations[block.id]!, block.id);
    Object.assign(result, completed, { status: completed.error ? 'failed' : 'succeeded' });
    if (completed.error) throw new Error(completed.error);
    return true;
@@ -49,7 +49,7 @@ export class RunService {
  private async execute(run: Run) {
   run.status = 'running';
   try {
-   const resource = await this.runtime.prepare(run.id);
+   const resource = await this.runtime.prepare(run.id, run.definition.isolation ?? 'workflow');
    while (await this.advance(run, resource)) { /* each successful transition admits only its successor */ }
   } catch (error) { run.error = error instanceof Error ? error.message : 'Execution failed'; }
   finally {

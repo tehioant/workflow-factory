@@ -8,7 +8,11 @@ import type { CodexConfiguration } from './configuration.ts';
 import { readSubscriptionAuth } from './auth.ts';
 export interface CommandResult { code: number; stdout: string; stderr: string; }
 export type Command = (args: string[], input?: string, timeout?: number) => Promise<CommandResult>;
-export interface Resources { id: string; network: string; egress: string; agent: string; proxy: string; workspace: string; credentials: string; image: string; uid: string; }
+export interface Resources { id: string; network: string; egress: string; agent: string; proxy: string; workspace: string; credentials: string; image: string; uid: string; isolation?: 'workflow' | 'block'; agents?: string[]; }
+export function blockResources(r: Resources, blockId: string): Resources {
+ validId(blockId);
+ return { ...r, agent: r.isolation === 'block' ? `wf-${r.id}-block-${blockId}` : r.agent };
+}
 export function dockerCommand(socket = process.env.WORKFLOW_FACTORY_DOCKER_SOCKET || (process.platform === 'darwin' ? join(homedir(), '.docker/run/docker.sock') : '/var/run/docker.sock')): Command {
  if (!isAbsolute(socket) || /[\r\n\0]/.test(socket)) throw new Error('Docker socket must be a local absolute path');
  return (args, input, timeout = 20000) => new Promise((resolveResult, reject) => {
@@ -59,11 +63,12 @@ export function parseCodexOutput(stdout: string, code: number, stderr: string) {
  if (stderr) logs.push('Codex produced stderr diagnostics (content withheld to protect credentials)');
  return { output, logs: logs.join('\n'), ...(error ? { error } : {}) };
 }
-export async function removeResources(r: Resources, command: Command, removeCredentials: (path: string) => Promise<void>) {
- for (const container of [r.agent, r.proxy]) {
+async function removeContainer(container: string, command: Command) {
   const result = await command(['rm', '-f', container]);
   if (result.code && !new RegExp(`^Error response from daemon: No such container: ${container}\\s*$`, 'i').test(result.stderr)) throw new Error('Could not stop owned containers; credential staging retained privately for safe cleanup');
- }
+}
+export async function removeResources(r: Resources, command: Command, removeCredentials: (path: string) => Promise<void>) {
+ for (const container of [...(r.agents ?? [r.agent]), r.proxy]) await removeContainer(container, command);
  for (const network of [r.network, r.egress]) {
   const result = await command(['network', 'rm', network]);
   if (result.code && (!result.stderr.includes(`network ${network} not found`) || !result.stderr.split('\n').filter(Boolean).every(line => line === `Error response from daemon: network ${network} not found` || line === `exit status 1`))) throw new Error('Could not remove owned networks');
@@ -84,7 +89,7 @@ export class DockerRuntime {
  private async checked(args: string[], message: string) {
   const result = await this.command(args); if (result.code !== 0) throw new Error(message); return result.stdout;
  }
- async prepare(id: string): Promise<Resources> {
+ async prepare(id: string, isolation: 'workflow' | 'block' = 'workflow'): Promise<Resources> {
   validId(id); if (this.resources.has(id)) throw new Error('Run sandbox already exists');
   await requireRuntime(this.command);
   const imageInfo = JSON.parse(await this.checked(['image', 'inspect', 'workflow-factory-runtime:local'], 'Trusted runtime image missing. Build it explicitly: docker build -f runtime/Dockerfile -t workflow-factory-runtime:local .'))[0];
@@ -92,7 +97,7 @@ export class DockerRuntime {
   const uid = process.getuid?.() ?? 1000, gid = process.getgid?.() ?? 1000;
   if (uid === 0) throw new Error('Run Workflow Factory as a non-root user');
   const key = `wf-${id}`;
-  const r: Resources = { id, network: `${key}-private`, egress: `${key}-egress`, agent: `${key}-agent`, proxy: `${key}-proxy`, workspace: join(this.root, id, 'workspace'), credentials: join(this.root, id, 'credentials'), image: imageInfo.Id, uid: `${uid}:${gid}` };
+  const r: Resources = { id, network: `${key}-private`, egress: `${key}-egress`, agent: `${key}-agent`, proxy: `${key}-proxy`, workspace: join(this.root, id, 'workspace'), credentials: join(this.root, id, 'credentials'), image: imageInfo.Id, uid: `${uid}:${gid}`, isolation, agents: isolation === 'workflow' ? [`${key}-agent`] : [] };
   // Register before any owned resource creation so failure cleanup has exact targets.
   this.resources.set(id, r);
   const auth = await this.credentials();
@@ -105,21 +110,35 @@ export class DockerRuntime {
   await this.checked(['network', 'create', '--ipv6=false', r.egress], 'Could not create scoped egress network');
   await this.checked(['run', '-d', '--name', r.proxy, '--network', r.egress, '--user', r.uid, ...hardened, r.image, 'node', '/opt/workflow-factory/egress.mjs'], 'Could not start the trusted egress helper');
   await this.checked(['network', 'connect', '--alias', 'egress', r.network, r.proxy], 'Could not attach trusted egress helper');
+  if (isolation === 'workflow') await this.startAgent(r);
+  return r;
+ }
+ private async startAgent(r: Resources) {
   await this.checked(agentArguments(r), 'Could not start the restricted Codex container');
   const inspected = JSON.parse(await this.checked(['inspect', r.agent], 'Could not inspect agent containment'))[0];
   if (inspected?.HostConfig?.NetworkMode !== r.network || Object.keys(inspected?.NetworkSettings?.Networks ?? {}).join() !== r.network) throw new Error('Agent network containment was not honored; execution refused');
-  return r;
  }
- async execute(r: Resources, prompt: string, config: CodexConfiguration) {
+ async execute(r: Resources, prompt: string, config: CodexConfiguration, blockId = 'single') {
   if (this.resources.get(r.id) !== r) throw new Error('Unowned run sandbox');
-  const result = await this.command(['exec', '-i', '--workdir', '/workspace', r.agent, ...codexArguments(config)], prompt, 600000);
+  const agent = blockResources(r, blockId);
+  if (r.isolation === 'block') { r.agents ??= []; r.agents.push(agent.agent); }
+  let parsed: ReturnType<typeof parseCodexOutput> | undefined;
+  try {
+  if (r.isolation === 'block') await this.startAgent(agent);
+  const result = await this.command(['exec', '-i', '--workdir', '/workspace', agent.agent, ...codexArguments(config)], prompt, 600000);
   // Codex may refresh its staged login. Include refreshed values in output redaction,
   // but never copy them back over the host's auth.json.
   const refreshed = JSON.parse(await this.credentials(join(r.credentials, 'auth.json')));
   this.secrets.set(r.id, [...(this.secrets.get(r.id) ?? []), ...Object.values(refreshed.tokens) as string[]]);
-  const parsed = parseCodexOutput(result.stdout, result.code, result.stderr);
+  parsed = parseCodexOutput(result.stdout, result.code, result.stderr);
   for (const secret of this.secrets.get(r.id) ?? []) if (parsed.output !== undefined) parsed.output = parsed.output.split(secret).join('[credential redacted]');
   return parsed;
+  } finally {
+   if (r.isolation === 'block') {
+    try { await removeContainer(agent.agent, this.command); r.agents = r.agents!.filter(name => name !== agent.agent); }
+    catch (error) { if (parsed) parsed.error = 'Block container cleanup failed; retained output is available, but no successor will start.'; else throw error; }
+   }
+  }
  }
  async cleanup(id: string) {
   const r = this.resources.get(id); if (!r) return;

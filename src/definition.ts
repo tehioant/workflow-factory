@@ -7,6 +7,7 @@ export interface Definition {
   version: 1; id: string; name: string; blocks: AIBlock[];
   connections: { from: string; to: string }[];
   inputs?: WorkflowInput[];
+  isolation?: 'workflow' | 'block';
 }
 export interface WorkflowInput { name: string; type: 'text'; required: boolean; default?: string; }
 export function validId(value: unknown): asserts value is string {
@@ -20,6 +21,7 @@ export function validateDefinition(value: unknown): Definition {
   if (!d || d.version !== 1 || !Array.isArray(d.blocks) || !Array.isArray(d.connections) || d.blocks.length > 200 || d.connections.length > 1000) throw new Error('Invalid definition');
   validId(d.id);
   text(d.name, 120, true);
+  if (d.isolation !== undefined && !['workflow','block'].includes(d.isolation)) throw new Error('Invalid workflow isolation mode');
   const inputs = d.inputs ?? [];
   if (!Array.isArray(inputs) || inputs.length > 50) throw new Error('Maximum 50 text inputs');
   const names = new Set<string>();
@@ -31,6 +33,7 @@ export function validateDefinition(value: unknown): Definition {
   for (const b of d.blocks) {
     validId(b.id);
     if (b.type !== 'ai') throw new Error('Only AI blocks are supported');
+    if (Object.hasOwn(b, 'isolation')) throw new Error('Choose isolation at workflow level, not per block');
     if (b.configurationId !== undefined) validId(b.configurationId);
     text(b.name, 120, true); text(b.prompt, 100_000);
     for (const match of b.prompt.matchAll(/\{\{inputs\.([^{}]*)\}\}/g)) if (!names.has(match[1]!)) throw new Error(`Unknown workflow input: ${match[1]}`);
