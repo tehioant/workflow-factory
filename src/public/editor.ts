@@ -33,12 +33,14 @@ export function mountEditor(root: HTMLElement, definition: Definition, api: Defi
  view.onbeforeunload = event => { if (isDirty()) { event.preventDefault(); event.returnValue = ''; } };
  root.innerHTML = `<header><button data-home>← Workflows</button><input aria-label="Workflow name" maxlength="120"><button data-save>Save workflow</button><span role="status" aria-live="polite">Not saved this session</span></header>
  <aside><button data-add draggable="true">＋ AI block</button><p>Drag onto the canvas, or click to add. Move blocks by their handle; arrow keys move a focused handle.</p></aside>
- <section><h2>Workflow inputs</h2><div data-inputs></div><button data-add-input>Add text input</button><button data-run>Run inputs…</button><div data-run-form></div></section>
+ <section><label>Isolation <select data-isolation aria-label="Workflow isolation"><option value="workflow">One agent container per run</option><option value="block">Separate agent container per block</option></select></label><h2>Workflow inputs</h2><div data-inputs></div><button data-add-input>Add text input</button><button data-run>Run inputs…</button><div data-run-form></div></section>
  <form data-connect><label>From <select aria-label="From block"></select></label><span> → </span><label>To <select aria-label="To block"></select></label><button>Connect blocks</button></form><ul class="edges"></ul>
  <div class="viewport"><div class="canvas" aria-label="Workflow canvas"><svg aria-label="Connections"></svg><div class="nodes"></div></div></div>`;
  const status = root.querySelector<HTMLElement>('[role="status"]')!;
  const save = root.querySelector<HTMLButtonElement>('[data-save]')!;
  const changed = () => { status.textContent = 'Unsaved changes'; root.querySelector('[data-run-form]')!.replaceChildren(); };
+ const isolation = root.querySelector<HTMLSelectElement>('[data-isolation]')!; isolation.value = state.isolation ?? 'workflow';
+ isolation.onchange = () => { state.isolation = isolation.value as 'workflow' | 'block'; changed(); };
  function renderInputs() {
   const list = root.querySelector('[data-inputs]')!; list.replaceChildren();
   for (const input of state.inputs ?? []) {

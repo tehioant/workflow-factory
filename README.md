@@ -113,7 +113,20 @@ future/missing outputs and unsupported output properties are refused at launch.
 Each block gets its own prompt with selected outputs and inputs, never the previous
 conversation. Substituted values stay literal, even if they contain reference-like
 text. Successful completion alone advances the chain; failure stops it without
-retry. All blocks reuse only that run's workspace and agent container.
+retry. All blocks reuse only that run's workspace.
+
+### Isolation modes
+
+Workflow properties offer **One agent container per run** (the default for older
+definitions) or **Separate agent container per block**. The first keeps one agent
+container for the chain; the second creates and removes a distinct agent container
+for each block. No mixed per-block strategy is offered. In both modes, only that
+run's private workspace is shared; each block has a fresh Codex invocation, not
+conversation continuation. Final responses live in the app's run record, so B can
+use A's response after A's agent container is gone. Cleanup failures stop the chain
+without discarding already captured output. The per-run trusted egress helper and
+two private networks persist through the chain and are removed at run cleanup;
+this infrastructure overhead is additional to the agent container count.
 
 Each run gets a private workspace and separate credential staging under
 `run-resources/<run-id>/`. Only those two directories are mounted. The agent is
