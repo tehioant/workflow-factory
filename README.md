@@ -2,7 +2,7 @@
 
 A local workflow definition editor for Linux and macOS. Create saved workflows,
 drag AI blocks onto a canvas, edit their names/prompts, and connect them in order.
-Connected Codex AI blocks execute in order inside a constrained local run container.
+Connected Codex AI blocks execute in order inside constrained local agent containers.
 
 ## Start from source
 
@@ -11,7 +11,9 @@ Chrome/Chromium, or Safari). No Electron, bundled browser, Rust, runtime npm
 packages are needed for editing. Execution additionally needs the runtime/login below.
 
 ```sh
-npm ci
+git clone https://github.com/tehioant/workflow-factory.git
+cd workflow-factory
+npm ci --ignore-scripts
 npm run build
 npm start
 ```
@@ -20,7 +22,10 @@ Open **http://127.0.0.1:4317** in your existing browser. Use that exact address,
 not `localhost`. Stop the foreground server with Ctrl+C; closing a browser tab
 alone does not stop the server. Restart with `npm start` and reopen the address
 to see your saved definitions. The same source commands apply on Linux/macOS;
-macOS execution has not yet been verified on a macOS host.
+macOS execution has not yet been verified on a macOS host. This is a local source
+delivery, not a binary release. Linux/macOS CI proves focused source compatibility,
+not native UI, live authentication or containment. See [RESOURCE_REPORT.md](RESOURCE_REPORT.md)
+for the actual Linux idle observation and explicit unmeasured scenarios.
 
 To change the port or use a dedicated data directory:
 
@@ -60,10 +65,11 @@ Use an existing Codex CLI with `cli_auth_credentials_store = "file"` in its
 (adjust for CODEX_HOME). Only owner-private regular files and ChatGPT token login
 are supported; keyring-only and API-key logins are refused with setup guidance.
 The browser gets availability/guidance only, never credentials. Availability does
-not validate token expiry or entitlement. The runtime integration will stage only
+not validate token expiry or entitlement. The runtime integration stages only
 these credentials separately from the workspace; it never mounts the host home
-or overwrite host login after refresh. This host has no authenticated Codex CLI;
-authenticated execution is unverified, not simulated.
+or overwrites the host login after refresh. Authenticated execution has not been
+verified for this delivery and is not simulated. Configure your own existing Codex
+login; no Hermes login or other application's credentials are copied.
 
 ## Persistence and local access
 
@@ -96,8 +102,22 @@ Build the trusted image explicitly from this checkout; the app never installs,
 builds, pulls or starts a daemon for you:
 
 ```sh
-docker build -f runtime/Dockerfile -t workflow-factory-runtime:local .
+# Linux Docker Engine (choose the local socket you actually use):
+export WORKFLOW_FACTORY_DOCKER_SOCKET=/var/run/docker.sock
+# macOS Docker Desktop: use this instead of the Linux line:
+# export WORKFLOW_FACTORY_DOCKER_SOCKET="$HOME/.docker/run/docker.sock"
+docker --host "unix://$WORKFLOW_FACTORY_DOCKER_SOCKET" version
+docker --host "unix://$WORKFLOW_FACTORY_DOCKER_SOCKET" build -f runtime/Dockerfile -t workflow-factory-runtime:local .
+npm start
 ```
+
+Build and run against the **same** local engine/socket; a different Docker context
+may otherwise build an image the app cannot see. macOS requires Docker Desktop's
+Linux VM, not native macOS containers; allow sharing of the app's data directory.
+Rootless/alternative engines must still pass the actual isolated-network checks;
+they are not certified as equivalent by the source tests. Editing and idle startup
+do not require Docker or a valid login, and missing execution prerequisites produce
+actionable errors instead of installation, pulls or paid fallbacks.
 
 The image pins `@openai/codex@0.166.0`; the Node 24 Debian base tag is mutable and
 should be rebuilt deliberately for OS fixes. Local execution pins the inspected
@@ -125,7 +145,7 @@ run's private workspace is shared; each block has a fresh Codex invocation, not
 conversation continuation. Final responses live in the app's run record, so B can
 use A's response after A's agent container is gone. Cleanup failures stop the chain
 without discarding already captured output. The per-run trusted egress helper and
-two private networks persist through the chain and are removed at run cleanup;
+two run-scoped networks persist through the chain and are removed at run cleanup;
 this infrastructure overhead is additional to the agent container count.
 
 Each run gets a private workspace and separate credential staging under
@@ -155,10 +175,10 @@ completed JSONL `agent_message` is the answer; event kinds are diagnostics. Tool
 output/raw stderr are withheld to avoid credential disclosure; staged token strings
 are redacted from final output, including refreshed tokens. Auth staging is deleted
 only after agent/helper removal; refreshed login never overwrites the host login.
-Workspaces and completed in-memory results survive container removal. Cleanup
+Workspaces and durable completed results survive container removal. Cleanup
 failure is visible; if Docker becomes unavailable, staging remains owner-private
-until the owned containers can be stopped safely. Do not quit during an active run
-in this increment; graceful cancellation/quit comes later.
+until the owned containers can be stopped safely. Use the scoped **Cancel run** or
+**Quit application** actions described below, or Ctrl+C for graceful shutdown.
 
 The image build, live containment, authenticated model execution and native macOS
 runtime behaviour have **not** been exercised. Focused mocked tests are not proof
@@ -274,8 +294,8 @@ npm run build
 
 `npm test` discovers every `test/**/*.test.mjs` file and checks the Node test
 runner's actual test summary against a repository-wide ceiling of **200**.
-Issue #1 stays within its allocation of **18** focused tests. Keep that aggregate
-cap for later issues. No E2E tests, browser-to-runtime journeys, full controller
+The final delivery has **96** focused tests, below the 200-test ceiling.
+No E2E tests, browser-to-runtime journeys, full controller
 journeys, real containers, or model calls are permitted in the ordinary suite.
 Use explicit records and fake external/storage boundaries, one editor action or
 store operation at a time. Follow red → green TDD and conventional commits.
@@ -286,3 +306,16 @@ owns atomic storage; `src/http.ts` owns the focused API; `src/server.ts` adapts
 Node HTTP and filesystem assets; `src/public/` owns the vanilla DOM/SVG editor.
 Execution uses `src/runs.ts` admission and `src/runtime.ts` Docker adapters plus
 the trusted `runtime/egress.mjs` helper. No distribution channel is included.
+
+## Resource observations
+
+The measured Linux idle Node server used 61.621 MiB RSS. Existing Docker control
+processes used 164.105 MiB RSS with three unrelated containers running; their
+combined RSS sum was 225.727 MiB, excluding browser and workload memory and without
+de-duplicating shared pages. This is not a clean-engine baseline, an execution
+measurement or proof of lightweightness. No numeric budget is agreed.
+
+See [RESOURCE_REPORT.md](RESOURCE_REPORT.md) for the actual timestamp, hardware,
+startup/CPU/disk results, accounting caveats, Linux reproduction command and
+unperformed execution/macOS procedures. The manual idle observer is deliberately
+outside the ordinary test/CI suite and never launches a workflow or container.
