@@ -14,11 +14,12 @@ export function authorize(request: Request, authority: Authority): boolean {
 }
 export interface ConfigurationRepository { list(): Promise<CodexConfiguration[]>; save(value: unknown): Promise<CodexConfiguration>; }
 export interface RunAPI { list(): Run[]; get(id: string): Run; launch(definition: Definition, inputs: Record<string,string>, configs: CodexConfiguration[]): Promise<Run>; reconcileCleanup(id: string): Promise<void>; }
-export interface Services { configurations?: ConfigurationRepository; authentication?: () => Promise<{ available: boolean; message: string }>; runs?: RunAPI; }
+export interface Services { configurations?: ConfigurationRepository; authentication?: () => Promise<{ available: boolean; message: string }>; runs?: RunAPI; settings?: { concurrency: number }; }
 export async function handleRequest(request: Request, authority: Authority, store: DefinitionRepository, services: Services = {}): Promise<Response> {
  if (!authorize(request, authority)) return Response.json({ error: 'Local session authorization required. Reload the app.' }, { status: 403 });
  const path = new URL(request.url).pathname;
  try {
+  if (path === '/api/runtime-settings' && request.method === 'GET' && services.settings) return Response.json(services.settings);
   if (services.runs) {
    const cleanupMatch = /^\/api\/runs\/([a-zA-Z0-9_-]{1,80})\/recheck-cleanup$/.exec(path);
    if (cleanupMatch && request.method === 'POST') {

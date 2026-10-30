@@ -9,6 +9,7 @@ import { authenticationStatus } from './auth.ts';
 import { DockerRuntime } from './runtime.ts';
 import { RunService } from './runs.ts';
 import { validateRun } from './run-store.ts';
+import { concurrencyLimit } from './scheduler.ts';
 import { handleRequest } from './http.ts';
 
 const port = Number(process.env.PORT ?? 4317);
@@ -18,7 +19,8 @@ const authority = { host, token: randomBytes(32).toString('hex') };
 const base = process.platform === 'darwin' ? join(homedir(), 'Library', 'Application Support') : (process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'));
 const directory = process.env.WORKFLOW_FACTORY_DATA_DIR || join(base, 'workflow-factory');
 const store = new DefinitionStore(join(directory, 'definitions'));
-const services = { configurations: new JsonStore(join(directory, 'configurations'), validateConfiguration), authentication: authenticationStatus, runs: new RunService(new DockerRuntime(join(directory, 'run-resources')), new JsonStore(join(directory, 'runs'), validateRun)) };
+const limit = concurrencyLimit(process.env.WORKFLOW_FACTORY_CONCURRENCY);
+const services = { configurations: new JsonStore(join(directory, 'configurations'), validateConfiguration), authentication: authenticationStatus, runs: new RunService(new DockerRuntime(join(directory, 'run-resources')), new JsonStore(join(directory, 'runs'), validateRun), limit), settings: { concurrency: limit } };
 try { await services.runs.restore(); } catch { throw new Error('Run history is unavailable or damaged. Check the private data folder before starting.'); }
 const assets: Record<string, [string, string]> = {
  '/': ['public/index.html', 'text/html; charset=utf-8'],
