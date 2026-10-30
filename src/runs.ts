@@ -3,7 +3,8 @@ import { validateDefinition, resolveInputs } from './definition.ts';
 import type { Definition } from './definition.ts';
 import { resolveConfigurations } from './configuration.ts';
 import type { CodexConfiguration } from './configuration.ts';
-import type { DockerRuntime } from './runtime.ts';
+import type { DockerRuntime, Resources } from './runtime.ts';
+import { executionOrder, nextBlock, resolveBlockPrompt } from './flow.ts';
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed';
 export interface BlockResult { status: 'running' | 'succeeded' | 'failed'; prompt: string; output?: string; logs: string; error?: string; }
 export interface Run { version: 1; id: string; name: string; createdAt: string; definition: Definition; inputs: Record<string,string>; prompts: Record<string,string>; configurations: Record<string,CodexConfiguration>; status: RunStatus; blocks: Record<string,BlockResult>; error?: string; cleanupPending?: boolean; }
@@ -15,7 +16,7 @@ export function beginBlock(run: Run, id: string, prompt: string) {
 }
 export function acceptRun(value: Definition, values: Record<string,string>, configs: CodexConfiguration[], id = randomUUID(), createdAt = new Date().toISOString()): Run {
  const definition = validateDefinition(value);
- if (definition.blocks.length !== 1) throw new Error('This increment runs exactly one AI block. Multi-block ordering is not available yet.');
+ executionOrder(definition);
  const { inputs, prompts } = resolveInputs(definition, values);
  return { version: 1, id, name: definition.name, createdAt, definition, inputs, prompts, configurations: resolveConfigurations(definition, configs), status: 'queued', blocks: {} };
 }
@@ -30,16 +31,27 @@ export class RunService {
   const run = acceptRun(definition, values, configs); this.records.set(run.id, run);
   void this.execute(run); return structuredClone(run);
  }
- private async execute(run: Run) {
-  run.status = 'running';
-  const block = run.definition.blocks[0]!;
-  const result = beginBlock(run, block.id, run.prompts[block.id]!);
+ async advance(run: Run, resource: Resources) {
+  let result: BlockResult | undefined;
   try {
-   const resource = await this.runtime.prepare(run.id);
+   const block = nextBlock(run); if (!block) return false;
+   result = beginBlock(run, block.id, resolveBlockPrompt(run, block));
    const completed = await this.runtime.execute(resource, result.prompt, run.configurations[block.id]!);
    Object.assign(result, completed, { status: completed.error ? 'failed' : 'succeeded' });
-   if (completed.error) run.error = completed.error;
-  } catch (error) { result.status = 'failed'; result.error = error instanceof Error ? error.message : 'Execution failed'; run.error = result.error; }
+   if (completed.error) throw new Error(completed.error);
+   return true;
+  } catch (error) {
+   run.error = error instanceof Error ? error.message : 'Execution failed';
+   if (result) { result.status = 'failed'; result.error = run.error; }
+   throw error;
+  }
+ }
+ private async execute(run: Run) {
+  run.status = 'running';
+  try {
+   const resource = await this.runtime.prepare(run.id);
+   while (await this.advance(run, resource)) { /* each successful transition admits only its successor */ }
+  } catch (error) { run.error = error instanceof Error ? error.message : 'Execution failed'; }
   finally {
    run.cleanupPending = true;
    try { await this.runtime.cleanup(run.id); run.cleanupPending = false; }
