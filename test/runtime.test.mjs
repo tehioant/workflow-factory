@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { acceptRun } from '../src/runs.ts';
+import { acceptRun, beginBlock, admissionOccupied } from '../src/runs.ts';
 import { DockerRuntime, agentArguments, verifyPrivateNetwork, codexArguments, parseCodexOutput, removeResources, requireRuntime } from '../src/runtime.ts';
-import { admittedTarget } from '../runtime/egress.mjs';
+import { admittedTarget, clientHelloHostname, createEgressServer } from '../runtime/egress.mjs';
+import { EventEmitter } from 'node:events';
 import { definition } from './fixtures.mjs';
 import { Window } from 'happy-dom';
 import { renderRun } from '../src/public/runs.ts';
@@ -36,8 +37,9 @@ test('Codex command uses structured flags and stdin, never a shell or prompt arg
 test('result parser separates final agent message from diagnostics and refuses failed/malformed streams', () => {
  const events = [{ type: 'item.completed', item: { type: 'command_execution', aggregated_output: 'not the answer' } }, { type: 'item.completed', item: { type: 'agent_message', text: 'Final' } }, { type: 'turn.completed' }].map(JSON.stringify).join('\n');
  const result = parseCodexOutput(events, 0, 'sensitive stderr'); assert.equal(result.output, 'Final'); assert.ok(!result.logs.includes('sensitive stderr')); assert.ok(!result.logs.includes('not the answer'));
- assert.throws(() => parseCodexOutput(events, 1, ''), /Codex/); assert.throws(() => parseCodexOutput('invalid', 0, ''), /JSONL/);
- assert.throws(() => parseCodexOutput('{"type":"turn.failed"}', 0, ''), /Codex/);
+ const failed = parseCodexOutput(events, 1, ''); assert.match(failed.error, /Codex/); assert.equal(failed.output, 'Final'); assert.match(failed.logs, /turn.completed/);
+ assert.match(parseCodexOutput('invalid', 0, '').error, /JSONL/);
+ assert.match(parseCodexOutput('{"type":"turn.failed"}', 0, '').error, /Codex/);
 });
 test('scoped cleanup removes only supplied run containers and networks before credential removal', async () => {
  const calls = [];
@@ -54,6 +56,7 @@ test('egress accepts only exact AI TLS hosts and vetted public IPv4 destinations
  await assert.rejects(admittedTarget('chatgpt.com:80', lookup));
  await assert.rejects(admittedTarget('chatgpt.com:443', async () => [{ address: '127.0.0.1', family: 4 }]));
  await assert.rejects(admittedTarget('chatgpt.com:443', async () => [{ address: '169.254.169.254', family: 4 }]));
+ await assert.rejects(admittedTarget('chatgpt.com:443', async () => [{ address: '192.88.99.1', family: 4 }]));
 });
 
 test('one execution adapter action sends stdin, redacts staged tokens and captures only final output', async () => {
@@ -76,4 +79,37 @@ test('cleanup failure never deletes credentials while owned containers may still
  let removed = false;
  await assert.rejects(removeResources(resources, async () => ({ code: 1, stderr: 'Cannot connect to daemon', stdout: '' }), async () => { removed = true; }), /Could not stop/);
  assert.equal(removed, false);
+});
+
+test('pending or failed cleanup keeps admission occupied and prototype-like block IDs retain results', () => {
+ const run = { status: 'running', blocks: {} };
+ const result = beginBlock(run, '__proto__', 'Prompt'); result.status = 'succeeded'; result.output = 'Retained';
+ assert.equal(JSON.parse(JSON.stringify(run)).blocks.__proto__.output, 'Retained');
+ assert.equal(admissionOccupied(run), true);
+ run.status = 'failed'; run.cleanupPending = true; assert.equal(admissionOccupied(run), true);
+ run.cleanupPending = false; assert.equal(admissionOccupied(run), false);
+});
+
+function hello(host) {
+ const name = Buffer.from(host); const entry = Buffer.concat([Buffer.from([0, name.length >> 8, name.length & 255]), name]);
+ const list = Buffer.concat([Buffer.from([entry.length >> 8, entry.length & 255]), entry]);
+ const ext = Buffer.concat([Buffer.from([0, 0, list.length >> 8, list.length & 255]), list]);
+ const body = Buffer.concat([Buffer.from([3,3]), Buffer.alloc(32), Buffer.from([0,0,2,0x13,1,1,0,ext.length >> 8,ext.length & 255]), ext]);
+ const handshake = Buffer.concat([Buffer.from([1, 0, body.length >> 8, body.length & 255]), body]);
+ return Buffer.concat([Buffer.from([22,3,1,handshake.length >> 8,handshake.length & 255]), handshake]);
+}
+test('egress ClientHello gate binds TLS SNI and refuses non-TLS or absent hostnames', () => {
+ assert.equal(clientHelloHostname(hello('chatgpt.com')), 'chatgpt.com');
+ assert.equal(clientHelloHostname(hello('other.test')), 'other.test');
+ assert.equal(clientHelloHostname(hello('chatgpt.com').subarray(0, 8)), undefined);
+ assert.throws(() => clientHelloHostname(Buffer.from('GET / HTTP/1.1\r\n')), /TLS/);
+});
+
+test('CONNECT handler opens no upstream socket when TLS SNI differs from the admitted host', async () => {
+ let connections = 0;
+ const server = createEgressServer(async () => [{ address: '104.18.32.7', family: 4 }], () => { connections++; throw new Error('Upstream must not be opened'); });
+ const client = new EventEmitter(); Object.assign(client, { setTimeout() {}, write() {}, end() {}, destroy() { this.destroyed = true; } });
+ server.emit('connect', { url: 'chatgpt.com:443' }, client, hello('other.test'));
+ await new Promise(resolve => setImmediate(resolve));
+ assert.equal(connections, 0); assert.equal(client.destroyed, true);
 });

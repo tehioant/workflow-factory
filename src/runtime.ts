@@ -44,20 +44,20 @@ export function codexArguments(value: CodexConfiguration) {
  return ['codex', 'exec', '--json', '--ephemeral', '--skip-git-repo-check', '--sandbox', 'danger-full-access', '--model', c.model, '-c', `model_reasoning_effort=${JSON.stringify(c.reasoning)}`, '-c', 'approval_policy="never"', '-c', 'forced_login_method="chatgpt"', '-c', 'cli_auth_credentials_store="file"', '-'];
 }
 export function parseCodexOutput(stdout: string, code: number, stderr: string) {
- const logs: string[] = []; let output: string | undefined; let completed = false;
+ const logs: string[] = []; let output: string | undefined; let completed = false; let error: string | undefined;
  for (const line of stdout.split('\n').filter(line => line.trim())) {
   let event;
-  try { event = JSON.parse(line); } catch { throw new Error('Codex emitted invalid JSONL; inspect the runtime version.'); }
-  if (!event || typeof event.type !== 'string') throw new Error('Codex emitted invalid JSONL events');
+  try { event = JSON.parse(line); } catch { error = 'Codex emitted invalid JSONL; inspect the runtime version.'; break; }
+  if (!event || typeof event.type !== 'string') { error = 'Codex emitted invalid JSONL events'; break; }
   // Persist event kinds, not tool output, raw errors, reasoning or credential-bearing stderr.
   logs.push(/^[a-z._]{1,80}$/.test(event.type) ? event.type : 'unknown.event');
-  if (event.type === 'turn.failed' || event.type === 'error') throw new Error('Codex execution failed. Check subscription login, entitlement and allowed egress. No API-key fallback was attempted.');
+  if (event.type === 'turn.failed' || event.type === 'error') error = 'Codex execution failed. Check subscription login, entitlement and allowed egress. No API-key fallback was attempted.';
   if (event.type === 'turn.completed') completed = true;
   if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') output = event.item.text;
  }
- if (code !== 0 || !completed || output === undefined) throw new Error('Codex did not complete successfully. Check login/model/runtime; no result was fabricated.');
+ if (!error && (code !== 0 || !completed || output === undefined)) error = 'Codex did not complete successfully. Check login/model/runtime; no result was fabricated.';
  if (stderr) logs.push('Codex produced stderr diagnostics (content withheld to protect credentials)');
- return { output, logs: logs.join('\n') };
+ return { output, logs: logs.join('\n'), ...(error ? { error } : {}) };
 }
 export async function removeResources(r: Resources, command: Command, removeCredentials: (path: string) => Promise<void>) {
  for (const container of [r.agent, r.proxy]) {
@@ -118,7 +118,7 @@ export class DockerRuntime {
   const refreshed = JSON.parse(await this.credentials(join(r.credentials, 'auth.json')));
   this.secrets.set(r.id, [...(this.secrets.get(r.id) ?? []), ...Object.values(refreshed.tokens) as string[]]);
   const parsed = parseCodexOutput(result.stdout, result.code, result.stderr);
-  for (const secret of this.secrets.get(r.id) ?? []) parsed.output = parsed.output.split(secret).join('[credential redacted]');
+  for (const secret of this.secrets.get(r.id) ?? []) if (parsed.output !== undefined) parsed.output = parsed.output.split(secret).join('[credential redacted]');
   return parsed;
  }
  async cleanup(id: string) {

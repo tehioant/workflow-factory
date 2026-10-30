@@ -61,7 +61,7 @@ Use an existing Codex CLI with `cli_auth_credentials_store = "file"` in its
 are supported; keyring-only and API-key logins are refused with setup guidance.
 The browser gets availability/guidance only, never credentials. Availability does
 not validate token expiry or entitlement. The runtime integration will stage only
-these credentials separately from the workspace; it must never mount the host home
+these credentials separately from the workspace; it never mounts the host home
 or overwrite host login after refresh. This host has no authenticated Codex CLI;
 authenticated execution is unverified, not simulated.
 
@@ -115,7 +115,11 @@ bounded tmpfs/PIDs/memory/CPU, no published ports, no home mount and no Docker s
 Its sole network is an inspected internal **isolated** bridge, not ordinary Docker
 bridge networking. A trusted per-run CONNECT helper is the only external route;
 it admits exact `chatgpt.com`, `api.openai.com`, `auth.openai.com` TLS destinations
-on port 443, rejects private/reserved IPv4 DNS answers and connects the vetted IP.
+on port 443, rejects all IANA special-purpose/reserved IPv4 DNS answers and connects
+the vetted IP only after the first TLS ClientHello SNI equals the CONNECT hostname.
+Non-TLS, absent/encrypted SNI and fragmented/oversized ClientHello records fail
+closed. The helper does not decrypt application traffic or inspect encrypted HTTP
+headers; it enforces the destination IP and clear TLS hostname, not URL paths.
 IPv6 is disabled. Proxy environment variables are convenience, not enforcement:
 the outer network removes the direct route. The helper has a separate per-run
 egress bridge and no workspace/credential mounts. No general web/package egress is
