@@ -28,6 +28,7 @@ const assets: Record<string, [string, string]> = {
  '/configurations.js': ['public/configurations.js', 'text/javascript; charset=utf-8'],
  '/runs.js': ['public/runs.js', 'text/javascript; charset=utf-8'],
  '/definition.js': ['definition.js', 'text/javascript; charset=utf-8'],
+ '/flow.js': ['flow.js', 'text/javascript; charset=utf-8'],
 };
 const server = createServer(async (incoming, outgoing) => {
  outgoing.setHeader('Cache-Control', 'no-store');

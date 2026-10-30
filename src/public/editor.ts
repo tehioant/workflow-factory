@@ -4,6 +4,7 @@ import { mountRunInputs } from './inputs.ts';
 import type { Launch } from './inputs.ts';
 import { mountConfigurations } from './configurations.ts';
 import type { ConfigurationAPI } from './configurations.ts';
+import { predecessors } from '../flow.ts';
 export interface DefinitionAPI { list(): Promise<Definition[]>; save(value: Definition): Promise<Definition>; launch?: Launch; configurations?: ConfigurationAPI; }
 function element<K extends keyof HTMLElementTagNameMap>(root: HTMLElement, tag: K, text = '') {
  const node = root.ownerDocument.createElement(tag); node.textContent = text; return node;
@@ -92,6 +93,7 @@ export function mountEditor(root: HTMLElement, definition: Definition, api: Defi
    const remove = element(root, 'button', 'Remove connection'); remove.onclick = () => { state.connections = state.connections.filter(e => e !== edge); drawEdges(); status.textContent = 'Unsaved changes'; };
    item.append(remove); list.append(item);
   }
+  refreshPickers();
  }
  root.querySelector<HTMLFormElement>('[data-connect]')!.onsubmit = event => {
   event.preventDefault();
@@ -105,6 +107,8 @@ export function mountEditor(root: HTMLElement, definition: Definition, api: Defi
    picker.replaceChildren(element(root, 'option', 'Insert input reference…'));
    picker.options[0]!.value = '';
    for (const input of state.inputs ?? []) { const option = element(root, 'option', input.name); option.value = input.name; picker.append(option); }
+   const id = picker.closest<HTMLElement>('.block')?.dataset.id;
+   for (const block of predecessors(state, id ?? '')) { const option = element(root, 'option', `${block.name} → final response`); option.value = `blocks.${block.id}.final`; picker.append(option); }
   }
  }
  function render() {
@@ -136,10 +140,10 @@ export function mountEditor(root: HTMLElement, definition: Definition, api: Defi
     configPicker.value = block.configurationId ?? '';
    }).catch(() => { status.textContent = 'Could not load Codex configurations'; });
    configPicker.onchange = () => { if (configPicker.value) block.configurationId = configPicker.value; else delete block.configurationId; changed(); };
-   const picker = element(root, 'select'); picker.dataset.reference = ''; picker.setAttribute('aria-label', `Input reference for ${block.name}`);
+   const picker = element(root, 'select'); picker.dataset.reference = ''; picker.setAttribute('aria-label', `Prompt reference for ${block.name}`);
    picker.onchange = () => {
     if (!picker.value) return;
-    const reference = `{{inputs.${picker.value}}}`;
+    const reference = picker.value.startsWith('blocks.') ? `{{${picker.value}}}` : `{{inputs.${picker.value}}}`;
     prompt.setRangeText(reference, prompt.selectionStart, prompt.selectionEnd, 'end');
     block.prompt = prompt.value; picker.value = ''; changed(); prompt.focus();
    };

@@ -2,7 +2,7 @@
 
 A local workflow definition editor for Linux and macOS. Create saved workflows,
 drag AI blocks onto a canvas, edit their names/prompts, and connect them in order.
-This increment can execute one Codex AI block in a constrained local container.
+Connected Codex AI blocks execute in order inside a constrained local run container.
 
 ## Start from source
 
@@ -102,11 +102,18 @@ docker build -f runtime/Dockerfile -t workflow-factory-runtime:local .
 The image pins `@openai/codex@0.166.0`; the Node 24 Debian base tag is mutable and
 should be rebuilt deliberately for OS fixes. Local execution pins the inspected
 image ID and checks its labels, not a user-selectable image. Configure ChatGPT file
-login as above, create a workflow with exactly one block, choose its configuration,
+login as above, create a workflow with one block or a connected chain, choose each configuration,
 and use **Run inputs… → Launch run**. Its status, final answer, event-kind diagnostics
 and actionable errors appear below the editor. There is no retry or paid fallback.
-This slice accepts one active run; multiple blocks, history and concurrency arrive
-in later slices. Runs currently last only for the app session.
+This slice accepts one active run; history and concurrency arrive in later slices.
+Runs currently last only for the app session. Connect A → B and select A's **final
+response** in B's prompt-reference picker to insert `{{blocks.A_ID.final}}`.
+Only earlier connected blocks may be referenced; disconnected graphs, forks/joins,
+future/missing outputs and unsupported output properties are refused at launch.
+Each block gets its own prompt with selected outputs and inputs, never the previous
+conversation. Substituted values stay literal, even if they contain reference-like
+text. Successful completion alone advances the chain; failure stops it without
+retry. All blocks reuse only that run's workspace and agent container.
 
 Each run gets a private workspace and separate credential staging under
 `run-resources/<run-id>/`. Only those two directories are mounted. The agent is
