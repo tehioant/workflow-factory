@@ -1,0 +1,6 @@
+{
+  "name": "workflow-factory", "version": "0.1.0", "private": true, "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": { "test": "node scripts/test.mjs", "typecheck": "tsc --noEmit", "build": "tsc && node scripts/build.mjs", "start": "node dist/server.js" },
+  "devDependencies": { "@types/node": "24.19.2", "happy-dom": "21.0.4", "typescript": "6.0.3" }
+}

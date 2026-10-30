@@ -1,0 +1,11 @@
+import { spawnSync } from 'node:child_process';
+import { readdirSync } from 'node:fs';
+const files = readdirSync('test', { recursive: true }).filter(f => f.endsWith('.test.mjs')).sort().map(f => `test/${f}`);
+if (!files.length) throw new Error('No tests discovered');
+const result = spawnSync(process.execPath, ['--test', '--test-reporter=tap', ...files], { encoding: 'utf8' });
+process.stdout.write(result.stdout ?? '');
+process.stderr.write(result.stderr ?? '');
+const count = Number(result.stdout?.match(/^# tests (\d+)$/m)?.[1]);
+if (!Number.isInteger(count) || count < 1 || count > 200) throw new Error(`Actual test count ${count} violates 1..200 cap`);
+console.log(`Verified actual test-count cap: ${count}/200`);
+process.exit(result.status ?? 1);
