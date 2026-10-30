@@ -2,7 +2,7 @@ import { validId, validateDefinition } from './definition.ts';
 import { validateConfiguration } from './configuration.ts';
 import type { Run } from './runs.ts';
 export interface RunRepository { list(): Promise<Run[]>; save(run: Run): Promise<Run>; }
-const fields = ['version','id','name','createdAt','definition','inputs','prompts','configurations','status','blocks','error','cleanupPending','cancelRequested'];
+const fields = ['version','id','name','createdAt','definition','inputs','prompts','configurations','status','blocks','error','cleanupPending','cancelRequested','persistencePending'];
 function object(value: unknown): value is Record<string,unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function text(value: unknown, limit = 4_194_304) { if (typeof value !== 'string' || value.length > limit) throw new Error('Invalid retained text'); }
 function onlyFields(value: object, allowed: string[]) { if (Object.keys(value).some(key => !allowed.includes(key))) throw new Error('Unsupported captured definition field'); }
@@ -27,6 +27,7 @@ export function validateRun(value: unknown): Run {
  if (r.error !== undefined) text(r.error,2000);
  if (r.cleanupPending !== undefined && typeof r.cleanupPending !== 'boolean') throw new Error('Invalid cleanup state');
  if (r.cancelRequested !== undefined && typeof r.cancelRequested !== 'boolean') throw new Error('Invalid cancellation state');
+ if (r.persistencePending !== undefined && typeof r.persistencePending !== 'boolean') throw new Error('Invalid persistence state');
  return structuredClone(r);
 }
 export function interruptedRun(value: Run): Run {

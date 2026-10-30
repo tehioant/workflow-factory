@@ -210,6 +210,8 @@ abortable and its owned agent is removed separately, not merely the local client
 Completed outputs remain in the cancelled history. Cancellation requests and slot
 release are idempotent; other runs continue. Cleanup/storage failures keep a
 visible hold rather than pretending resources or terminal history were saved.
+If saving a queued cancellation fails, **Retry saving history** retries only that
+terminal write after storage recovers; it does not require Docker or create work.
 
 ## Durable run history
 

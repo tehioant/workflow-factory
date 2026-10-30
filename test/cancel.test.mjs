@@ -48,9 +48,17 @@ test('cancel control invokes only selected run and is absent for terminal histor
  const window=new Window(); const root=window.document.createElement('div'); const selected=captured(); const calls=[];
  renderRun(root,selected,{async cancel(id) {calls.push(id);}}); const button=root.querySelector('[data-cancel-run]'); await button.onclick(new window.Event('click')); assert.deepEqual(calls,[selected.id]);
  selected.status='cancelled'; renderRun(root,selected,{async cancel() {assert.fail();}}); assert.equal(root.querySelector('[data-cancel-run]'),null);
+ selected.persistencePending=true; renderRun(root,selected,{async recheckCleanup(id) {calls.push(id);}}); const retry=root.querySelector('button'); assert.equal(retry.textContent,'Retry saving history'); await retry.onclick(new window.Event('click')); assert.equal(retry.textContent,'History saved'); assert.deepEqual(calls,[selected.id,selected.id]);
 });
 test('same-origin cancellation API invokes the actual selected-run boundary once', async () => {
  const calls=[]; const authority={host:'127.0.0.1:3000',token:'test'}; const request=new Request('http://127.0.0.1:3000/api/runs/selected/cancel',{method:'POST',headers:{host:authority.host,origin:'http://'+authority.host,'x-workflow-token':'test','content-type':'application/json'}});
  const response=await handleRequest(request,authority,{}, { runs:{async cancel(id) {calls.push(id);return {id,status:'cancelled'};}} });
  assert.equal(response.status,200); assert.deepEqual(calls,['selected']);
+});
+
+test('failed queued-cancellation save has a visible persistence hold and retries without Docker after storage recovery', async () => {
+ let fail=true, attempts=0, durableStatus='queued'; const service=new RunService({async reconcileCleanup() {assert.fail('Queued run has no runtime resources');}}, {async save(run) {attempts++; if(fail) throw new Error('Disk full'); durableStatus=run.status;}});
+ const selected=captured(); service.records.set(selected.id,selected); service.ready.add(selected.id);
+ await assert.rejects(service.cancel(selected.id),/history/); assert.equal(selected.persistencePending,true); assert.match(selected.error,/history/); assert.equal(durableStatus,'queued');
+ fail=false; await service.cancel(selected.id); assert.equal(attempts,2); assert.equal(durableStatus,'cancelled'); assert.equal(selected.persistencePending,false);
 });

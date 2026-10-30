@@ -10,8 +10,8 @@ import type { RunRepository } from './run-store.ts';
 import { concurrencyLimit } from './scheduler.ts';
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export interface BlockResult { status: 'running' | 'succeeded' | 'failed' | 'cancelled'; prompt: string; output?: string; logs: string; error?: string; }
-export interface Run { version: 1; id: string; name: string; createdAt: string; definition: Definition; inputs: Record<string,string>; prompts: Record<string,string>; configurations: Record<string,CodexConfiguration>; status: RunStatus; blocks: Record<string,BlockResult>; error?: string; cleanupPending?: boolean; cancelRequested?: boolean; }
-export function admissionOccupied(run: Run) { return ['queued','running'].includes(run.status) || run.cleanupPending === true; }
+export interface Run { version: 1; id: string; name: string; createdAt: string; definition: Definition; inputs: Record<string,string>; prompts: Record<string,string>; configurations: Record<string,CodexConfiguration>; status: RunStatus; blocks: Record<string,BlockResult>; error?: string; cleanupPending?: boolean; cancelRequested?: boolean; persistencePending?: boolean; }
+export function admissionOccupied(run: Run) { return ['queued','running'].includes(run.status) || run.cleanupPending === true || run.persistencePending === true; }
 export function beginBlock(run: Run, id: string, prompt: string) {
  const result: BlockResult = { status: 'running', prompt, logs: '' };
  Object.defineProperty(run.blocks, id, { value: result, enumerable: true, writable: true, configurable: true });
@@ -53,9 +53,10 @@ export class RunService {
  async flush() { await Promise.all([...this.writes.values()]); }
  async reconcileCleanup(id: string) {
   const run = this.records.get(id);
-  if (!run || !run.cleanupPending || ['queued','running'].includes(run.status)) throw new Error('Only a terminal cleanup hold may be reconciled');
-  await this.runtime.reconcileCleanup(id,run.definition.blocks.map(block => block.id));
-  const resolved = { ...run, cleanupPending: false };
+  if (!run || (!run.cleanupPending && !run.persistencePending) || ['queued','running'].includes(run.status)) throw new Error('Only a terminal cleanup/persistence hold may be reconciled');
+  if (run.cleanupPending) await this.runtime.reconcileCleanup(id,run.definition.blocks.map(block => block.id));
+  const resolved = { ...run, cleanupPending: false, persistencePending: false };
+  if (run.persistencePending && !run.cleanupPending && run.status === 'cancelled') resolved.error = 'Run cancelled by user';
   await this.persist(resolved); Object.assign(run,resolved); this.releaseSlot(id);
  }
  list() { return [...this.records.values()].map(run => structuredClone(run)); }
@@ -70,7 +71,11 @@ export class RunService {
  cancel(id: string): Promise<Run> {
   const existing = this.cancellations.get(id); if (existing) return existing;
   const run = this.records.get(id); if (!run) return Promise.reject(new Error('Run not found'));
-  if (!['queued','running'].includes(run.status)) return Promise.resolve(structuredClone(run));
+  if (!['queued','running'].includes(run.status)) {
+   if (run.persistencePending && !run.cleanupPending) return this.reconcileCleanup(id).then(() => structuredClone(run));
+   if (run.cleanupPending) return Promise.reject(new Error(run.error ?? 'Run cleanup is still pending'));
+   return Promise.resolve(structuredClone(run));
+  }
   const queued = run.status === 'queued';
   run.cancelRequested = true; this.ready.delete(id); this.controllers.get(id)?.abort();
   if (queued) run.status = 'cancelled';
@@ -81,7 +86,7 @@ export class RunService {
    await stop;
    if (!queued) await this.tasks.get(id);
    if (run.cleanupPending) throw new Error(run.error ?? 'Cancellation cleanup or persistence is still pending');
-   if (queued && persistenceError) throw persistenceError;
+   if (queued && persistenceError) { run.persistencePending = true; run.error = 'Cancelled run history could not be saved. Fix storage and retry saving history.'; throw persistenceError; }
    return structuredClone(run);
   })().finally(() => { this.cancellations.delete(id); });
   this.cancellations.set(id,operation); return operation;
@@ -101,7 +106,7 @@ export class RunService {
  }
  private pump() { while (this.dispatchOne()) { /* slots are reserved synchronously before async execution */ } }
  releaseSlot(id: string) {
-  if (this.records.get(id)?.cleanupPending || !this.slots.delete(id)) return false;
+  if (this.records.get(id)?.cleanupPending || this.records.get(id)?.persistencePending || !this.slots.delete(id)) return false;
   this.pump(); return true;
  }
  async advance(run: Run, resource: Resources) {

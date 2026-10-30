@@ -16,9 +16,9 @@ export function renderRun(root: HTMLElement, run: Run, actions?: { recheckCleanu
   button.onclick = async () => { button.disabled = true; try { await actions.cancel!(run.id); button.textContent = 'Cancelled'; } catch (error) { button.textContent = error instanceof Error ? error.message : 'Cancellation failed'; button.disabled = false; } };
   root.append(button);
  }
- if (run.cleanupPending && actions?.recheckCleanup && !['queued','running'].includes(run.status)) {
-  const button = document.createElement('button'); button.textContent = 'Recheck cleanup';
-  button.onclick = async () => { button.disabled = true; try { await actions.recheckCleanup!(run.id); button.textContent = 'Cleanup verified'; } catch (error) { button.textContent = error instanceof Error ? error.message : 'Cleanup could not be verified'; } finally { button.disabled = false; } };
+ if ((run.cleanupPending || run.persistencePending) && actions?.recheckCleanup && !['queued','running'].includes(run.status)) {
+  const button = document.createElement('button'); button.textContent = run.cleanupPending ? 'Recheck cleanup' : 'Retry saving history';
+  button.onclick = async () => { button.disabled = true; try { await actions.recheckCleanup!(run.id); button.textContent = run.cleanupPending ? 'Cleanup verified' : 'History saved'; } catch (error) { button.textContent = error instanceof Error ? error.message : 'Cleanup/history could not be verified'; } finally { button.disabled = false; } };
   root.append(button);
  }
  for (const [blockId, result] of Object.entries(run.blocks)) {
