@@ -23,7 +23,7 @@ export function validateDefinition(value: unknown): Definition {
   if (!Array.isArray(inputs) || inputs.length > 50) throw new Error('Maximum 50 text inputs');
   const names = new Set<string>();
   for (const input of inputs) {
-    if (!input || !/^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(input.name) || names.has(input.name) || input.type !== 'text' || typeof input.required !== 'boolean') throw new Error('Invalid or duplicate input name (use letters, digits and underscores)');
+    if (!input || typeof input.name !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(input.name) || names.has(input.name) || input.type !== 'text' || typeof input.required !== 'boolean') throw new Error('Invalid or duplicate input name (use letters, digits and underscores)');
     names.add(input.name);
     if (input.default !== undefined) text(input.default, 100_000);
   }

@@ -120,7 +120,7 @@ export function mountEditor(root: HTMLElement, definition: Definition, api: Defi
    name.oninput = () => {
     block.name = name.value; status.textContent = 'Unsaved changes';
     prompt.setAttribute('aria-label', `Prompt for ${block.name}`);
-    for (const option of root.querySelectorAll<HTMLOptionElement>('select option')) if (option.value === block.id) option.textContent = block.name;
+    for (const option of root.querySelectorAll<HTMLOptionElement>('[data-connect] select option')) if (option.value === block.id) option.textContent = block.name;
     drawEdges();
    };
    prompt.oninput = () => { block.prompt = prompt.value; status.textContent = 'Unsaved changes'; };

@@ -36,6 +36,8 @@ test('declarations reject duplicate names and dangling references while v1 witho
  const d = definition(); d.blocks[0].prompt = '{{inputs.missing}}';
  assert.throws(() => validateDefinition(d), /Unknown workflow input: missing/);
  assert.throws(() => validateDefinition({ ...definition(), inputs: [{ ...input, name: 'bad.name' }] }), /Invalid/);
+ assert.throws(() => validateDefinition({ ...definition(), inputs: [{ ...input, name: undefined }] }), /Invalid/);
+ assert.throws(() => validateDefinition({ ...definition(), inputs: [{ ...input, name: true }] }), /Invalid/);
 });
 
 test('run values remain literal rather than recursively resolving inserted references', () => {
@@ -52,6 +54,14 @@ test('reference picker inserts a token at the caret without copying the default'
  const picker = root.querySelector('[data-reference]'); picker.value = 'topic'; picker.dispatchEvent(new window.Event('change'));
  assert.equal(editor.snapshot().blocks[0].prompt, '{{inputs.topic}}Summarize this');
  assert.equal(d.blocks[0].prompt, 'Summarize this');
+});
+
+test('renaming a block whose ID matches an input does not relabel that input reference', () => {
+ const window = new Window(); const root = window.document.createElement('main');
+ const d = { ...definition(), inputs: [{ name: 'a', type: 'text', required: false }] };
+ mountEditor(root, d, {});
+ const name = root.querySelector('[aria-label="Block name"]'); name.value = 'Draft'; name.dispatchEvent(new window.Event('input'));
+ assert.equal(root.querySelector('[data-reference] option[value="a"]').textContent, 'a');
 });
 
 test('run form blocks a missing required input before the launch boundary', async () => {
