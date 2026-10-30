@@ -14,11 +14,22 @@ export function authorize(request: Request, authority: Authority): boolean {
 }
 export interface ConfigurationRepository { list(): Promise<CodexConfiguration[]>; save(value: unknown): Promise<CodexConfiguration>; }
 export interface RunAPI { list(): Run[]; get(id: string): Run; launch(definition: Definition, inputs: Record<string,string>, configs: CodexConfiguration[]): Promise<Run>; reconcileCleanup(id: string): Promise<void>; cancel(id: string): Promise<Run>; }
-export interface Services { configurations?: ConfigurationRepository; authentication?: () => Promise<{ available: boolean; message: string }>; runs?: RunAPI; settings?: { concurrency: number }; }
+export interface Services { configurations?: ConfigurationRepository; authentication?: () => Promise<{ available: boolean; message: string }>; runs?: RunAPI; settings?: { concurrency: number }; lifecycle?: { status(): { pending: number }; quit(): Promise<void> }; }
 export async function handleRequest(request: Request, authority: Authority, store: DefinitionRepository, services: Services = {}): Promise<Response> {
  if (!authorize(request, authority)) return Response.json({ error: 'Local session authorization required. Reload the app.' }, { status: 403 });
  const path = new URL(request.url).pathname;
  try {
+  if (path === '/api/lifecycle' && request.method === 'GET' && services.lifecycle) return Response.json(services.lifecycle.status());
+  if (path === '/api/quit' && request.method === 'POST' && services.lifecycle) {
+   if (request.headers.get('origin') !== `http://${authority.host}` || request.headers.get('content-type') !== 'application/json') return Response.json({ error: 'Same-origin JSON required' }, { status: 403 });
+   let body;
+   try { body = await request.json(); if (typeof body?.confirmed !== 'boolean') throw new Error(); }
+   catch { return Response.json({error:'Quit requires JSON with a boolean confirmed field.'},{status:400}); }
+   try {
+    if (services.lifecycle.status().pending > 0 && body?.confirmed !== true) return Response.json({error:'Runs are now pending. Retry Quit application and confirm cancellation.'},{status:409});
+    await services.lifecycle.quit(); return Response.json({closed:true});
+   } catch { return Response.json({error:'Quit incomplete. Admission is frozen; check Docker/storage, resolve retained holds and retry.'},{status:503}); }
+  }
   if (path === '/api/runtime-settings' && request.method === 'GET' && services.settings) return Response.json(services.settings);
   if (services.runs) {
    const cancelMatch = /^\/api\/runs\/([a-zA-Z0-9_-]{1,80})\/cancel$/.exec(path);

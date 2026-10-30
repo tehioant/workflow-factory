@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { acceptRun, beginBlock, admissionOccupied } from '../src/runs.ts';
-import { DockerRuntime, agentArguments, verifyPrivateNetwork, codexArguments, parseCodexOutput, removeResources, requireRuntime } from '../src/runtime.ts';
+import { DockerRuntime, dockerCommand, agentArguments, verifyPrivateNetwork, codexArguments, parseCodexOutput, removeResources, requireRuntime } from '../src/runtime.ts';
 import { admittedTarget, clientHelloHostname, createEgressServer } from '../runtime/egress.mjs';
 import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { definition } from './fixtures.mjs';
 import { Window } from 'happy-dom';
 import { renderRun } from '../src/public/runs.ts';
@@ -112,4 +113,14 @@ test('CONNECT handler opens no upstream socket when TLS SNI differs from the adm
  server.emit('connect', { url: 'chatgpt.com:443' }, client, hello('other.test'));
  await new Promise(resolve => setImmediate(resolve));
  assert.equal(connections, 0); assert.equal(client.destroyed, true);
+});
+
+test('Docker CLI children have isolated signal groups but remain referenced and explicitly abortable', async () => {
+ const calls=[]; const controller=new AbortController();
+ const command=dockerCommand('/fake/docker.sock',(...args)=>{
+  calls.push(args);const child=new EventEmitter();Object.assign(child,{stdout:new PassThrough(),stderr:new PassThrough(),stdin:new PassThrough(),unref(){assert.fail('Owned clients must stay referenced');}});
+  queueMicrotask(()=>child.emit('close',0));return child;
+ });
+ await command(['exec','owned-agent','codex'],undefined,1000,controller.signal);
+ assert.equal(calls[0][0],'docker');assert.equal(calls[0][2].detached,true);assert.equal(calls[0][2].shell,false);assert.equal(calls[0][2].signal,controller.signal);assert.equal(calls[0][2].killSignal,'SIGKILL');
 });

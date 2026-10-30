@@ -213,6 +213,31 @@ visible hold rather than pretending resources or terminal history were saved.
 If saving a queued cancellation fails, **Retry saving history** retries only that
 terminal write after storage recovers; it does not require Docker or create work.
 
+## Quit and signals
+
+Save definition edits, then use **Quit application**. If active/queued work or a
+retained cleanup/storage hold exists, the app asks for confirmation; Cancel leaves
+everything running. OK freezes admission before cancellation, marks queued runs
+cancelled, stops active owned agents, waits through in-flight setup, cleans scoped
+resources and saves terminal history before closing the foreground HTTP server.
+Repeated quit requests share the same operation. No independent execution service
+remains, and queued runs never auto-resume after restart. Ctrl+C (SIGINT) and
+SIGTERM use the same graceful path, without an interactive terminal prompt.
+Docker control clients use isolated process groups so terminal Ctrl+C cannot kill
+a setup client before its daemon reply. Their piped handles remain referenced and
+awaited; executing clients still support explicit abort, not an untracked service.
+
+Closing/reloading the browser tab is **not** server quit. A best-effort browser
+`beforeunload` warning uses the latest polled pending state; browser policies may
+suppress it. The foreground Node process continues until explicit Quit or a
+signal. Quit's confirmation reads fresh server state; if work appears after an
+idle check, the server rejects an unconfirmed quit so you can confirm again.
+When storage or cleanup fails, every run still gets a cleanup attempt; the app
+stays foreground, frozen and readable with an actionable error. Fix Docker/storage,
+resolve the selected run's hold and retry Quit/Ctrl+C. It does not silently exit
+with owned work left behind. SIGKILL, daemon failure or host crashes cannot be
+made graceful; inspect only the recorded run-owned resources after an abnormal exit.
+
 ## Durable run history
 
 Runs are atomically saved as private JSON under `runs/` in the same app data folder.
@@ -232,7 +257,7 @@ retained runs. Damaged records fail visibly instead of being silently discarded.
 Previously active/queued records become interrupted failures on abnormal restart,
 never auto-resumed; completed outputs are retained. After a crash, inspect/stop
 only Docker resources named `wf-<run-id>-…` before starting further work; normal
-graceful quit is delivered in the next lifecycle slice.
+Quit/Ctrl+C instead use the scoped graceful lifecycle above.
 If a retained run has a cleanup hold, use **Recheck cleanup**. In the same app
 session this retries only its recorded cleanup. After restart it never kills
 discovered resources based on a name alone: manually remove only that run's owned

@@ -1,6 +1,7 @@
 import { mountHome } from './editor.ts';
 import { renderRun } from './runs.ts';
 import type { Run } from '../runs.ts';
+import { mountQuit } from './lifecycle.ts';
 const token = document.querySelector<HTMLMetaElement>('meta[name="workflow-token"]')!.content;
 async function request(path: string, method = 'GET', value?: unknown) {
  const response = await fetch(path, { method, headers: { 'x-workflow-token': token, 'content-type': 'application/json' }, body: value ? JSON.stringify(value) : undefined });
@@ -15,11 +16,22 @@ runArea.append(workflowFilter, runList, selectedRun); document.body.append(runAr
 const concurrency = document.createElement('p'); runArea.prepend(concurrency);
 void request('/api/runtime-settings').then(settings => { concurrency.textContent = `Global concurrent run limit: ${settings.concurrency}. Excess accepted runs wait in the queue.`; }).catch(() => { concurrency.textContent = 'Could not read concurrency settings.'; });
 let selected: string | undefined;
+let hasPending = true, closed = false;
+const quitArea = document.createElement('section'); document.body.prepend(quitArea);
+mountQuit(quitArea,{
+ pending: () => hasPending && !closed,
+ status: () => request('/api/lifecycle'),
+ confirm: message => window.confirm(message),
+ quit: confirmed => request('/api/quit','POST',{confirmed}),
+ closed: () => { closed = true; hasPending = false; clearTimeout(timer); document.querySelector<HTMLElement>('main')!.inert = true; runArea.inert = true; },
+});
 function showRun(run: Run) { renderRun(selectedRun,run,{ recheckCleanup: id => request(`/api/runs/${id}/recheck-cleanup`,'POST',{}), cancel: id => request(`/api/runs/${id}/cancel`,'POST',{}) }); }
 let timer: ReturnType<typeof setTimeout>;
 async function refreshRuns() {
+ if (closed) return;
  try {
-  const runs: Run[] = await request('/api/runs'); runList.replaceChildren();
+  const runs: Run[] = await request('/api/runs'); if (closed) return;
+  hasPending = runs.some(run => ['queued','running'].includes(run.status) || run.cleanupPending || run.persistencePending); runList.replaceChildren();
   const filter = workflowFilter.value;
   workflowFilter.replaceChildren(new Option('All workflow runs',''));
   for (const [id,name] of new Map(runs.map(run => [run.definition.id,run.name]))) workflowFilter.append(new Option(name,id));
@@ -27,7 +39,7 @@ async function refreshRuns() {
   for (const run of runs.filter(run => !filter || run.definition.id === filter).reverse()) { const button = document.createElement('button'); button.textContent = `${run.name} — ${run.createdAt} — ${run.status}`; button.onclick = () => { selected = run.id; showRun(run); }; runList.append(button); }
   const run = runs.find(run => run.id === selected); if (run) showRun(run);
  } catch { runList.textContent = 'Could not refresh runs. Check the local server.'; }
- timer = setTimeout(() => { void refreshRuns(); }, 1500);
+ if (!closed) timer = setTimeout(() => { void refreshRuns(); }, 1500);
 }
 window.addEventListener('pagehide', () => clearTimeout(timer));
 void refreshRuns();
@@ -35,5 +47,5 @@ void mountHome(document.querySelector<HTMLElement>('main')!, {
  list: () => request('/api/definitions'),
  save: definition => request(`/api/definitions/${definition.id}`, 'PUT', definition),
  configurations: { list: () => request('/api/configurations'), save: config => request('/api/configurations', 'PUT', config), authentication: () => request('/api/authentication') },
- launch: async (definition, inputs) => { const run: Run = await request('/api/runs', 'POST', { definition, inputs }); selected = run.id; showRun(run); },
+ launch: async (definition, inputs) => { hasPending = true; const run: Run = await request('/api/runs', 'POST', { definition, inputs }); selected = run.id; showRun(run); },
 });

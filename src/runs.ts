@@ -33,6 +33,8 @@ export class RunService {
  private controllers = new Map<string,AbortController>();
  private tasks = new Map<string,Promise<void>>();
  private cancellations = new Map<string,Promise<Run>>();
+ private stopping?: Promise<void>;
+ private frozen = false;
  readonly limit: number;
  constructor(runtime: DockerRuntime, store?: RunRepository, limit: number = 2) { this.runtime = runtime; this.store = store; this.limit = concurrencyLimit(limit); }
  async restore() {
@@ -51,6 +53,23 @@ export class RunService {
   this.writes.set(run.id,write); await write;
  }
  async flush() { await Promise.all([...this.writes.values()]); }
+ lifecycleStatus() {
+  const runs = [...this.records.values()];
+  return { active: runs.filter(run => run.status === 'running').length, queued: runs.filter(run => run.status === 'queued').length, pending: runs.filter(admissionOccupied).length, frozen: this.frozen };
+ }
+ shutdown(): Promise<void> {
+  if (this.stopping) return this.stopping;
+  this.frozen = true; this.ready.clear();
+  const operation = (async () => {
+   await Promise.allSettled([...this.records.values()].filter(run => ['queued','running'].includes(run.status)).map(run => this.cancel(run.id)));
+   await Promise.allSettled([...this.tasks.values()]);
+   await Promise.allSettled([...this.records.values()].filter(run => run.cleanupPending || run.persistencePending).map(run => this.reconcileCleanup(run.id)));
+   await this.flush();
+   if (this.lifecycleStatus().pending) throw new Error('Quit incomplete: resolve retained cleanup/storage holds and retry. Admission remains frozen.');
+  })();
+  this.stopping = operation.catch(error => { this.stopping = undefined; throw error; });
+  return this.stopping;
+ }
  async reconcileCleanup(id: string) {
   const run = this.records.get(id);
   if (!run || (!run.cleanupPending && !run.persistencePending) || ['queued','running'].includes(run.status)) throw new Error('Only a terminal cleanup/persistence hold may be reconciled');
@@ -62,9 +81,10 @@ export class RunService {
  list() { return [...this.records.values()].map(run => structuredClone(run)); }
  get(id: string) { const run = this.records.get(id); if (!run) throw new Error('Run not found'); return structuredClone(run); }
  async launch(definition: Definition, values: Record<string,string>, configs: CodexConfiguration[]) {
+  if (this.frozen) throw new Error('The application is quitting; new runs are not accepted.');
   const run = acceptRun(definition, values, configs); this.records.set(run.id, run);
   try { await this.persist(run); }
-  catch (error) { if (!run.cancelRequested) { run.status = 'failed'; run.error = 'Run was not started because history could not be saved.'; } throw error; }
+  catch (error) { if (!run.cancelRequested) { run.status = 'failed'; run.persistencePending = true; run.error = 'Run was not started because history could not be saved. Fix storage and retry saving history.'; } throw error; }
   if (run.cancelRequested) return structuredClone(run);
   this.ready.add(run.id); this.pump(); return structuredClone(run);
  }
@@ -92,7 +112,7 @@ export class RunService {
   this.cancellations.set(id,operation); return operation;
  }
  dispatchOne() {
-  if (this.slots.size >= this.limit) return false;
+  if (this.frozen || this.slots.size >= this.limit) return false;
   const run = [...this.records.values()].find(run => run.status === 'queued' && this.ready.has(run.id));
   if (!run) return false;
   this.ready.delete(run.id); this.slots.add(run.id); run.status = 'running';
