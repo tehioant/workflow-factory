@@ -9,13 +9,19 @@ async function request(path: string, method = 'GET', value?: unknown) {
  return result;
 }
 const runArea = document.createElement('aside'); const runList = document.createElement('div'); const selectedRun = document.createElement('div');
-runArea.append(runList, selectedRun); document.body.append(runArea);
+const workflowFilter = document.createElement('select'); workflowFilter.setAttribute('aria-label', 'Run history workflow');
+workflowFilter.onchange = () => { selected = undefined; selectedRun.replaceChildren(); };
+runArea.append(workflowFilter, runList, selectedRun); document.body.append(runArea);
 let selected: string | undefined;
 let timer: ReturnType<typeof setTimeout>;
 async function refreshRuns() {
  try {
   const runs: Run[] = await request('/api/runs'); runList.replaceChildren();
-  for (const run of runs) { const button = document.createElement('button'); button.textContent = `${run.name} — ${run.status}`; button.onclick = () => { selected = run.id; renderRun(selectedRun, run); }; runList.append(button); }
+  const filter = workflowFilter.value;
+  workflowFilter.replaceChildren(new Option('All workflow runs',''));
+  for (const [id,name] of new Map(runs.map(run => [run.definition.id,run.name]))) workflowFilter.append(new Option(name,id));
+  workflowFilter.value = filter;
+  for (const run of runs.filter(run => !filter || run.definition.id === filter).reverse()) { const button = document.createElement('button'); button.textContent = `${run.name} — ${run.createdAt} — ${run.status}`; button.onclick = () => { selected = run.id; renderRun(selectedRun, run); }; runList.append(button); }
   const run = runs.find(run => run.id === selected); if (run) renderRun(selectedRun, run);
  } catch { runList.textContent = 'Could not refresh runs. Check the local server.'; }
  timer = setTimeout(() => { void refreshRuns(); }, 1500);

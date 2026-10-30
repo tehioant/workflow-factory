@@ -1,9 +1,15 @@
 import type { Run } from '../runs.ts';
 export function renderRun(root: HTMLElement, run: Run) {
  const document = root.ownerDocument;
+ const expanded = root.dataset.runId === run.id && root.querySelector('details')?.open;
+ root.dataset.runId = run.id;
  const title = document.createElement('h2'); title.textContent = `${run.name} — ${run.status}`;
  const id = document.createElement('p'); id.textContent = `Run ${run.id}`;
  root.replaceChildren(title, id);
+ const captured = document.createElement('details'); const summary = document.createElement('summary'); summary.textContent = 'Captured definition, inputs, prompts and settings';
+ captured.open = expanded === true;
+ const snapshot = document.createElement('pre'); snapshot.textContent = JSON.stringify({ createdAt: run.createdAt, definition: run.definition, inputs: run.inputs, prompts: run.prompts, configurations: run.configurations }, null, 2);
+ captured.append(summary,snapshot); root.append(captured);
  if (run.error) { const error = document.createElement('p'); error.setAttribute('role', 'alert'); error.textContent = run.error; root.append(error); }
  for (const [blockId, result] of Object.entries(run.blocks)) {
   const section = document.createElement('section');
@@ -11,6 +17,7 @@ export function renderRun(root: HTMLElement, run: Run) {
   const output = document.createElement('pre'); output.dataset.output = ''; output.textContent = result.output ?? '';
   const logs = document.createElement('pre'); logs.dataset.logs = ''; logs.textContent = result.logs;
   section.append(heading, output, logs);
+  const prompt = document.createElement('pre'); prompt.textContent = result.prompt; prompt.dataset.prompt = ''; section.append(prompt);
   if (result.error) { const error = document.createElement('p'); error.textContent = result.error; section.append(error); }
   root.append(section);
  }
