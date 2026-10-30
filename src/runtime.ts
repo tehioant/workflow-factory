@@ -145,4 +145,21 @@ export class DockerRuntime {
   await removeResources(r, this.command, path => fs.rm(path, { recursive: true, force: true }));
   this.resources.delete(id); this.secrets.delete(id);
  }
+ async reconcileCleanup(id: string, blockIds: string[]) {
+  validId(id); for (const block of blockIds) validId(block);
+  if (this.resources.has(id)) { await this.cleanup(id); return; }
+  await requireRuntime(this.command);
+  // After restart, names alone do not prove ownership. Never kill a discovered
+  // object: require manual removal, then confirm absence before clearing the hold.
+  const containers = [`wf-${id}-agent`, ...blockIds.map(block => `wf-${id}-block-${block}`), `wf-${id}-proxy`];
+  for (const name of containers) {
+   const result = await this.command(['container','inspect',name]);
+   if (result.code !== 1 || !new RegExp(`^(Error: No such (object|container): ${name}|Error response from daemon: No such container: ${name})\\s*$`, 'i').test(result.stderr)) throw new Error('Owned resources are present or cannot be verified. Stop only this run’s named resources manually, then recheck cleanup.');
+  }
+  for (const name of [`wf-${id}-private`,`wf-${id}-egress`]) {
+   const result = await this.command(['network','inspect',name]);
+   if (result.code !== 1 || !new RegExp(`^Error response from daemon: network ${name} not found\\s*$`, 'i').test(result.stderr)) throw new Error('Run networks are present or cannot be verified. Remove only this run’s networks manually, then recheck cleanup.');
+  }
+  await fs.rm(join(this.root,id,'credentials'),{ recursive: true, force: true });
+ }
 }

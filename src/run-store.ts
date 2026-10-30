@@ -5,12 +5,17 @@ export interface RunRepository { list(): Promise<Run[]>; save(run: Run): Promise
 const fields = ['version','id','name','createdAt','definition','inputs','prompts','configurations','status','blocks','error','cleanupPending'];
 function object(value: unknown): value is Record<string,unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function text(value: unknown, limit = 4_194_304) { if (typeof value !== 'string' || value.length > limit) throw new Error('Invalid retained text'); }
+function onlyFields(value: object, allowed: string[]) { if (Object.keys(value).some(key => !allowed.includes(key))) throw new Error('Unsupported captured definition field'); }
 export function validateRun(value: unknown): Run {
  const r = value as Run;
  if (!object(r) || Object.keys(r).some(key => !fields.includes(key))) throw new Error('Unsupported run field');
  if (r.version !== 1 || !['queued','running','succeeded','failed'].includes(r.status)) throw new Error('Invalid run');
  validId(r.id); text(r.name,120); text(r.createdAt,80); if (!Number.isFinite(Date.parse(r.createdAt))) throw new Error('Invalid run date');
  const definition = validateDefinition(r.definition);
+ onlyFields(definition,['version','id','name','blocks','connections','inputs','isolation']);
+ for (const block of definition.blocks) { onlyFields(block,['id','type','name','prompt','position','configurationId']); onlyFields(block.position,['x','y']); }
+ for (const edge of definition.connections) onlyFields(edge,['from','to']);
+ for (const input of definition.inputs ?? []) onlyFields(input,['name','type','required','default']);
  for (const map of [r.inputs,r.prompts]) { if (!object(map)) throw new Error('Invalid retained values'); for (const [key,value] of Object.entries(map)) { validId(key); text(value); } }
  if (!object(r.configurations) || !object(r.blocks)) throw new Error('Invalid captured settings/results');
  for (const block of definition.blocks) if (!Object.hasOwn(r.configurations,block.id) || !Object.hasOwn(r.prompts,block.id)) throw new Error('Missing captured block settings');

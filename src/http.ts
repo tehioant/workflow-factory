@@ -13,13 +13,19 @@ export function authorize(request: Request, authority: Authority): boolean {
   && (!request.headers.has('sec-fetch-site') || request.headers.get('sec-fetch-site') === 'same-origin');
 }
 export interface ConfigurationRepository { list(): Promise<CodexConfiguration[]>; save(value: unknown): Promise<CodexConfiguration>; }
-export interface RunAPI { list(): Run[]; get(id: string): Run; launch(definition: Definition, inputs: Record<string,string>, configs: CodexConfiguration[]): Promise<Run>; }
+export interface RunAPI { list(): Run[]; get(id: string): Run; launch(definition: Definition, inputs: Record<string,string>, configs: CodexConfiguration[]): Promise<Run>; reconcileCleanup(id: string): Promise<void>; }
 export interface Services { configurations?: ConfigurationRepository; authentication?: () => Promise<{ available: boolean; message: string }>; runs?: RunAPI; }
 export async function handleRequest(request: Request, authority: Authority, store: DefinitionRepository, services: Services = {}): Promise<Response> {
  if (!authorize(request, authority)) return Response.json({ error: 'Local session authorization required. Reload the app.' }, { status: 403 });
  const path = new URL(request.url).pathname;
  try {
   if (services.runs) {
+   const cleanupMatch = /^\/api\/runs\/([a-zA-Z0-9_-]{1,80})\/recheck-cleanup$/.exec(path);
+   if (cleanupMatch && request.method === 'POST') {
+    if (request.headers.get('origin') !== `http://${authority.host}` || request.headers.get('content-type') !== 'application/json') return Response.json({ error: 'Same-origin JSON required' }, { status: 403 });
+    try { await services.runs.reconcileCleanup(cleanupMatch[1]!); return Response.json({ reconciled: true }); }
+    catch (error) { return Response.json({ error: error instanceof Error ? error.message : 'Could not reconcile cleanup' }, { status: 400 }); }
+   }
    if (path === '/api/runs' && request.method === 'GET') return Response.json(services.runs.list());
    const runMatch = /^\/api\/runs\/([a-zA-Z0-9_-]{1,80})$/.exec(path);
    if (runMatch && request.method === 'GET') {

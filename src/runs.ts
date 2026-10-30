@@ -43,6 +43,13 @@ export class RunService {
   this.writes.set(run.id,write); await write;
  }
  async flush() { await Promise.all([...this.writes.values()]); }
+ async reconcileCleanup(id: string) {
+  const run = this.records.get(id);
+  if (!run || !run.cleanupPending || ['queued','running'].includes(run.status)) throw new Error('Only a terminal cleanup hold may be reconciled');
+  await this.runtime.reconcileCleanup(id,run.definition.blocks.map(block => block.id));
+  const resolved = { ...run, cleanupPending: false };
+  await this.persist(resolved); Object.assign(run,resolved);
+ }
  list() { return [...this.records.values()].map(run => structuredClone(run)); }
  get(id: string) { const run = this.records.get(id); if (!run) throw new Error('Run not found'); return structuredClone(run); }
  async launch(definition: Definition, values: Record<string,string>, configs: CodexConfiguration[]) {

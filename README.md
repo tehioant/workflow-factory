@@ -204,6 +204,11 @@ Previously active/queued records become interrupted failures on abnormal restart
 never auto-resumed; completed outputs are retained. After a crash, inspect/stop
 only Docker resources named `wf-<run-id>-…` before starting further work; normal
 graceful cancellation/quit is delivered in the lifecycle slices.
+If a retained run has a cleanup hold, use **Recheck cleanup**. In the same app
+session this retries only its recorded cleanup. After restart it never kills
+discovered resources based on a name alone: manually remove only that run's owned
+containers/networks, then recheck. The hold clears only after Docker confirms their
+absence and the updated history is saved; unavailable Docker does not clear it.
 
 ## Development and checks
 
