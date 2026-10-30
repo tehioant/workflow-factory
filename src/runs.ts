@@ -5,6 +5,8 @@ import { resolveConfigurations } from './configuration.ts';
 import type { CodexConfiguration } from './configuration.ts';
 import type { DockerRuntime, Resources } from './runtime.ts';
 import { executionOrder, nextBlock, resolveBlockPrompt } from './flow.ts';
+import { validateRun, interruptedRun } from './run-store.ts';
+import type { RunRepository } from './run-store.ts';
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed';
 export interface BlockResult { status: 'running' | 'succeeded' | 'failed'; prompt: string; output?: string; logs: string; error?: string; }
 export interface Run { version: 1; id: string; name: string; createdAt: string; definition: Definition; inputs: Record<string,string>; prompts: Record<string,string>; configurations: Record<string,CodexConfiguration>; status: RunStatus; blocks: Record<string,BlockResult>; error?: string; cleanupPending?: boolean; }
@@ -23,21 +25,49 @@ export function acceptRun(value: Definition, values: Record<string,string>, conf
 export class RunService {
  readonly records = new Map<string,Run>();
  private runtime: DockerRuntime;
- constructor(runtime: DockerRuntime) { this.runtime = runtime; }
+ private store?: RunRepository;
+ private writes = new Map<string,Promise<unknown>>();
+ constructor(runtime: DockerRuntime, store?: RunRepository) { this.runtime = runtime; this.store = store; }
+ async restore() {
+  if (!this.store) return;
+  for (const saved of await this.store.list()) {
+   const run = interruptedRun(saved); this.records.set(run.id,run);
+   if (run.status !== saved.status) await this.persist(run);
+  }
+ }
+ async persist(run: Run) {
+  if (!this.store) return;
+  const snapshot = validateRun(run);
+  const previous = this.writes.get(run.id) ?? Promise.resolve();
+  const write = previous.catch(() => {}).then(() => this.store!.save(snapshot)).catch(() => { throw new Error('Run history could not be saved. Check the private data folder and free disk space.'); });
+  this.writes.set(run.id,write); await write;
+ }
+ async flush() { await Promise.all([...this.writes.values()]); }
+ async reconcileCleanup(id: string) {
+  const run = this.records.get(id);
+  if (!run || !run.cleanupPending || ['queued','running'].includes(run.status)) throw new Error('Only a terminal cleanup hold may be reconciled');
+  await this.runtime.reconcileCleanup(id,run.definition.blocks.map(block => block.id));
+  const resolved = { ...run, cleanupPending: false };
+  await this.persist(resolved); Object.assign(run,resolved);
+ }
  list() { return [...this.records.values()].map(run => structuredClone(run)); }
  get(id: string) { const run = this.records.get(id); if (!run) throw new Error('Run not found'); return structuredClone(run); }
  async launch(definition: Definition, values: Record<string,string>, configs: CodexConfiguration[]) {
   if ([...this.records.values()].some(admissionOccupied)) throw new Error('A run or its cleanup is still active. Wait or resolve its cleanup error.');
   const run = acceptRun(definition, values, configs); this.records.set(run.id, run);
-  void this.execute(run); return structuredClone(run);
+  try { await this.persist(run); }
+  catch (error) { run.status = 'failed'; run.error = 'Run was not started because history could not be saved.'; throw error; }
+  void this.execute(run).catch(() => { run.status = 'failed'; run.error = 'Run history could not be saved. Execution stopped and cleanup was attempted.'; }); return structuredClone(run);
  }
  async advance(run: Run, resource: Resources) {
   let result: BlockResult | undefined;
   try {
    const block = nextBlock(run); if (!block) return false;
    result = beginBlock(run, block.id, resolveBlockPrompt(run, block));
+   await this.persist(run);
    const completed = await this.runtime.execute(resource, result.prompt, run.configurations[block.id]!, block.id);
    Object.assign(result, completed, { status: completed.error ? 'failed' : 'succeeded' });
+   await this.persist(run);
    if (completed.error) throw new Error(completed.error);
    return true;
   } catch (error) {
@@ -49,6 +79,7 @@ export class RunService {
  private async execute(run: Run) {
   run.status = 'running';
   try {
+   await this.persist(run);
    const resource = await this.runtime.prepare(run.id, run.definition.isolation ?? 'workflow');
    while (await this.advance(run, resource)) { /* each successful transition admits only its successor */ }
   } catch (error) { run.error = error instanceof Error ? error.message : 'Execution failed'; }
@@ -57,6 +88,7 @@ export class RunService {
    try { await this.runtime.cleanup(run.id); run.cleanupPending = false; }
    catch { run.error = 'Sandbox cleanup failed. Admission is blocked; check Docker and stop the owned resources before restarting.'; }
    run.status = run.error ? 'failed' : 'succeeded';
+   await this.persist(run);
   }
  }
 }

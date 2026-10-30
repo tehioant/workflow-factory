@@ -105,8 +105,8 @@ image ID and checks its labels, not a user-selectable image. Configure ChatGPT f
 login as above, create a workflow with one block or a connected chain, choose each configuration,
 and use **Run inputs… → Launch run**. Its status, final answer, event-kind diagnostics
 and actionable errors appear below the editor. There is no retry or paid fallback.
-This slice accepts one active run; history and concurrency arrive in later slices.
-Runs currently last only for the app session. Connect A → B and select A's **final
+This slice accepts one active run; concurrency arrives in a later slice.
+Connect A → B and select A's **final
 response** in B's prompt-reference picker to insert `{{blocks.A_ID.final}}`.
 Only earlier connected blocks may be referenced; disconnected graphs, forks/joins,
 future/missing outputs and unsupported output properties are refused at launch.
@@ -184,6 +184,32 @@ bodies to 1 MiB, and disables caching/framing. Do not proxy it publicly. These
 controls are not an OS sandbox or protection from software running as your user.
 If you restart the server while a page is open, reload to obtain its new session.
 
+## Durable run history
+
+Runs are atomically saved as private JSON under `runs/` in the same app data folder.
+Admission is persisted before execution. Running/block-start/completed-output and
+terminal transitions are serialized per run; a storage failure stops advancement
+and still attempts scoped cleanup. After reopening, the run list includes retained
+history. Filter by workflow, select an individual dated run and expand **Captured
+definition, inputs, prompts and settings**. Historical data comes from the captured
+record, never a current definition/configuration lookup; each block also shows its
+actual resolved prompt, final response, safe event-kind logs and error.
+
+Credentials and runtime resource objects are never added to the persisted contract;
+unknown run fields/settings are rejected. Prompts/inputs/outputs are private files,
+not encrypted, so do not place secrets in workflow text. Back up the data folder.
+History has no automatic retention policy; its disk and in-memory use grow with
+retained runs. Damaged records fail visibly instead of being silently discarded.
+Previously active/queued records become interrupted failures on abnormal restart,
+never auto-resumed; completed outputs are retained. After a crash, inspect/stop
+only Docker resources named `wf-<run-id>-…` before starting further work; normal
+graceful cancellation/quit is delivered in the lifecycle slices.
+If a retained run has a cleanup hold, use **Recheck cleanup**. In the same app
+session this retries only its recorded cleanup. After restart it never kills
+discovered resources based on a name alone: manually remove only that run's owned
+containers/networks, then recheck. The hold clears only after Docker confirms their
+absence and the updated history is saved; unavailable Docker does not clear it.
+
 ## Development and checks
 
 ```sh
@@ -205,5 +231,5 @@ is test-only. `src/definition.ts` owns the persisted contract; `src/store.ts`
 owns atomic storage; `src/http.ts` owns the focused API; `src/server.ts` adapts
 Node HTTP and filesystem assets; `src/public/` owns the vanilla DOM/SVG editor.
 Execution uses `src/runs.ts` admission and `src/runtime.ts` Docker adapters plus
-the trusted `runtime/egress.mjs` helper. No distribution, history or concurrent
+the trusted `runtime/egress.mjs` helper. No distribution or concurrent
 scheduler features are included in this increment.
