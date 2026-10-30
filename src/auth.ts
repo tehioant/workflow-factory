@@ -7,7 +7,7 @@ export function authPath() { return join(process.env.CODEX_HOME || join(homedir(
 // Server-only. Never return this value through HTTP or include it in diagnostics/snapshots.
 export async function readSubscriptionAuth(path = authPath(), disk: Pick<typeof fs, 'open'> = fs): Promise<string> {
  try {
-  const handle = await disk.open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await disk.open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
    const stat = await handle.stat();
    if (!stat.isFile() || stat.size > 65536 || (stat.mode & 0o077) !== 0 || (process.getuid && stat.uid !== process.getuid())) throw new Error('Unsafe credential file');

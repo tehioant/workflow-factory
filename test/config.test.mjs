@@ -7,6 +7,7 @@ import { JsonStore } from '../src/store.ts';
 import { handleRequest } from '../src/http.ts';
 import { Window } from 'happy-dom';
 import { mountEditor } from '../src/public/editor.ts';
+import { constants } from 'node:fs';
 const config = () => ({ version: 1, id: 'careful', name: 'Careful', model: 'gpt-5.4', reasoning: 'medium' });
 test('configuration resolution captures each referenced nonsecret setting independently', () => {
  const d = definition(); d.blocks.forEach(b => b.configurationId = 'careful'); const c = config();
@@ -20,8 +21,10 @@ test('configuration contract rejects arbitrary CLI settings or malformed model v
  assert.throws(() => validateConfiguration({ ...config(), reasoning: 'unbounded' }), /reasoning/);
 });
 test('missing or keyring-only credentials produce a safe actionable error', async () => {
- const disk = { async open() { throw new Error('secret material must not leak'); } };
+ let flags;
+ const disk = { async open(path, options) { flags = options; throw new Error('secret material must not leak'); } };
  await assert.rejects(readSubscriptionAuth('/fake/auth.json', disk), error => /file-based ChatGPT login/.test(error.message) && !error.message.includes('secret material'));
+ assert.ok(flags & constants.O_NONBLOCK); assert.ok(flags & constants.O_NOFOLLOW);
 });
 test('credential provider accepts subscription tokens only and closes its private file', async () => {
  let closed = false;
