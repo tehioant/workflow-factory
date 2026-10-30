@@ -11,6 +11,7 @@ import { RunService } from './runs.ts';
 import { validateRun } from './run-store.ts';
 import { concurrencyLimit } from './scheduler.ts';
 import { handleRequest } from './http.ts';
+import { installShutdownSignals, closeAfterReply } from './lifecycle.ts';
 
 const port = Number(process.env.PORT ?? 4317);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be between 1 and 65535');
@@ -20,7 +21,8 @@ const base = process.platform === 'darwin' ? join(homedir(), 'Library', 'Applica
 const directory = process.env.WORKFLOW_FACTORY_DATA_DIR || join(base, 'workflow-factory');
 const store = new DefinitionStore(join(directory, 'definitions'));
 const limit = concurrencyLimit(process.env.WORKFLOW_FACTORY_CONCURRENCY);
-const services = { configurations: new JsonStore(join(directory, 'configurations'), validateConfiguration), authentication: authenticationStatus, runs: new RunService(new DockerRuntime(join(directory, 'run-resources')), new JsonStore(join(directory, 'runs'), validateRun), limit), settings: { concurrency: limit } };
+const runs = new RunService(new DockerRuntime(join(directory, 'run-resources')), new JsonStore(join(directory, 'runs'), validateRun), limit);
+const services = { configurations: new JsonStore(join(directory, 'configurations'), validateConfiguration), authentication: authenticationStatus, runs, settings: { concurrency: limit }, lifecycle: { status: () => runs.lifecycleStatus(), quit: () => runs.shutdown() } };
 try { await services.runs.restore(); } catch { throw new Error('Run history is unavailable or damaged. Check the private data folder before starting.'); }
 const assets: Record<string, [string, string]> = {
  '/': ['public/index.html', 'text/html; charset=utf-8'],
@@ -31,6 +33,7 @@ const assets: Record<string, [string, string]> = {
  '/configuration.js': ['configuration.js', 'text/javascript; charset=utf-8'],
  '/configurations.js': ['public/configurations.js', 'text/javascript; charset=utf-8'],
  '/runs.js': ['public/runs.js', 'text/javascript; charset=utf-8'],
+ '/lifecycle.js': ['public/lifecycle.js', 'text/javascript; charset=utf-8'],
  '/definition.js': ['definition.js', 'text/javascript; charset=utf-8'],
  '/flow.js': ['flow.js', 'text/javascript; charset=utf-8'],
 };
@@ -58,6 +61,9 @@ const server = createServer(async (incoming, outgoing) => {
    const method = incoming.method || 'GET';
    const body = ['GET', 'HEAD'].includes(method) ? undefined : Buffer.concat(chunks).toString('utf8');
    const result = await handleRequest(new Request(url, { method, headers, body }), authority, store, services);
+   // Close only after sending the quit response; awaiting server.close() inside
+   // this request would wait for itself and deadlock.
+   if (url.pathname === '/api/quit' && result.ok) closeAfterReply(outgoing,closeServer,reportQuitFailure);
    outgoing.writeHead(result.status, Object.fromEntries(result.headers)); outgoing.end(await result.text()); return;
   }
   const asset = assets[url.pathname];
@@ -68,8 +74,14 @@ const server = createServer(async (incoming, outgoing) => {
  } catch { outgoing.writeHead(500); outgoing.end('Local server error. Check build and data folder.'); }
 });
 server.requestTimeout = 15_000; server.headersTimeout = 10_000;
+let closing: Promise<void> | undefined;
+function closeServer() {
+ closing ??= new Promise<void>((resolve,reject) => { server.close(error => { if (error) reject(error); else resolve(); }); server.closeIdleConnections(); });
+ return closing;
+}
+function reportQuitFailure() { console.error('Quit incomplete. Admission is frozen. Check Docker/storage and retained run holds, then retry Quit or Ctrl+C.'); }
+installShutdownSignals(process,async () => { await runs.shutdown(); await closeServer(); },reportQuitFailure);
 server.on('error', error => { console.error(`Could not start local server: ${error.message}`); process.exitCode = 1; });
 server.listen(port, '127.0.0.1', () => console.log(`Workflow Factory: http://${host}
 Definitions: ${join(directory, 'definitions')}
-Press Ctrl+C to stop. Save changes before stopping.`));
-for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => server.close());
+Use Quit application or Ctrl+C for graceful cancellation and exit. Save definition edits first.`));
