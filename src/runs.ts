@@ -3,7 +3,7 @@ import { validateDefinition, resolveInputs } from './definition.ts';
 import type { Definition } from './definition.ts';
 import { resolveConfigurations } from './configuration.ts';
 import type { CodexConfiguration } from './configuration.ts';
-import type { DockerRuntime } from './runtime.ts';
+import type { DockerRuntime, Resources } from './runtime.ts';
 import { executionOrder, nextBlock, resolveBlockPrompt } from './flow.ts';
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed';
 export interface BlockResult { status: 'running' | 'succeeded' | 'failed'; prompt: string; output?: string; logs: string; error?: string; }
@@ -31,20 +31,26 @@ export class RunService {
   const run = acceptRun(definition, values, configs); this.records.set(run.id, run);
   void this.execute(run); return structuredClone(run);
  }
+ async advance(run: Run, resource: Resources) {
+  let result: BlockResult | undefined;
+  try {
+   const block = nextBlock(run); if (!block) return false;
+   result = beginBlock(run, block.id, resolveBlockPrompt(run, block));
+   const completed = await this.runtime.execute(resource, result.prompt, run.configurations[block.id]!);
+   Object.assign(result, completed, { status: completed.error ? 'failed' : 'succeeded' });
+   if (completed.error) throw new Error(completed.error);
+   return true;
+  } catch (error) {
+   run.error = error instanceof Error ? error.message : 'Execution failed';
+   if (result) { result.status = 'failed'; result.error = run.error; }
+   throw error;
+  }
+ }
  private async execute(run: Run) {
   run.status = 'running';
   try {
    const resource = await this.runtime.prepare(run.id);
-   let block = nextBlock(run);
-   while (block) {
-    const result = beginBlock(run, block.id, resolveBlockPrompt(run, block));
-    try {
-     const completed = await this.runtime.execute(resource, result.prompt, run.configurations[block.id]!);
-     Object.assign(result, completed, { status: completed.error ? 'failed' : 'succeeded' });
-     if (completed.error) throw new Error(completed.error);
-    } catch (error) { result.status = 'failed'; result.error = error instanceof Error ? error.message : 'Execution failed'; throw error; }
-    block = nextBlock(run);
-   }
+   while (await this.advance(run, resource)) { /* each successful transition admits only its successor */ }
   } catch (error) { run.error = error instanceof Error ? error.message : 'Execution failed'; }
   finally {
    run.cleanupPending = true;
