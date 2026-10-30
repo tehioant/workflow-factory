@@ -2,7 +2,9 @@ import type { Definition } from '../definition.ts';
 import { validateDefinition } from '../definition.ts';
 import { mountRunInputs } from './inputs.ts';
 import type { Launch } from './inputs.ts';
-export interface DefinitionAPI { list(): Promise<Definition[]>; save(value: Definition): Promise<Definition>; launch?: Launch; }
+import { mountConfigurations } from './configurations.ts';
+import type { ConfigurationAPI } from './configurations.ts';
+export interface DefinitionAPI { list(): Promise<Definition[]>; save(value: Definition): Promise<Definition>; launch?: Launch; configurations?: ConfigurationAPI; }
 function element<K extends keyof HTMLElementTagNameMap>(root: HTMLElement, tag: K, text = '') {
  const node = root.ownerDocument.createElement(tag); node.textContent = text; return node;
 }
@@ -11,6 +13,7 @@ export async function mountHome(root: HTMLElement, api: DefinitionAPI) {
  const create = element(root, 'button', 'New workflow'); create.dataset.create = '';
  create.onclick = () => mountEditor(root, { version: 1, id: crypto.randomUUID(), name: 'Untitled workflow', blocks: [], connections: [] }, api);
  root.append(create);
+ if (api.configurations) { const settings = element(root, 'button', 'Codex configurations'); settings.onclick = () => { void mountConfigurations(root, api.configurations!, () => { void mountHome(root, api); }); }; root.append(settings); }
  const list = element(root, 'div'); root.append(list);
  try {
   const definitions = await api.list();
@@ -124,6 +127,15 @@ export function mountEditor(root: HTMLElement, definition: Definition, api: Defi
     drawEdges();
    };
    prompt.oninput = () => { block.prompt = prompt.value; status.textContent = 'Unsaved changes'; };
+   const configPicker = element(root, 'select'); configPicker.setAttribute('aria-label', `Codex configuration for ${block.name}`);
+   const empty = element(root, 'option', block.configurationId ? `Unavailable configuration: ${block.configurationId}` : 'Choose Codex configuration…'); empty.value = block.configurationId ?? ''; configPicker.append(empty);
+   if (api.configurations) void api.configurations.list().then(configs => {
+    if (!configPicker.isConnected) return;
+    for (const config of configs) { const option = element(root, 'option', config.name); option.value = config.id; configPicker.append(option); }
+    if (configs.some(c => c.id === block.configurationId)) { empty.value = ''; empty.textContent = 'Choose Codex configuration…'; }
+    configPicker.value = block.configurationId ?? '';
+   }).catch(() => { status.textContent = 'Could not load Codex configurations'; });
+   configPicker.onchange = () => { if (configPicker.value) block.configurationId = configPicker.value; else delete block.configurationId; changed(); };
    const picker = element(root, 'select'); picker.dataset.reference = ''; picker.setAttribute('aria-label', `Input reference for ${block.name}`);
    picker.onchange = () => {
     if (!picker.value) return;
@@ -149,7 +161,7 @@ export function mountEditor(root: HTMLElement, definition: Definition, api: Defi
    };
    const remove = element(root, 'button', 'Remove block'); remove.dataset.removeBlock = '';
    remove.onclick = () => { state.blocks = state.blocks.filter(b => b.id !== block.id); state.connections = state.connections.filter(e => e.from !== block.id && e.to !== block.id); render(); status.textContent = 'Unsaved changes'; };
-   card.append(handle, name, prompt, picker, remove); nodes.append(card);
+   card.append(handle, name, prompt, configPicker, picker, remove); nodes.append(card);
   }
   refreshPickers();
  }

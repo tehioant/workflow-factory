@@ -4,25 +4,26 @@ import { randomUUID } from 'node:crypto';
 import { validateDefinition, validId } from './definition.ts';
 import type { Definition } from './definition.ts';
 export type Disk = Pick<typeof fs, 'mkdir' | 'readFile' | 'readdir' | 'open' | 'rename' | 'unlink'>;
-export class DefinitionStore {
+export class JsonStore<T extends { id: string; name: string }> {
   private directory: string;
   private disk: Disk;
-  constructor(directory: string, disk: Disk = fs) { this.directory = directory; this.disk = disk; }
-  async list(): Promise<Definition[]> {
+  private validate: (value: unknown) => T;
+  constructor(directory: string, validate: (value: unknown) => T, disk: Disk = fs) { this.directory = directory; this.disk = disk; this.validate = validate; }
+  async list(): Promise<T[]> {
     let entries: string[];
     try { entries = await this.disk.readdir(this.directory); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
     const definitions = await Promise.all(entries.filter(name => name.endsWith('.json')).map(name => this.get(name.slice(0, -5))));
     return definitions.sort((a, b) => a.name.localeCompare(b.name));
   }
-  async get(id: string): Promise<Definition> {
+  async get(id: string): Promise<T> {
     validId(id);
-    const value = validateDefinition(JSON.parse(await this.disk.readFile(join(this.directory, `${id}.json`), 'utf8')));
+    const value = this.validate(JSON.parse(await this.disk.readFile(join(this.directory, `${id}.json`), 'utf8')));
     if (value.id !== id) throw new Error('Definition identifier mismatch');
     return value;
   }
-  async save(value: unknown): Promise<Definition> {
-    const definition = validateDefinition(value);
+  async save(value: unknown): Promise<T> {
+    const definition = this.validate(value);
     await this.disk.mkdir(this.directory, { recursive: true, mode: 0o700 });
     const temporary = join(this.directory, `.${randomUUID()}.tmp`);
     try {
@@ -33,4 +34,7 @@ export class DefinitionStore {
     } finally { await this.disk.unlink(temporary).catch(() => {}); }
     return definition;
   }
+}
+export class DefinitionStore extends JsonStore<Definition> {
+  constructor(directory: string, disk: Disk = fs) { super(directory, validateDefinition, disk); }
 }
