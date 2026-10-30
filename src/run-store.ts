@@ -2,14 +2,14 @@ import { validId, validateDefinition } from './definition.ts';
 import { validateConfiguration } from './configuration.ts';
 import type { Run } from './runs.ts';
 export interface RunRepository { list(): Promise<Run[]>; save(run: Run): Promise<Run>; }
-const fields = ['version','id','name','createdAt','definition','inputs','prompts','configurations','status','blocks','error','cleanupPending'];
+const fields = ['version','id','name','createdAt','definition','inputs','prompts','configurations','status','blocks','error','cleanupPending','cancelRequested'];
 function object(value: unknown): value is Record<string,unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
 function text(value: unknown, limit = 4_194_304) { if (typeof value !== 'string' || value.length > limit) throw new Error('Invalid retained text'); }
 function onlyFields(value: object, allowed: string[]) { if (Object.keys(value).some(key => !allowed.includes(key))) throw new Error('Unsupported captured definition field'); }
 export function validateRun(value: unknown): Run {
  const r = value as Run;
  if (!object(r) || Object.keys(r).some(key => !fields.includes(key))) throw new Error('Unsupported run field');
- if (r.version !== 1 || !['queued','running','succeeded','failed'].includes(r.status)) throw new Error('Invalid run');
+ if (r.version !== 1 || !['queued','running','succeeded','failed','cancelled'].includes(r.status)) throw new Error('Invalid run');
  validId(r.id); text(r.name,120); text(r.createdAt,80); if (!Number.isFinite(Date.parse(r.createdAt))) throw new Error('Invalid run date');
  const definition = validateDefinition(r.definition);
  onlyFields(definition,['version','id','name','blocks','connections','inputs','isolation']);
@@ -21,11 +21,12 @@ export function validateRun(value: unknown): Run {
  for (const block of definition.blocks) if (!Object.hasOwn(r.configurations,block.id) || !Object.hasOwn(r.prompts,block.id)) throw new Error('Missing captured block settings');
  for (const [id,config] of Object.entries(r.configurations)) { if (!definition.blocks.some(b => b.id === id)) throw new Error('Unknown captured block'); validateConfiguration(config); }
  for (const [id,result] of Object.entries(r.blocks)) {
-  if (!definition.blocks.some(b => b.id === id) || !object(result) || Object.keys(result).some(key => !['status','prompt','output','logs','error'].includes(key)) || !['running','succeeded','failed'].includes(result.status)) throw new Error('Invalid retained result');
+  if (!definition.blocks.some(b => b.id === id) || !object(result) || Object.keys(result).some(key => !['status','prompt','output','logs','error'].includes(key)) || !['running','succeeded','failed','cancelled'].includes(result.status)) throw new Error('Invalid retained result');
   text(result.prompt); text(result.logs); if (result.output !== undefined) text(result.output); if (result.error !== undefined) text(result.error,2000);
  }
  if (r.error !== undefined) text(r.error,2000);
  if (r.cleanupPending !== undefined && typeof r.cleanupPending !== 'boolean') throw new Error('Invalid cleanup state');
+ if (r.cancelRequested !== undefined && typeof r.cancelRequested !== 'boolean') throw new Error('Invalid cancellation state');
  return structuredClone(r);
 }
 export function interruptedRun(value: Run): Run {

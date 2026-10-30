@@ -198,6 +198,19 @@ errors do not stop other runs, and slot release automatically admits waiting wor
 Both isolation modes keep run-specific networks/workspaces/output records. The
 limit counts workflow runs, not the extra trusted helper containers.
 
+## Cancel a run
+
+Select a queued or running entry and click **Cancel run**. A queued run is removed
+from readiness without starting a container. Active cancellation sets a per-run
+abort flag immediately, stops only its registered agents, prevents successor
+starts and waits for setup/execution to settle before scoped final cleanup. A
+Docker create already in flight is allowed to finish before cleanup (never killed
+mid-create); the next setup operation is refused. The executing Docker CLI is
+abortable and its owned agent is removed separately, not merely the local client.
+Completed outputs remain in the cancelled history. Cancellation requests and slot
+release are idempotent; other runs continue. Cleanup/storage failures keep a
+visible hold rather than pretending resources or terminal history were saved.
+
 ## Durable run history
 
 Runs are atomically saved as private JSON under `runs/` in the same app data folder.
@@ -217,7 +230,7 @@ retained runs. Damaged records fail visibly instead of being silently discarded.
 Previously active/queued records become interrupted failures on abnormal restart,
 never auto-resumed; completed outputs are retained. After a crash, inspect/stop
 only Docker resources named `wf-<run-id>-…` before starting further work; normal
-graceful cancellation/quit is delivered in the lifecycle slices.
+graceful quit is delivered in the next lifecycle slice.
 If a retained run has a cleanup hold, use **Recheck cleanup**. In the same app
 session this retries only its recorded cleanup. After restart it never kills
 discovered resources based on a name alone: manually remove only that run's owned

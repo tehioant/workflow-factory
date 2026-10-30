@@ -15,7 +15,7 @@ runArea.append(workflowFilter, runList, selectedRun); document.body.append(runAr
 const concurrency = document.createElement('p'); runArea.prepend(concurrency);
 void request('/api/runtime-settings').then(settings => { concurrency.textContent = `Global concurrent run limit: ${settings.concurrency}. Excess accepted runs wait in the queue.`; }).catch(() => { concurrency.textContent = 'Could not read concurrency settings.'; });
 let selected: string | undefined;
-function showRun(run: Run) { renderRun(selectedRun,run,{ recheckCleanup: id => request(`/api/runs/${id}/recheck-cleanup`,'POST',{}) }); }
+function showRun(run: Run) { renderRun(selectedRun,run,{ recheckCleanup: id => request(`/api/runs/${id}/recheck-cleanup`,'POST',{}), cancel: id => request(`/api/runs/${id}/cancel`,'POST',{}) }); }
 let timer: ReturnType<typeof setTimeout>;
 async function refreshRuns() {
  try {

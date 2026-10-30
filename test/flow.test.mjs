@@ -40,7 +40,7 @@ test('actual continuation invokes only B from a seeded A-completed record using 
  const config = { model: 'captured-model' };
  const run = { status: 'running', definition: d, inputs: {}, configurations: { b: config }, blocks: { a: { status: 'succeeded', output: 'A final' } } };
  assert.equal(await service.advance(run, resource), true);
- assert.deepEqual(calls, [[resource, 'B reviews A final', config, 'b']]); assert.equal(run.blocks.b.output, 'B final'); assert.equal(run.blocks.b.status, 'succeeded');
+ assert.deepEqual(calls, [[resource, 'B reviews A final', config, 'b', undefined]]); assert.equal(run.blocks.b.output, 'B final'); assert.equal(run.blocks.b.status, 'succeeded');
 });
 
 test('actual continuation records a predecessor failure and never invokes any downstream block or retry', async () => {

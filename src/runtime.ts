@@ -7,7 +7,7 @@ import { validateConfiguration } from './configuration.ts';
 import type { CodexConfiguration } from './configuration.ts';
 import { readSubscriptionAuth } from './auth.ts';
 export interface CommandResult { code: number; stdout: string; stderr: string; }
-export type Command = (args: string[], input?: string, timeout?: number) => Promise<CommandResult>;
+export type Command = (args: string[], input?: string, timeout?: number, signal?: AbortSignal) => Promise<CommandResult>;
 export interface Resources { id: string; network: string; egress: string; agent: string; proxy: string; workspace: string; credentials: string; image: string; uid: string; isolation?: 'workflow' | 'block'; agents?: string[]; }
 export function blockResources(r: Resources, blockId: string): Resources {
  validId(blockId);
@@ -15,8 +15,8 @@ export function blockResources(r: Resources, blockId: string): Resources {
 }
 export function dockerCommand(socket = process.env.WORKFLOW_FACTORY_DOCKER_SOCKET || (process.platform === 'darwin' ? join(homedir(), '.docker/run/docker.sock') : '/var/run/docker.sock')): Command {
  if (!isAbsolute(socket) || /[\r\n\0]/.test(socket)) throw new Error('Docker socket must be a local absolute path');
- return (args, input, timeout = 20000) => new Promise((resolveResult, reject) => {
-  const child = spawn('docker', ['--host', `unix://${socket}`, ...args], { shell: false, env: { PATH: process.env.PATH, HOME: homedir() }, stdio: ['pipe','pipe','pipe'], timeout, killSignal: 'SIGKILL' });
+ return (args, input, timeout = 20000, signal) => new Promise((resolveResult, reject) => {
+  const child = spawn('docker', ['--host', `unix://${socket}`, ...args], { shell: false, env: { PATH: process.env.PATH, HOME: homedir() }, stdio: ['pipe','pipe','pipe'], timeout, killSignal: 'SIGKILL', ...(signal ? { signal } : {}) });
   let stdout = '', stderr = '', size = 0, overflow = false;
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   const capture = (target: 'stdout' | 'stderr', bytes: string) => {
@@ -86,13 +86,17 @@ export class DockerRuntime {
   this.command = command;
   this.credentials = credentials;
  }
- private async checked(args: string[], message: string) {
-  const result = await this.command(args); if (result.code !== 0) throw new Error(message); return result.stdout;
+ private async checked(args: string[], message: string, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  // Do not kill setup's Docker client mid-create: await its daemon reply first,
+  // so final cleanup cannot race a late container/network creation.
+  const result = await this.command(args); signal?.throwIfAborted(); if (result.code !== 0) throw new Error(message); return result.stdout;
  }
- async prepare(id: string, isolation: 'workflow' | 'block' = 'workflow'): Promise<Resources> {
+ async prepare(id: string, isolation: 'workflow' | 'block' = 'workflow', signal?: AbortSignal): Promise<Resources> {
+  signal?.throwIfAborted();
   validId(id); if (this.resources.has(id)) throw new Error('Run sandbox already exists');
-  await requireRuntime(this.command);
-  const imageInfo = JSON.parse(await this.checked(['image', 'inspect', 'workflow-factory-runtime:local'], 'Trusted runtime image missing. Build it explicitly: docker build -f runtime/Dockerfile -t workflow-factory-runtime:local .'))[0];
+  await requireRuntime(this.command); signal?.throwIfAborted();
+  const imageInfo = JSON.parse(await this.checked(['image', 'inspect', 'workflow-factory-runtime:local'], 'Trusted runtime image missing. Build it explicitly: docker build -f runtime/Dockerfile -t workflow-factory-runtime:local .',signal))[0];
   if (imageInfo?.Config?.Labels?.['org.workflow-factory.runtime'] !== '1' || imageInfo?.Config?.Labels?.['org.workflow-factory.codex'] !== '0.166.0' || !/^sha256:[a-f0-9]{64}$/.test(imageInfo.Id)) throw new Error('Build the checked-in trusted runtime image; unsupported image refused');
   const uid = process.getuid?.() ?? 1000, gid = process.getgid?.() ?? 1000;
   if (uid === 0) throw new Error('Run Workflow Factory as a non-root user');
@@ -100,32 +104,34 @@ export class DockerRuntime {
   const r: Resources = { id, network: `${key}-private`, egress: `${key}-egress`, agent: `${key}-agent`, proxy: `${key}-proxy`, workspace: join(this.root, id, 'workspace'), credentials: join(this.root, id, 'credentials'), image: imageInfo.Id, uid: `${uid}:${gid}`, isolation, agents: isolation === 'workflow' ? [`${key}-agent`] : [] };
   // Register before any owned resource creation so failure cleanup has exact targets.
   this.resources.set(id, r);
-  const auth = await this.credentials();
+  const auth = await this.credentials(); signal?.throwIfAborted();
   this.secrets.set(id, Object.values(JSON.parse(auth).tokens));
-  await fs.mkdir(join(this.root, id), { recursive: true, mode: 0o700 });
-  await fs.mkdir(r.workspace, { mode: 0o700 }); await fs.mkdir(r.credentials, { mode: 0o700 });
-  await fs.writeFile(join(r.credentials, 'auth.json'), auth, { mode: 0o600, flag: 'wx' });
-  await this.checked(['network', 'create', '--internal', '--ipv6=false', '--opt', 'com.docker.network.bridge.gateway_mode_ipv4=isolated', r.network], 'Docker cannot create the required isolated network. No bridge fallback is allowed.');
-  verifyPrivateNetwork(JSON.parse(await this.checked(['network', 'inspect', r.network], 'Could not inspect private network'))[0]);
-  await this.checked(['network', 'create', '--ipv6=false', r.egress], 'Could not create scoped egress network');
-  await this.checked(['run', '-d', '--name', r.proxy, '--network', r.egress, '--user', r.uid, ...hardened, r.image, 'node', '/opt/workflow-factory/egress.mjs'], 'Could not start the trusted egress helper');
-  await this.checked(['network', 'connect', '--alias', 'egress', r.network, r.proxy], 'Could not attach trusted egress helper');
-  if (isolation === 'workflow') await this.startAgent(r);
+  await fs.mkdir(join(this.root, id), { recursive: true, mode: 0o700 }); signal?.throwIfAborted();
+  await fs.mkdir(r.workspace, { mode: 0o700 }); signal?.throwIfAborted(); await fs.mkdir(r.credentials, { mode: 0o700 }); signal?.throwIfAborted();
+  await fs.writeFile(join(r.credentials, 'auth.json'), auth, { mode: 0o600, flag: 'wx' }); signal?.throwIfAborted();
+  await this.checked(['network', 'create', '--internal', '--ipv6=false', '--opt', 'com.docker.network.bridge.gateway_mode_ipv4=isolated', r.network], 'Docker cannot create the required isolated network. No bridge fallback is allowed.',signal);
+  verifyPrivateNetwork(JSON.parse(await this.checked(['network', 'inspect', r.network], 'Could not inspect private network',signal))[0]);
+  await this.checked(['network', 'create', '--ipv6=false', r.egress], 'Could not create scoped egress network',signal);
+  await this.checked(['run', '-d', '--name', r.proxy, '--network', r.egress, '--user', r.uid, ...hardened, r.image, 'node', '/opt/workflow-factory/egress.mjs'], 'Could not start the trusted egress helper',signal);
+  await this.checked(['network', 'connect', '--alias', 'egress', r.network, r.proxy], 'Could not attach trusted egress helper',signal);
+  if (isolation === 'workflow') await this.startAgent(r,signal);
   return r;
  }
- private async startAgent(r: Resources) {
-  await this.checked(agentArguments(r), 'Could not start the restricted Codex container');
-  const inspected = JSON.parse(await this.checked(['inspect', r.agent], 'Could not inspect agent containment'))[0];
+ private async startAgent(r: Resources, signal?: AbortSignal) {
+  await this.checked(agentArguments(r), 'Could not start the restricted Codex container',signal);
+  const inspected = JSON.parse(await this.checked(['inspect', r.agent], 'Could not inspect agent containment',signal))[0];
   if (inspected?.HostConfig?.NetworkMode !== r.network || Object.keys(inspected?.NetworkSettings?.Networks ?? {}).join() !== r.network) throw new Error('Agent network containment was not honored; execution refused');
  }
- async execute(r: Resources, prompt: string, config: CodexConfiguration, blockId = 'single') {
+ async execute(r: Resources, prompt: string, config: CodexConfiguration, blockId = 'single', signal?: AbortSignal) {
+  signal?.throwIfAborted();
   if (this.resources.get(r.id) !== r) throw new Error('Unowned run sandbox');
   const agent = blockResources(r, blockId);
   if (r.isolation === 'block') { r.agents ??= []; r.agents.push(agent.agent); }
   let parsed: ReturnType<typeof parseCodexOutput> | undefined;
   try {
-  if (r.isolation === 'block') await this.startAgent(agent);
-  const result = await this.command(['exec', '-i', '--workdir', '/workspace', agent.agent, ...codexArguments(config)], prompt, 600000);
+  if (r.isolation === 'block') await this.startAgent(agent,signal);
+  signal?.throwIfAborted();
+  const result = await this.command(['exec', '-i', '--workdir', '/workspace', agent.agent, ...codexArguments(config)], prompt, 600000,signal);
   // Codex may refresh its staged login. Include refreshed values in output redaction,
   // but never copy them back over the host's auth.json.
   const refreshed = JSON.parse(await this.credentials(join(r.credentials, 'auth.json')));
@@ -139,6 +145,10 @@ export class DockerRuntime {
     catch (error) { if (parsed) parsed.error = 'Block container cleanup failed; retained output is available, but no successor will start.'; else throw error; }
    }
   }
+ }
+ async stop(id: string) {
+  const r = this.resources.get(id); if (!r) return;
+  for (const agent of [...(r.agents ?? [r.agent])]) await removeContainer(agent,this.command);
  }
  async cleanup(id: string) {
   const r = this.resources.get(id); if (!r) return;
