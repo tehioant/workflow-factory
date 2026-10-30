@@ -105,7 +105,7 @@ image ID and checks its labels, not a user-selectable image. Configure ChatGPT f
 login as above, create a workflow with one block or a connected chain, choose each configuration,
 and use **Run inputs… → Launch run**. Its status, final answer, event-kind diagnostics
 and actionable errors appear below the editor. There is no retry or paid fallback.
-This slice accepts one active run; concurrency arrives in a later slice.
+Runs execute concurrently up to the configured global limit; excess runs queue visibly.
 Connect A → B and select A's **final
 response** in B's prompt-reference picker to insert `{{blocks.A_ID.final}}`.
 Only earlier connected blocks may be referenced; disconnected graphs, forks/joins,
@@ -184,6 +184,20 @@ bodies to 1 MiB, and disables caching/framing. Do not proxy it publicly. These
 controls are not an OS sandbox or protection from software running as your user.
 If you restart the server while a page is open, reload to obtain its new session.
 
+## Concurrency and queue
+
+Set `WORKFLOW_FACTORY_CONCURRENCY=2 npm start` to choose the app-wide simultaneous
+run limit (default 2, accepted integers 1–8). The run pane displays this limit and
+each queued/running/terminal status. Submit multiple runs of the same or different
+workflows with separate input values; queued runs already have their immutable
+definition/input/configuration snapshot and durable record at acceptance. Edits
+while queued cannot change them. Ready admissions are dispatched in acceptance
+order when a slot is free. A slot remains occupied through resource cleanup and
+terminal persistence; a cleanup hold consumes its slot until reconciled. Runtime
+errors do not stop other runs, and slot release automatically admits waiting work.
+Both isolation modes keep run-specific networks/workspaces/output records. The
+limit counts workflow runs, not the extra trusted helper containers.
+
 ## Durable run history
 
 Runs are atomically saved as private JSON under `runs/` in the same app data folder.
@@ -231,5 +245,4 @@ is test-only. `src/definition.ts` owns the persisted contract; `src/store.ts`
 owns atomic storage; `src/http.ts` owns the focused API; `src/server.ts` adapts
 Node HTTP and filesystem assets; `src/public/` owns the vanilla DOM/SVG editor.
 Execution uses `src/runs.ts` admission and `src/runtime.ts` Docker adapters plus
-the trusted `runtime/egress.mjs` helper. No distribution or concurrent
-scheduler features are included in this increment.
+the trusted `runtime/egress.mjs` helper. No distribution channel is included.

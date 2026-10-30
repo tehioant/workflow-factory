@@ -12,6 +12,8 @@ const runArea = document.createElement('aside'); const runList = document.create
 const workflowFilter = document.createElement('select'); workflowFilter.setAttribute('aria-label', 'Run history workflow');
 workflowFilter.onchange = () => { selected = undefined; selectedRun.replaceChildren(); };
 runArea.append(workflowFilter, runList, selectedRun); document.body.append(runArea);
+const concurrency = document.createElement('p'); runArea.prepend(concurrency);
+void request('/api/runtime-settings').then(settings => { concurrency.textContent = `Global concurrent run limit: ${settings.concurrency}. Excess accepted runs wait in the queue.`; }).catch(() => { concurrency.textContent = 'Could not read concurrency settings.'; });
 let selected: string | undefined;
 function showRun(run: Run) { renderRun(selectedRun,run,{ recheckCleanup: id => request(`/api/runs/${id}/recheck-cleanup`,'POST',{}) }); }
 let timer: ReturnType<typeof setTimeout>;
