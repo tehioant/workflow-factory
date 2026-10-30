@@ -1,6 +1,8 @@
 import type { Definition } from '../definition.ts';
 import { validateDefinition } from '../definition.ts';
-export interface DefinitionAPI { list(): Promise<Definition[]>; save(value: Definition): Promise<Definition>; }
+import { mountRunInputs } from './inputs.ts';
+import type { Launch } from './inputs.ts';
+export interface DefinitionAPI { list(): Promise<Definition[]>; save(value: Definition): Promise<Definition>; launch?: Launch; }
 function element<K extends keyof HTMLElementTagNameMap>(root: HTMLElement, tag: K, text = '') {
  const node = root.ownerDocument.createElement(tag); node.textContent = text; return node;
 }
@@ -27,10 +29,33 @@ export function mountEditor(root: HTMLElement, definition: Definition, api: Defi
  view.onbeforeunload = event => { if (isDirty()) { event.preventDefault(); event.returnValue = ''; } };
  root.innerHTML = `<header><button data-home>← Workflows</button><input aria-label="Workflow name" maxlength="120"><button data-save>Save workflow</button><span role="status" aria-live="polite">Not saved this session</span></header>
  <aside><button data-add draggable="true">＋ AI block</button><p>Drag onto the canvas, or click to add. Move blocks by their handle; arrow keys move a focused handle.</p></aside>
+ <section><h2>Workflow inputs</h2><div data-inputs></div><button data-add-input>Add text input</button><button data-run>Run inputs…</button><div data-run-form></div></section>
  <form data-connect><label>From <select aria-label="From block"></select></label><span> → </span><label>To <select aria-label="To block"></select></label><button>Connect blocks</button></form><ul class="edges"></ul>
  <div class="viewport"><div class="canvas" aria-label="Workflow canvas"><svg aria-label="Connections"></svg><div class="nodes"></div></div></div>`;
  const status = root.querySelector<HTMLElement>('[role="status"]')!;
  const save = root.querySelector<HTMLButtonElement>('[data-save]')!;
+ const changed = () => { status.textContent = 'Unsaved changes'; root.querySelector('[data-run-form]')!.replaceChildren(); };
+ function renderInputs() {
+  const list = root.querySelector('[data-inputs]')!; list.replaceChildren();
+  for (const input of state.inputs ?? []) {
+   const row = element(root, 'div');
+   const name = element(root, 'input'); name.value = input.name; name.setAttribute('aria-label', 'Input name'); name.maxLength = 80;
+   name.oninput = () => { input.name = name.value; changed(); refreshPickers(); };
+   const required = element(root, 'input'); required.type = 'checkbox'; required.checked = input.required;
+   const label = element(root, 'label', 'Required'); label.append(required);
+   required.onchange = () => { input.required = required.checked; changed(); };
+   const defaults = element(root, 'textarea'); defaults.value = input.default ?? ''; defaults.maxLength = 100000; defaults.setAttribute('aria-label', 'Default text');
+   defaults.oninput = () => { input.default = defaults.value; changed(); };
+   const remove = element(root, 'button', 'Remove input'); remove.onclick = () => { state.inputs = state.inputs!.filter(i => i !== input); changed(); renderInputs(); refreshPickers(); };
+   row.append(name, label, defaults, remove); list.append(row);
+  }
+ }
+ root.querySelector<HTMLButtonElement>('[data-add-input]')!.onclick = () => {
+  state.inputs ??= []; if (state.inputs.length >= 50) { status.textContent = 'Maximum 50 text inputs'; return; }
+  let index = 1; while (state.inputs.some(i => i.name === `input${index}`)) index++;
+  state.inputs.push({ name: `input${index}`, type: 'text', required: false }); changed(); renderInputs(); refreshPickers();
+ };
+ root.querySelector<HTMLButtonElement>('[data-run]')!.onclick = () => mountRunInputs(root.querySelector<HTMLElement>('[data-run-form]')!, state, api.launch);
  save.onclick = async () => {
   save.disabled = true; status.textContent = 'Saving…';
   try {
@@ -38,7 +63,7 @@ export function mountEditor(root: HTMLElement, definition: Definition, api: Defi
    await api.save(snapshot); savedJSON = JSON.stringify(snapshot);
    status.textContent = isDirty() ? 'Saved earlier changes; newer changes are unsaved' : 'Saved to disk';
   }
-  catch { status.textContent = 'Save failed. Your changes are still here. Check properties/server and retry.'; }
+  catch (error) { status.textContent = `Save failed. ${error instanceof Error ? error.message : 'Check properties/server and retry.'} Your changes are still here.`; }
   finally { save.disabled = false; }
  };
  const canvas = root.querySelector<HTMLElement>('.canvas')!;
@@ -72,8 +97,15 @@ export function mountEditor(root: HTMLElement, definition: Definition, api: Defi
   try { const next = validateDefinition({ ...state, connections: [...state.connections, { from, to }] }); state.connections = next.connections; drawEdges(); status.textContent = 'Unsaved changes'; }
   catch (error) { status.textContent = error instanceof Error ? error.message : 'Invalid connection'; }
  };
+ function refreshPickers() {
+  for (const picker of root.querySelectorAll<HTMLSelectElement>('[data-reference]')) {
+   picker.replaceChildren(element(root, 'option', 'Insert input reference…'));
+   picker.options[0]!.value = '';
+   for (const input of state.inputs ?? []) { const option = element(root, 'option', input.name); option.value = input.name; picker.append(option); }
+  }
+ }
  function render() {
-  for (const select of root.querySelectorAll<HTMLSelectElement>('select')) {
+  for (const select of root.querySelectorAll<HTMLSelectElement>('[data-connect] select')) {
    select.replaceChildren();
    for (const block of state.blocks) { const option = element(root, 'option', block.name); option.value = block.id; select.append(option); }
   }
@@ -88,10 +120,17 @@ export function mountEditor(root: HTMLElement, definition: Definition, api: Defi
    name.oninput = () => {
     block.name = name.value; status.textContent = 'Unsaved changes';
     prompt.setAttribute('aria-label', `Prompt for ${block.name}`);
-    for (const option of root.querySelectorAll<HTMLOptionElement>('select option')) if (option.value === block.id) option.textContent = block.name;
+    for (const option of root.querySelectorAll<HTMLOptionElement>('[data-connect] select option')) if (option.value === block.id) option.textContent = block.name;
     drawEdges();
    };
    prompt.oninput = () => { block.prompt = prompt.value; status.textContent = 'Unsaved changes'; };
+   const picker = element(root, 'select'); picker.dataset.reference = ''; picker.setAttribute('aria-label', `Input reference for ${block.name}`);
+   picker.onchange = () => {
+    if (!picker.value) return;
+    const reference = `{{inputs.${picker.value}}}`;
+    prompt.setRangeText(reference, prompt.selectionStart, prompt.selectionEnd, 'end');
+    block.prompt = prompt.value; picker.value = ''; changed(); prompt.focus();
+   };
    function move(x: number, y: number) {
     block.position = { x: Math.max(0, Math.min(3000, x)), y: Math.max(0, Math.min(2000, y)) };
     card.style.left = `${block.position.x}px`; card.style.top = `${block.position.y}px`; drawEdges(); status.textContent = 'Unsaved changes';
@@ -110,8 +149,9 @@ export function mountEditor(root: HTMLElement, definition: Definition, api: Defi
    };
    const remove = element(root, 'button', 'Remove block'); remove.dataset.removeBlock = '';
    remove.onclick = () => { state.blocks = state.blocks.filter(b => b.id !== block.id); state.connections = state.connections.filter(e => e.from !== block.id && e.to !== block.id); render(); status.textContent = 'Unsaved changes'; };
-   card.append(handle, name, prompt, remove); nodes.append(card);
+   card.append(handle, name, prompt, picker, remove); nodes.append(card);
   }
+  refreshPickers();
  }
  function add(x: number, y: number) {
   if (state.blocks.length >= 200) { status.textContent = 'Maximum 200 blocks per definition'; return; }
@@ -126,6 +166,6 @@ export function mountEditor(root: HTMLElement, definition: Definition, api: Defi
   event.preventDefault(); if (event.dataTransfer?.getData('application/workflow-block') !== 'ai') return;
   const box = canvas.getBoundingClientRect(); add(event.clientX - box.left, event.clientY - box.top);
  };
- render();
+ renderInputs(); render();
  return { snapshot: () => structuredClone(state) };
 }
