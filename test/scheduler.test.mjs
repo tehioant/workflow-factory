@@ -41,3 +41,17 @@ test('acceptance captures separate queued values/configuration/definitions for s
  assert.equal(a.status,'queued'); assert.equal(a.inputs.topic,'A'); assert.equal(b.inputs.topic,'B'); assert.equal(c.definition.id,'other');
  assert.equal(b.definition.isolation,'block'); assert.equal(a.configurations.a.model,'initial'); assert.equal(b.definition.blocks[0].prompt,'Summarize this');
 });
+
+test('actual settled-execution callback releases a prepared completed slot and automatically starts waiting work', async () => {
+ const { service,starts } = scheduler(1); const done = { id:'done',status:'succeeded' };
+ service.records.set('done',done); service.slots.add('done'); service.records.set('waiting',queued('waiting')); service.ready.add('waiting');
+ await service.settleExecution(done,Promise.resolve());
+ assert.deepEqual(starts,['waiting']); assert.deepEqual([...service.slots],['waiting']);
+});
+
+test('rejected terminal persistence retains its occupied slot and does not dispatch waiting work', async () => {
+ const { service,starts } = scheduler(1); const done = { id:'done',status:'failed',cleanupPending:false };
+ service.records.set('done',done); service.slots.add('done'); service.records.set('waiting',queued('waiting')); service.ready.add('waiting');
+ await service.settleExecution(done,Promise.reject(new Error('Terminal persistence failed')));
+ assert.deepEqual(starts,[]); assert.equal(done.cleanupPending,true); assert.deepEqual([...service.slots],['done']);
+});

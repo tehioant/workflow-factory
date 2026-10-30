@@ -68,8 +68,11 @@ export class RunService {
   const run = [...this.records.values()].find(run => run.status === 'queued' && this.ready.has(run.id));
   if (!run) return false;
   this.ready.delete(run.id); this.slots.add(run.id); run.status = 'running';
-  void this.execute(run).catch(() => { run.status = 'failed'; run.error = 'Run history could not be saved. Execution stopped and cleanup was attempted.'; }).finally(() => { this.releaseSlot(run.id); });
+  void this.settleExecution(run,this.execute(run));
   return true;
+ }
+ settleExecution(run: Run, execution: Promise<void>) {
+  return execution.catch(() => { run.status = 'failed'; run.cleanupPending = true; run.error = 'Terminal run history could not be saved. Cleanup was attempted; fix storage and recheck the retained cleanup/persistence hold.'; }).finally(() => { this.releaseSlot(run.id); });
  }
  private pump() { while (this.dispatchOne()) { /* slots are reserved synchronously before async execution */ } }
  releaseSlot(id: string) {
