@@ -18,6 +18,7 @@ const assets: Record<string, [string, string]> = {
  '/style.css': ['public/style.css', 'text/css; charset=utf-8'],
  '/app.js': ['public/app.js', 'text/javascript; charset=utf-8'],
  '/editor.js': ['public/editor.js', 'text/javascript; charset=utf-8'],
+ '/inputs.js': ['public/inputs.js', 'text/javascript; charset=utf-8'],
  '/definition.js': ['definition.js', 'text/javascript; charset=utf-8'],
 };
 const server = createServer(async (incoming, outgoing) => {

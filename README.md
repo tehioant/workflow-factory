@@ -2,7 +2,7 @@
 
 A local workflow definition editor for Linux and macOS. Create saved workflows,
 drag AI blocks onto a canvas, edit their names/prompts, and connect them in order.
-**This first increment edits definitions only. It does not run agents.**
+**This increment edits definitions and validates run inputs. It does not run agents.**
 
 ## Start from source
 
@@ -45,6 +45,19 @@ PORT=4320 WORKFLOW_FACTORY_DATA_DIR="$HOME/workflow-factory-data" npm start
 
 ## Persistence and local access
 
+### Reusable text inputs
+
+Use **Add text input** to declare a name (letters, digits and underscores, starting
+with a letter), required/optional status and an optional default. Each prompt has
+an input-reference picker that inserts `{{inputs.name}}` at the caret, not its
+current value. Renaming/removing a referenced input requires updating its prompts;
+dangling references are rejected on save and input validation.
+
+**Run inputs…** opens a separate value form. Required values cannot be blank;
+defaults fill the form and optional blank values resolve to empty text. Values
+and resolved prompts never overwrite the definition. **Validate run inputs**
+only validates in this increment: it does not simulate execution or create a run.
+
 Definitions use versioned JSON records with block IDs, type, name, prompt,
 positions, and directed connections. Files live outside the checkout:
 
@@ -85,6 +98,6 @@ The runtime has zero dependencies. TypeScript builds native ES modules; happy-do
 is test-only. `src/definition.ts` owns the persisted contract; `src/store.ts`
 owns atomic storage; `src/http.ts` owns the focused API; `src/server.ts` adapts
 Node HTTP and filesystem assets; `src/public/` owns the vanilla DOM/SVG editor.
-Future inputs, execution settings and runs build on these boundaries, not on
-browser-local persistence. No CI, distribution, execution, input-reference,
-configuration, history or scheduler features are included in this increment.
+Future execution settings and runs build on these boundaries, not on
+browser-local persistence. No distribution, execution, configuration, history
+or scheduler features are included in this increment.
