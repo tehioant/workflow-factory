@@ -2,13 +2,13 @@
 
 A local workflow definition editor for Linux and macOS. Create saved workflows,
 drag AI blocks onto a canvas, edit their names/prompts, and connect them in order.
-**This increment edits definitions and validates run inputs. It does not run agents.**
+This increment can execute one Codex AI block in a constrained local container.
 
 ## Start from source
 
 Prerequisites: Node.js **24 or newer**, npm, and a current browser (Firefox,
 Chrome/Chromium, or Safari). No Electron, bundled browser, Rust, runtime npm
-packages, container daemon, model credentials, or model calls are needed.
+packages are needed for editing. Execution additionally needs the runtime/login below.
 
 ```sh
 npm ci
@@ -61,7 +61,7 @@ Use an existing Codex CLI with `cli_auth_credentials_store = "file"` in its
 are supported; keyring-only and API-key logins are refused with setup guidance.
 The browser gets availability/guidance only, never credentials. Availability does
 not validate token expiry or entitlement. The runtime integration will stage only
-these credentials separately from the workspace; it must never mount the host home
+these credentials separately from the workspace; it never mounts the host home
 or overwrite host login after refresh. This host has no authenticated Codex CLI;
 authenticated execution is unverified, not simulated.
 
@@ -77,8 +77,72 @@ dangling references are rejected on save and input validation.
 
 **Run inputs…** opens a separate value form. Required values cannot be blank;
 defaults fill the form and optional blank values resolve to empty text. Values
-and resolved prompts never overwrite the definition. **Validate run inputs**
-only validates in this increment: it does not simulate execution or create a run.
+and resolved prompts never overwrite the definition. **Launch run** captures the
+current definition (including unsaved edits), inputs and resolved nonsecret settings.
+
+## Executing a block
+
+Install and start Docker Engine on Linux or Docker Desktop's Linux engine on macOS
+separately. Docker **28+** with internal isolated bridge support is required; the
+app inspects the created network and refuses unsupported engines instead of using
+an unrestricted bridge. Access to Docker is privileged host authority: use only
+your own trusted local daemon. Remote TCP/SSH endpoints are not supported.
+The default socket is `/var/run/docker.sock` on Linux and `~/.docker/run/docker.sock`
+on macOS. For another local socket, set `WORKFLOW_FACTORY_DOCKER_SOCKET` to its
+absolute path (for example a Linux Docker Desktop/rootless socket). Run the app as
+a non-root user. Share its data directory with Docker Desktop when prompted.
+
+Build the trusted image explicitly from this checkout; the app never installs,
+builds, pulls or starts a daemon for you:
+
+```sh
+docker build -f runtime/Dockerfile -t workflow-factory-runtime:local .
+```
+
+The image pins `@openai/codex@0.166.0`; the Node 24 Debian base tag is mutable and
+should be rebuilt deliberately for OS fixes. Local execution pins the inspected
+image ID and checks its labels, not a user-selectable image. Configure ChatGPT file
+login as above, create a workflow with exactly one block, choose its configuration,
+and use **Run inputs… → Launch run**. Its status, final answer, event-kind diagnostics
+and actionable errors appear below the editor. There is no retry or paid fallback.
+This slice accepts one active run; multiple blocks, history and concurrency arrive
+in later slices. Runs currently last only for the app session.
+
+Each run gets a private workspace and separate credential staging under
+`run-resources/<run-id>/`. Only those two directories are mounted. The agent is
+non-root, read-only-rootfs, capability-free, no-new-privileges, with private IPC,
+bounded tmpfs/PIDs/memory/CPU, no published ports, no home mount and no Docker socket.
+Its sole network is an inspected internal **isolated** bridge, not ordinary Docker
+bridge networking. A trusted per-run CONNECT helper is the only external route;
+it admits exact `chatgpt.com`, `api.openai.com`, `auth.openai.com` TLS destinations
+on port 443, rejects all IANA special-purpose/reserved IPv4 DNS answers and connects
+the vetted IP only after the first TLS ClientHello SNI equals the CONNECT hostname.
+Non-TLS, absent/encrypted SNI and fragmented/oversized ClientHello records fail
+closed. The helper does not decrypt application traffic or inspect encrypted HTTP
+headers; it enforces the destination IP and clear TLS hostname, not URL paths.
+IPv6 is disabled. Proxy environment variables are convenience, not enforcement:
+the outer network removes the direct route. The helper has a separate per-run
+egress bridge and no workspace/credential mounts. No general web/package egress is
+offered. Backend hostname changes require a reviewed helper change.
+
+Workflow isolation means one **agent** container, plus one trusted infrastructure
+helper per run; it does not mean one total container. Codex's inner
+`danger-full-access` is used only behind that enforced outer boundary. A container
+is not a VM security guarantee; a compromised daemon/kernel is outside this model.
+Workspace disk consumption is not quota-enforced: monitor the private data volume.
+Commands use argv with `shell:false`, clean environment and prompt stdin. The last
+completed JSONL `agent_message` is the answer; event kinds are diagnostics. Tool
+output/raw stderr are withheld to avoid credential disclosure; staged token strings
+are redacted from final output, including refreshed tokens. Auth staging is deleted
+only after agent/helper removal; refreshed login never overwrites the host login.
+Workspaces and completed in-memory results survive container removal. Cleanup
+failure is visible; if Docker becomes unavailable, staging remains owner-private
+until the owned containers can be stopped safely. Do not quit during an active run
+in this increment; graceful cancellation/quit comes later.
+
+The image build, live containment, authenticated model execution and native macOS
+runtime behaviour have **not** been exercised. Focused mocked tests are not proof
+of those live properties. No container/model smoke campaign is part of CI.
 
 Definitions use versioned JSON records with block IDs, type, name, prompt,
 positions, and directed connections. Files live outside the checkout:
@@ -120,6 +184,6 @@ The runtime has zero dependencies. TypeScript builds native ES modules; happy-do
 is test-only. `src/definition.ts` owns the persisted contract; `src/store.ts`
 owns atomic storage; `src/http.ts` owns the focused API; `src/server.ts` adapts
 Node HTTP and filesystem assets; `src/public/` owns the vanilla DOM/SVG editor.
-Future execution settings and runs build on these boundaries, not on
-browser-local persistence. No distribution, execution, history
-or scheduler features are included in this increment.
+Execution uses `src/runs.ts` admission and `src/runtime.ts` Docker adapters plus
+the trusted `runtime/egress.mjs` helper. No distribution, history or concurrent
+scheduler features are included in this increment.
