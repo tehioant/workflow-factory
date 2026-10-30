@@ -43,6 +43,28 @@ PORT=4320 WORKFLOW_FACTORY_DATA_DIR="$HOME/workflow-factory-data" npm start
    home; a failed save keeps the working copy available to retry. Stopping the
    server cannot save unsaved browser edits.
 
+## Codex configurations and authentication
+
+From home choose **Codex configurations**, create a named model configuration,
+then select it on each AI block. Supported settings are an explicit model ID
+and reasoning effort (low/medium/high). Model availability depends on your ChatGPT
+subscription; a saved model name is not proof of entitlement. Configuration files
+use the same private atomic store under `configurations/`. Resolution clones
+non-secret settings per block so later configuration edits cannot alter snapshots.
+No arbitrary CLI flags, API keys, custom providers or billing fallback are accepted.
+
+The server-only credential provider reads just `$CODEX_HOME/auth.json` (default
+`~/.codex/auth.json`), never the rest of the home directory or Hermes credentials.
+Use an existing Codex CLI with `cli_auth_credentials_store = "file"` in its
+`config.toml`, run `codex login` using ChatGPT, then `chmod 600 ~/.codex/auth.json`
+(adjust for CODEX_HOME). Only owner-private regular files and ChatGPT token login
+are supported; keyring-only and API-key logins are refused with setup guidance.
+The browser gets availability/guidance only, never credentials. Availability does
+not validate token expiry or entitlement. The runtime integration will stage only
+these credentials separately from the workspace; it must never mount the host home
+or overwrite host login after refresh. This host has no authenticated Codex CLI;
+authenticated execution is unverified, not simulated.
+
 ## Persistence and local access
 
 ### Reusable text inputs
@@ -99,5 +121,5 @@ is test-only. `src/definition.ts` owns the persisted contract; `src/store.ts`
 owns atomic storage; `src/http.ts` owns the focused API; `src/server.ts` adapts
 Node HTTP and filesystem assets; `src/public/` owns the vanilla DOM/SVG editor.
 Future execution settings and runs build on these boundaries, not on
-browser-local persistence. No distribution, execution, configuration, history
+browser-local persistence. No distribution, execution, history
 or scheduler features are included in this increment.

@@ -1,6 +1,7 @@
 export interface AIBlock {
   id: string; type: 'ai'; name: string; prompt: string;
   position: { x: number; y: number };
+  configurationId?: string;
 }
 export interface Definition {
   version: 1; id: string; name: string; blocks: AIBlock[];
@@ -30,6 +31,7 @@ export function validateDefinition(value: unknown): Definition {
   for (const b of d.blocks) {
     validId(b.id);
     if (b.type !== 'ai') throw new Error('Only AI blocks are supported');
+    if (b.configurationId !== undefined) validId(b.configurationId);
     text(b.name, 120, true); text(b.prompt, 100_000);
     for (const match of b.prompt.matchAll(/\{\{inputs\.([^{}]*)\}\}/g)) if (!names.has(match[1]!)) throw new Error(`Unknown workflow input: ${match[1]}`);
     if (!b.position || !Number.isFinite(b.position.x) || !Number.isFinite(b.position.y) || b.position.x < 0 || b.position.y < 0 || b.position.x > 3000 || b.position.y > 2000) throw new Error('Invalid canvas position');

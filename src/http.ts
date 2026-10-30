@@ -1,5 +1,7 @@
 import { validateDefinition, validId } from './definition.ts';
 import type { Definition } from './definition.ts';
+import { validateConfiguration } from './configuration.ts';
+import type { CodexConfiguration } from './configuration.ts';
 export interface Authority { host: string; token: string; }
 export interface DefinitionRepository { list(): Promise<Definition[]>; get(id: string): Promise<Definition>; save(value: unknown): Promise<Definition>; }
 export function authorize(request: Request, authority: Authority): boolean {
@@ -9,10 +11,24 @@ export function authorize(request: Request, authority: Authority): boolean {
   && request.headers.get('x-workflow-token') === authority.token
   && (!request.headers.has('sec-fetch-site') || request.headers.get('sec-fetch-site') === 'same-origin');
 }
-export async function handleRequest(request: Request, authority: Authority, store: DefinitionRepository): Promise<Response> {
+export interface ConfigurationRepository { list(): Promise<CodexConfiguration[]>; save(value: unknown): Promise<CodexConfiguration>; }
+export interface Services { configurations?: ConfigurationRepository; authentication?: () => Promise<{ available: boolean; message: string }>; }
+export async function handleRequest(request: Request, authority: Authority, store: DefinitionRepository, services: Services = {}): Promise<Response> {
  if (!authorize(request, authority)) return Response.json({ error: 'Local session authorization required. Reload the app.' }, { status: 403 });
  const path = new URL(request.url).pathname;
  try {
+  if (path === '/api/authentication' && request.method === 'GET' && services.authentication) return Response.json(await services.authentication());
+  if (path === '/api/configurations' && services.configurations) {
+   if (request.method === 'GET') return Response.json(await services.configurations.list());
+   if (request.method === 'PUT') {
+    if (request.headers.get('origin') !== `http://${authority.host}` || request.headers.get('content-type') !== 'application/json') return Response.json({ error: 'Same-origin JSON required' }, { status: 403 });
+    const body = await request.text();
+    if (Buffer.byteLength(body) > 1_048_576) return Response.json({ error: 'Configuration too large' }, { status: 413 });
+    let config: CodexConfiguration;
+    try { config = validateConfiguration(JSON.parse(body)); } catch { return Response.json({ error: 'Invalid or unsupported Codex configuration' }, { status: 400 }); }
+    return Response.json(await services.configurations.save(config));
+   }
+  }
   if (path === '/api/definitions' && request.method === 'GET') return Response.json(await store.list());
   const match = /^\/api\/definitions\/([a-zA-Z0-9_-]{1,80})$/.exec(path);
   if (!match) return Response.json({ error: 'Not found' }, { status: 404 });

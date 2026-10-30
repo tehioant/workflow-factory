@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { DefinitionStore } from './store.ts';
+import { DefinitionStore, JsonStore } from './store.ts';
+import { validateConfiguration } from './configuration.ts';
+import { authenticationStatus } from './auth.ts';
 import { handleRequest } from './http.ts';
 
 const port = Number(process.env.PORT ?? 4317);
@@ -13,12 +15,15 @@ const authority = { host, token: randomBytes(32).toString('hex') };
 const base = process.platform === 'darwin' ? join(homedir(), 'Library', 'Application Support') : (process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'));
 const directory = process.env.WORKFLOW_FACTORY_DATA_DIR || join(base, 'workflow-factory');
 const store = new DefinitionStore(join(directory, 'definitions'));
+const services = { configurations: new JsonStore(join(directory, 'configurations'), validateConfiguration), authentication: authenticationStatus };
 const assets: Record<string, [string, string]> = {
  '/': ['public/index.html', 'text/html; charset=utf-8'],
  '/style.css': ['public/style.css', 'text/css; charset=utf-8'],
  '/app.js': ['public/app.js', 'text/javascript; charset=utf-8'],
  '/editor.js': ['public/editor.js', 'text/javascript; charset=utf-8'],
  '/inputs.js': ['public/inputs.js', 'text/javascript; charset=utf-8'],
+ '/configuration.js': ['configuration.js', 'text/javascript; charset=utf-8'],
+ '/configurations.js': ['public/configurations.js', 'text/javascript; charset=utf-8'],
  '/definition.js': ['definition.js', 'text/javascript; charset=utf-8'],
 };
 const server = createServer(async (incoming, outgoing) => {
@@ -44,7 +49,7 @@ const server = createServer(async (incoming, outgoing) => {
    for (const [key, value] of Object.entries(incoming.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value.join(', ') : value);
    const method = incoming.method || 'GET';
    const body = ['GET', 'HEAD'].includes(method) ? undefined : Buffer.concat(chunks).toString('utf8');
-   const result = await handleRequest(new Request(url, { method, headers, body }), authority, store);
+   const result = await handleRequest(new Request(url, { method, headers, body }), authority, store, services);
    outgoing.writeHead(result.status, Object.fromEntries(result.headers)); outgoing.end(await result.text()); return;
   }
   const asset = assets[url.pathname];
