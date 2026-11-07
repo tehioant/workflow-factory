@@ -19,6 +19,12 @@ the reduced shadcn-svelte button. Node is build tooling, not an installed backen
   Auth reports **unsupportedConcurrentAuth / notInspected / executionEnabled=false**.
   No supported staging route is approved: see `AUTH_READINESS.md`. No credentials
   are read; file/keyring presence is not misrepresented as sandbox authentication.
+- D05: runtime settings have explicit manual Docker readiness and setup-plan actions.
+  The backend selects `unix:///var/run/docker.sock` and the fixed platform CLI;
+  no arbitrary endpoint/argv is accepted. Readiness is bounded, read-only and off
+  the UI thread with its own single-flight gate (no SQLite prerequisite). Startup
+  never probes Docker. Setup returns reviewed-repository build argv/instructions
+  only, never installs/builds/pulls or configures auth. Execution remains blocked.
 
 The left sidebar contains workflows, AI palette and reusable configurations;
 workflow properties appear above the central canvas, with the block inspector at
@@ -69,29 +75,38 @@ update uses `BEGIN IMMEDIATE`; no force overwrite exists. Config deletion checks
 latest saved definitions in the same transaction. Configuration selection remains
 editable after errors; explicitly save or discard before changing configuration
 editors. Definition navigation requires stay or explicit discard; failed load/save
-retains the working copy. Svelte state is snapshotted before structured cloning.
+retains the working copy. Svelte state is snapshotted by the mounted save caller; the public save helper also projects primitive JSON-domain fields safely from reactive proxies.
 
 The local-main capability explicitly allows only `list_definitions`,
 `load_definition`, `save_definition`, `prepare_inputs`, `list_configurations`,
-`save_configuration`, `delete_configuration`, `auth_readiness`. These are registered
+`save_configuration`, `delete_configuration`, `auth_readiness`, plus the separately
+permissioned `runtime_readiness` and `runtime_setup_plan`. These are registered
 in the host and declared in the build manifest. Storage uses the existing bounded
 blocking-worker gate. Input preparation runs off the UI thread. No general shell,
 filesystem, arbitrary credential path, remote capability or execution command exists.
 Transport types are generated from Rust; run `npm run types` after contract edits.
 
-Limits: 500 listed definitions/configurations, 100 blocks/connections/inputs, names
+Limits: 500 admitted definitions/configurations (new identities refused transactionally
+before admission; updates remain available at capacity), 100 blocks/connections/inputs, names
 200 bytes, prompts/defaults/supplied input values 64 KiB, input names 64 ASCII bytes,
 prepared prompt expansion 1 MiB. Invalid graph shapes cannot be saved; intermediate
 disconnected edits remain in the unsaved working copy until connected or removed.
-No browser source/data migration, server, sidecar, Docker/model/login call is added.
+Stored reads, updates, configuration references and deletion-reference scans validate
+row/body identity, domain/schema and positive u32 revision bounds before use.
+No browser source/data migration, server, sidecar, model or login call is added.
+The full copied-control MIT notice is bundled as `THIRD_PARTY.md` for deb/dmg.
+Canvas publishing is busy-guarded, its lock override hidden, and selection-wrapper
+arrow movements persist. Input previews correlate immutable request snapshots with
+current definition/values/generation and ignore stale results/errors/finalizers.
 
 ## Focused evidence and remaining gates
 
-Desktop suite: **33 cases (22 engine + 11 frontend)**, including D01's 12.
-The three increments add exactly **21 (9 + 6 + 6)**; no parameterized/automatic
-per-type tests or application journeys. The parent owns aggregate discovery/CI and
-independent review. External report: `editor-increments.md` beside `d01.md` under
-`/home/ops/reports/workflow-factory-desktop/`.
+Combined canonical inventory: **151 cases (96 retained browser + 20 frontend +
+35 Rust)**, 11 new focused stabilization cases relative to 140. Tests use prepared
+SQLite records, mocked process/invoke boundaries and focused callbacks; one mounted
+Svelte input-form test compiles the actual component against happy-dom. No test
+journey or live Docker/auth/model action is introduced. See the external
+`stabilization.md` report under `/home/ops/reports/workflow-factory-desktop/`.
 
 Approved targets remain Ubuntu 24.04 x86_64 and macOS 15+ arm64/Intel. Available
 Ubuntu 26.04 builds do not establish their ABI or interaction compatibility.

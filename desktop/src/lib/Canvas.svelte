@@ -8,11 +8,11 @@
  let nodes=$state<Node[]>([]); let edges=$state<Edge[]>([]);
  $effect(()=>{const flow=toFlow(definition); nodes=flow.nodes; edges=flow.edges;});
  const nodeTypes={ai:AiNode};
- function sync(){onchange(fromFlow(definition,nodes,edges));}
+ function sync(){if(!disabled) onchange(fromFlow(definition,nodes,edges));}
 </script>
- <svelte:window onkeyup={(event)=>{if(!disabled && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key) && event.target instanceof Element && event.target.closest('.svelte-flow__node')) sync();}} />
+ <svelte:window onkeyup={(event)=>{if(!disabled && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key) && event.target instanceof Element && event.target.closest('.svelte-flow__node, .svelte-flow__selection-wrapper')) sync();}} />
 <div class="canvas" aria-label="Workflow canvas">
- <SvelteFlow bind:nodes bind:edges {nodeTypes} nodesDraggable={!disabled} nodesConnectable={!disabled} elementsSelectable={!disabled} onselectionchange={({nodes})=>{if(nodes[0]) onselect(nodes[0].id);}} onnodeclick={({node})=>onselect(node.id)} onnodedragstop={sync} onconnect={(c)=>{if(!disabled) onchange({...definition,connections:[...definition.connections,{source:c.source,target:c.target}]});}} deleteKey={null} fitView colorMode="dark">
-  <Background /><Controls />
+ <SvelteFlow bind:nodes bind:edges {nodeTypes} nodesDraggable={!disabled} nodesConnectable={!disabled} elementsSelectable={!disabled} onselectionchange={({nodes})=>{if(!disabled && nodes[0]) onselect(nodes[0].id);}} onnodeclick={({node})=>{if(!disabled) onselect(node.id);}} onnodedragstop={sync} onconnect={(c)=>{if(!disabled) onchange({...definition,connections:[...definition.connections,{source:c.source,target:c.target}]});}} deleteKey={null} fitView colorMode="dark">
+  <Background /><Controls showLock={false} />
  </SvelteFlow>
 </div>

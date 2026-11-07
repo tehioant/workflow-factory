@@ -1,4 +1,5 @@
 use ts_rs::TS;
+use workflow_engine::runtime::{IsolationEvidence, Readiness, RuntimeStatus, SetupPlan};
 use workflow_engine::{
     AiBlock, AuthReadiness, CodexConfiguration, Definition, Error, GraphConnection, Position,
     PreparedInputs, Reasoning, SaveConfiguration, SaveDefinition, SavedConfiguration,
@@ -7,6 +8,10 @@ use workflow_engine::{
 fn main() {
     let config = Default::default();
     let declarations = [
+        Readiness::decl(&config),
+        RuntimeStatus::decl(&config),
+        IsolationEvidence::decl(&config),
+        SetupPlan::decl(&config),
         Position::decl(&config),
         AiBlock::decl(&config),
         GraphConnection::decl(&config),

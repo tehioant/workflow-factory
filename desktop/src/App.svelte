@@ -4,6 +4,7 @@
   import Button from './lib/ui/button.svelte';
   import Canvas from './lib/Canvas.svelte';
   import InputForm from './lib/InputForm.svelte';
+  import RuntimeSettings from './lib/RuntimeSettings.svelte';
   import ConfigurationManager from './lib/ConfigurationManager.svelte';
   import { insertInputReference } from './lib/inputs.ts';
   import { editGraph } from './lib/editor.ts';
@@ -107,7 +108,7 @@
         {#if editor.error}<p role="alert">{editor.error}</p>{/if}
         <p class="muted">To resolve a revision conflict, keep/copy your name or explicitly discard and reopen the saved workflow from the list. Saving never forces an overwrite.</p>
       </section>
-      <Canvas definition={editor.working} disabled={busy} onchange={(d)=>{editor={...editor,working:d,dirty:true,error:''};}} onselect={(id)=>selected=id}/>
+      <Canvas definition={editor.working} disabled={busy} onchange={(d)=>{if(!busy) editor={...editor,working:d,dirty:true,error:''};}} onselect={(id)=>{if(!busy) selected=id;}}/>
       <section class="inspector" aria-label="Block inspector">
        <h2>Block inspector</h2>
        {#if block}
@@ -125,6 +126,7 @@
     {:else}
       <section class="editor"><h2>Your workflows, saved locally.</h2><p>Create a workflow or open one from the sidebar.</p></section>
     {/if}
+    <RuntimeSettings {commands}/>
     <section class="readiness" aria-label="Execution readiness">
      <h2>Execution unavailable</h2><button disabled>Run workflow (blocked)</button>
      <p>{readiness?.guidance??'Auth readiness not checked. No execution route is enabled.'}</p>

@@ -316,6 +316,92 @@ pub struct AuthReadiness {
 pub fn auth_readiness() -> AuthReadiness {
     AuthReadiness { execution_enabled:false, credential_source:"notInspected".into(), status:"unsupportedConcurrentAuth".into(), guidance:"Execution disabled: no approved supported concurrent subscription-auth staging/refresh route. Host credentials were not inspected. Copied refresh tokens race; the external-token bridge is internal-only. Configure non-secret settings here; resolve public-support, independent-login and secure-store gates before implementing execution. No API-key fallback or new login flow is available.".into() }
 }
+fn validate_configuration(c: &CodexConfiguration) -> Result<(), Error> {
+    if c.id.len() != 36
+        || uuid::Uuid::parse_str(&c.id).is_err()
+        || c.name.trim().is_empty()
+        || c.name.len() > 200
+        || c.model.is_empty()
+        || c.model.len() > 100
+        || !c
+            .model
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+    {
+        return Err(validation("Configuration needs a UUID, name (1–200 bytes), model identifier (1–100 ASCII letters/digits/-_.) and supported reasoning setting. Never enter credentials."));
+    }
+    Ok(())
+}
+fn validate_definition(d: &Definition) -> Result<(), Error> {
+    if d.schema_version != 1
+        || d.id.len() != 36
+        || uuid::Uuid::parse_str(&d.id).is_err()
+        || d.name.trim().is_empty()
+        || d.name.len() > 200
+    {
+        return Err(Error::Validation {
+            message: "Use schema 1, a UUID identity and a name of 1–200 bytes.".into(),
+        });
+    }
+    validate_graph(d)?;
+    for b in &d.blocks {
+        if let Some(id) = &b.configuration_id {
+            if id.len() != 36 || uuid::Uuid::parse_str(id).is_err() {
+                return Err(validation("Invalid configuration identity."));
+            }
+        }
+    }
+    Ok(())
+}
+fn stored_definition(id: &str, revision: u32, body: &str) -> Result<SavedDefinition, Error> {
+    let definition: Definition = serde_json::from_str(body).map_err(storage)?;
+    if definition.id != id || revision == 0 {
+        return Err(storage("stored identity/revision"));
+    }
+    validate_definition(&definition).map_err(|_| storage("invalid stored definition"))?;
+    Ok(SavedDefinition {
+        definition,
+        revision,
+    })
+}
+fn stored_configuration(id: &str, revision: u32, body: &str) -> Result<SavedConfiguration, Error> {
+    let config: CodexConfiguration = serde_json::from_str(body).map_err(storage)?;
+    if config.id != id || revision == 0 {
+        return Err(storage("stored identity/revision"));
+    }
+    validate_configuration(&config).map_err(|_| storage("invalid stored configuration"))?;
+    Ok(SavedConfiguration { config, revision })
+}
+fn read_configuration(
+    connection: &Connection,
+    id: &str,
+) -> Result<Option<SavedConfiguration>, Error> {
+    let row: Option<(u32, String)> = connection
+        .query_row(
+            "SELECT revision,body FROM configurations WHERE id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(storage)?;
+    row.map(|(revision, body)| stored_configuration(id, revision, &body))
+        .transpose()
+}
+fn enforce_capacity(connection: &Connection, table: &str) -> Result<(), Error> {
+    let sql = match table {
+        "revisions" => "SELECT COUNT(DISTINCT id) FROM revisions",
+        _ => "SELECT COUNT(*) FROM configurations",
+    };
+    let count: u32 = connection
+        .query_row(sql, [], |r| r.get(0))
+        .map_err(storage)?;
+    if count >= 500 {
+        return Err(validation(
+            "Limit is 500 records. Existing records remain accessible and editable.",
+        ));
+    }
+    Ok(())
+}
 pub struct Store {
     path: PathBuf,
 }
@@ -383,14 +469,23 @@ impl Store {
         let tx = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
+        read_configuration(&tx, id)?.ok_or_else(|| Error::NotFound {
+            message: "Configuration not found.".into(),
+        })?;
         {
-            let mut query=tx.prepare("SELECT r.body FROM revisions r WHERE r.revision=(SELECT MAX(s.revision) FROM revisions s WHERE s.id=r.id)").map_err(storage)?;
+            let mut query=tx.prepare("SELECT r.id,r.revision,r.body FROM revisions r WHERE r.revision=(SELECT MAX(s.revision) FROM revisions s WHERE s.id=r.id)").map_err(storage)?;
             for body in query
-                .query_map([], |r| r.get::<_, String>(0))
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, u32>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })
                 .map_err(storage)?
             {
-                let d: Definition =
-                    serde_json::from_str(&body.map_err(storage)?).map_err(storage)?;
+                let (row_id, revision, body) = body.map_err(storage)?;
+                let d = stored_definition(&row_id, revision, &body)?.definition;
                 if d.blocks
                     .iter()
                     .any(|b| b.configuration_id.as_deref() == Some(id))
@@ -417,19 +512,20 @@ impl Store {
     pub fn list_configurations(&self) -> Result<Vec<SavedConfiguration>, Error> {
         let connection = Connection::open(&self.path).map_err(storage)?;
         let mut query = connection
-            .prepare("SELECT revision,body FROM configurations ORDER BY id LIMIT 501")
+            .prepare("SELECT id,revision,body FROM configurations ORDER BY id LIMIT 501")
             .map_err(storage)?;
         let records = query
             .query_map([], |row| {
-                Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u32>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })
             .map_err(storage)?
             .map(|row| {
-                let (revision, body) = row.map_err(storage)?;
-                Ok(SavedConfiguration {
-                    revision,
-                    config: serde_json::from_str(&body).map_err(storage)?,
-                })
+                let (id, revision, body) = row.map_err(storage)?;
+                stored_configuration(&id, revision, &body)
             })
             .collect::<Result<Vec<_>, Error>>()?;
         if records.len() > 500 {
@@ -442,31 +538,15 @@ impl Store {
         request: SaveConfiguration,
     ) -> Result<SavedConfiguration, Error> {
         let c = &request.config;
-        if c.id.len() != 36
-            || uuid::Uuid::parse_str(&c.id).is_err()
-            || c.name.trim().is_empty()
-            || c.name.len() > 200
-            || c.model.is_empty()
-            || c.model.len() > 100
-            || !c
-                .model
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
-        {
-            return Err(validation("Configuration needs a UUID, name (1–200 bytes), model identifier (1–100 ASCII letters/digits/-_.) and supported reasoning setting. Never enter credentials."));
-        }
+        validate_configuration(c)?;
         let mut connection = Connection::open(&self.path).map_err(storage)?;
         let tx = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
-        let current: Option<u32> = tx
-            .query_row(
-                "SELECT revision FROM configurations WHERE id=?1",
-                [&c.id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(storage)?;
+        let current = read_configuration(&tx, &c.id)?.map(|saved| saved.revision);
+        if current.is_none() {
+            enforce_capacity(&tx, "configurations")?;
+        }
         if current != request.expected_revision {
             return Err(Error::Conflict {
                 message: "Configuration changed. Keep edits or explicitly reload.".into(),
@@ -486,18 +566,19 @@ impl Store {
     }
     pub fn list(&self) -> Result<Vec<SavedDefinition>, Error> {
         let connection = Connection::open(&self.path).map_err(storage)?;
-        let mut query = connection.prepare("SELECT r.revision,r.body FROM revisions r WHERE r.revision=(SELECT MAX(s.revision) FROM revisions s WHERE s.id=r.id) ORDER BY r.id LIMIT 501").map_err(storage)?;
+        let mut query = connection.prepare("SELECT r.id,r.revision,r.body FROM revisions r WHERE r.revision=(SELECT MAX(s.revision) FROM revisions s WHERE s.id=r.id) ORDER BY r.id LIMIT 501").map_err(storage)?;
         let records: Vec<SavedDefinition> = query
             .query_map([], |row| {
-                Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u32>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })
             .map_err(storage)?
             .map(|row| {
-                let (revision, body) = row.map_err(storage)?;
-                Ok(SavedDefinition {
-                    revision,
-                    definition: serde_json::from_str(&body).map_err(storage)?,
-                })
+                let (id, revision, body) = row.map_err(storage)?;
+                stored_definition(&id, revision, &body)
             })
             .collect::<Result<_, Error>>()?;
         if records.len() > 500 {
@@ -524,51 +605,39 @@ impl Store {
         let (revision, body) = row.ok_or_else(|| Error::NotFound {
             message: "Definition not found.".into(),
         })?;
-        Ok(SavedDefinition {
-            revision,
-            definition: serde_json::from_str(&body).map_err(storage)?,
-        })
+        stored_definition(id, revision, &body)
     }
 
     pub fn save(&self, request: SaveDefinition) -> Result<SavedDefinition, Error> {
-        if request.definition.schema_version != 1
-            || request.definition.id.len() != 36
-            || uuid::Uuid::parse_str(&request.definition.id).is_err()
-            || request.definition.name.trim().is_empty()
-            || request.definition.name.len() > 200
-        {
-            return Err(Error::Validation {
-                message: "Use schema 1, a UUID identity and a name of 1–200 bytes.".into(),
-            });
-        }
-        validate_graph(&request.definition)?;
+        validate_definition(&request.definition)?;
         let mut connection = Connection::open(&self.path).map_err(storage)?;
         let tx = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
         for b in &request.definition.blocks {
             if let Some(id) = &b.configuration_id {
-                if id.len() != 36
-                    || uuid::Uuid::parse_str(id).is_err()
-                    || !tx
-                        .query_row(
-                            "SELECT EXISTS(SELECT 1 FROM configurations WHERE id=?1)",
-                            [id],
-                            |r| r.get::<_, bool>(0),
-                        )
-                        .map_err(storage)?
-                {
+                if read_configuration(&tx, id)?.is_none() {
                     return Err(validation("Missing or invalid Codex configuration reference. Select an existing configuration."));
                 }
             }
         }
-        let current: Option<u32> = tx
+        let row: Option<(u32, String)> = tx
             .query_row(
-                "SELECT MAX(revision) FROM revisions WHERE id=?1",
+                "SELECT revision,body FROM revisions WHERE id=?1 ORDER BY revision DESC LIMIT 1",
                 [&request.definition.id],
-                |row| row.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
+            .optional()
             .map_err(storage)?;
+        let current = row
+            .map(|(revision, body)| {
+                stored_definition(&request.definition.id, revision, &body)
+                    .map(|saved| saved.revision)
+            })
+            .transpose()?;
+        if current.is_none() {
+            enforce_capacity(&tx, "revisions")?;
+        }
         if current != request.expected_revision {
             return Err(Error::Conflict { message: "Saved revision changed. Keep your edits or explicitly discard and reopen the saved definition.".into() });
         }

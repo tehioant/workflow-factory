@@ -52,7 +52,16 @@ export async function openEditor(state: Editor, id: string, commands: Commands):
 export async function saveEditor(state: Editor, commands: Commands): Promise<Editor> {
   if (!state.working) return state;
   try {
-    const saved = await commands.save({ definition: structuredClone(state.working), expectedRevision: state.revision });
+    const d = state.working;
+    // Project only the JSON domain; reactive proxies cannot be structured-cloned.
+    const definition: Definition = {
+      schemaVersion: d.schemaVersion, id: d.id, name: d.name,
+      blocks: (d.blocks ?? []).map(b => ({ id: b.id, name: b.name, prompt: b.prompt,
+        position: { x: b.position.x, y: b.position.y }, configurationId: b.configurationId ?? null })),
+      connections: (d.connections ?? []).map(c => ({ source: c.source, target: c.target })),
+      inputs: (d.inputs ?? []).map(i => ({ name: i.name, required: i.required, default: i.default })),
+    };
+    const saved = await commands.save({ definition, expectedRevision: state.revision });
     return { working: saved.definition, revision: saved.revision, dirty: false, error: '' };
   } catch (error) {
     return { ...state, error: errorMessage(error) };

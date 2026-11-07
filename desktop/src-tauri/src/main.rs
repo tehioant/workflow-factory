@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod runtime_host;
 use std::{path::PathBuf, sync::Arc};
 use tauri::Manager;
 use workflow_engine::{
@@ -92,9 +93,39 @@ async fn delete_configuration(
 fn auth_readiness() -> workflow_engine::AuthReadiness {
     workflow_engine::auth_readiness()
 }
+struct RuntimeGate(Arc<tokio::sync::Semaphore>);
+#[tauri::command]
+async fn runtime_readiness(
+    state: tauri::State<'_, RuntimeGate>,
+) -> Result<workflow_engine::runtime::Readiness, Error> {
+    let permit = state
+        .0
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| Error::Busy {
+            message: "Runtime check already running. Retry shortly.".into(),
+        })?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        runtime_host::readiness_with(&mut workflow_engine::runtime::RealProcess)
+    })
+    .await
+    .map_err(|_| Error::Busy {
+        message: "Runtime check interrupted. Retry.".into(),
+    })
+}
+#[tauri::command]
+async fn runtime_setup_plan() -> Result<workflow_engine::runtime::SetupPlan, Error> {
+    tauri::async_runtime::spawn_blocking(runtime_host::setup_plan)
+        .await
+        .map_err(|_| Error::Busy {
+            message: "Setup plan interrupted. Retry.".into(),
+        })
+}
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
+            app.manage(RuntimeGate(Arc::new(tokio::sync::Semaphore::new(1))));
             app.manage(Database {
                 directory: app.path().app_data_dir()?,
                 gate: Arc::new(tokio::sync::Semaphore::new(1)),
@@ -122,7 +153,9 @@ fn main() {
             list_configurations,
             save_configuration,
             delete_configuration,
-            auth_readiness
+            auth_readiness,
+            runtime_readiness,
+            runtime_setup_plan
         ])
         .run(tauri::generate_context!())
         .expect("desktop host failed");

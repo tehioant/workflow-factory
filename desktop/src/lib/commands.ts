@@ -1,7 +1,9 @@
-import type { SaveConfiguration, SavedConfiguration, AuthReadiness, Definition, PreparedInputs, SaveDefinition, SavedDefinition } from './transport.ts';
+import type { Readiness, SetupPlan, SaveConfiguration, SavedConfiguration, AuthReadiness, Definition, PreparedInputs, SaveDefinition, SavedDefinition } from './transport.ts';
 export type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 export function createCommands(invoke: Invoke) {
   return {
+    runtimeReadiness: () => invoke<Readiness>('runtime_readiness'),
+    runtimeSetupPlan: () => invoke<SetupPlan>('runtime_setup_plan'),
     authReadiness:()=>invoke<AuthReadiness>('auth_readiness'),
     listConfigurations:()=>invoke<SavedConfiguration[]>('list_configurations'),
     saveConfiguration:(request:SaveConfiguration)=>invoke<SavedConfiguration>('save_configuration',{request}),

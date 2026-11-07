@@ -9,6 +9,8 @@ fn main() {
             "save_configuration",
             "delete_configuration",
             "auth_readiness",
+            "runtime_readiness",
+            "runtime_setup_plan",
         ]),
     ))
     .expect("desktop build configuration");
