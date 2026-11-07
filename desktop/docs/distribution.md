@@ -55,6 +55,7 @@ From the repository's `desktop/` directory, after those prerequisites are presen
 node --version; npm --version; rustc --version; cargo --version
 npm ci --ignore-scripts
 npm run check
+npm run build # Tauri's generate_context! needs these local assets during checks
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo run -p workflow-engine --locked --bin export-types -- --check
