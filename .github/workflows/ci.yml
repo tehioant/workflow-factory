@@ -14,11 +14,17 @@ concurrency:
 
 jobs:
   focused-checks:
-    name: Focused checks (${{ matrix.os }})
+    name: Focused checks and local package (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15]
+        include:
+          - os: ubuntu-24.04
+            bundle: deb
+          - os: macos-15
+            bundle: dmg
+          - os: macos-15-intel
+            bundle: dmg
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     steps:
@@ -29,7 +35,38 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/target
+          key: desktop-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-${{ hashFiles('desktop/Cargo.lock') }}
+      - name: Linux native build libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Pinned Rust tooling
+        working-directory: desktop
+        run: rustup show active-toolchain
       - run: npm ci --ignore-scripts
+      - run: npm ci --prefix desktop --ignore-scripts
       - run: npm run typecheck
-      - run: npm test
+      - run: npm --prefix desktop run check
+      - run: npm --prefix desktop run build
+      - name: Rust formatting, lints and generated transport
+        working-directory: desktop
+        run: |
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo run -p workflow-engine --locked --bin export-types -- --check
+      - name: All focused tests with one repository-wide 200-case gate
+        run: node desktop/scripts/check-tests.mjs
       - run: npm run build
+      - name: Compile and package bundled desktop assets (no launch or upload)
+        working-directory: desktop
+        run: npm exec -- tauri build --debug --bundles ${{ matrix.bundle }}
