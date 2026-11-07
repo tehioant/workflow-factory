@@ -9,6 +9,30 @@ pub struct Definition {
     pub schema_version: u32,
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub blocks: Vec<AiBlock>,
+    #[serde(default)]
+    pub connections: Vec<GraphConnection>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Position {
+    pub x: f64,
+    pub y: f64,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AiBlock {
+    pub id: String,
+    pub name: String,
+    pub prompt: String,
+    pub position: Position,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GraphConnection {
+    pub source: String,
+    pub target: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -60,6 +84,68 @@ fn private_path(path: &Path, directory: bool) -> Result<(), Error> {
     Ok(())
 }
 
+fn validation(message: &str) -> Error {
+    Error::Validation {
+        message: message.into(),
+    }
+}
+fn validate_graph(d: &Definition) -> Result<(), Error> {
+    if d.blocks.len() > 100 || d.connections.len() > 100 {
+        return Err(validation("Limit is 100 AI blocks and connections."));
+    }
+    let mut ids = std::collections::HashSet::new();
+    for b in &d.blocks {
+        if b.id.is_empty()
+            || b.id.len() > 64
+            || !b
+                .id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+            || !ids.insert(&b.id)
+            || b.name.trim().is_empty()
+            || b.name.len() > 200
+            || b.prompt.len() > 65536
+            || !b.position.x.is_finite()
+            || !b.position.y.is_finite()
+            || b.position.x.abs() > 1e6
+            || b.position.y.abs() > 1e6
+        {
+            return Err(validation("Each AI block needs a unique valid identity, name (1–200 bytes), prompt (at most 64 KiB) and finite position."));
+        }
+    }
+    let mut incoming = std::collections::HashMap::new();
+    let mut outgoing = std::collections::HashMap::new();
+    for c in &d.connections {
+        if !ids.contains(&c.source) || !ids.contains(&c.target) || c.source == c.target {
+            return Err(validation(
+                "Connection needs two different existing AI blocks.",
+            ));
+        }
+        if incoming.insert(&c.target, &c.source).is_some()
+            || outgoing.insert(&c.source, &c.target).is_some()
+        {
+            return Err(validation(
+                "Unsupported branching or duplicate connection; use a sequential chain.",
+            ));
+        }
+    }
+    for start in &d.blocks {
+        let mut visited = std::collections::HashSet::new();
+        let mut cursor = &start.id;
+        while let Some(next) = outgoing.get(cursor) {
+            if !visited.insert(cursor) {
+                return Err(validation(
+                    "Unsupported cyclic graph; use a sequential chain.",
+                ));
+            }
+            cursor = next;
+        }
+    }
+    if !d.blocks.is_empty() && d.connections.len() != d.blocks.len() - 1 {
+        return Err(validation("Disconnected AI blocks cannot execute. Connect a single sequential chain before saving."));
+    }
+    Ok(())
+}
 pub struct Store {
     path: PathBuf,
 }
@@ -169,6 +255,7 @@ impl Store {
                 message: "Use schema 1, a UUID identity and a name of 1–200 bytes.".into(),
             });
         }
+        validate_graph(&request.definition)?;
         let mut connection = Connection::open(&self.path).map_err(storage)?;
         let tx = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)

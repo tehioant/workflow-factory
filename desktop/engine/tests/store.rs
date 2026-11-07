@@ -9,6 +9,8 @@ fn reports_storage_failure_without_a_saved_revision() {
         schema_version: 1,
         id: "ecbca0a8-d457-4c42-89d4-6727261747bc".into(),
         name: "Keep my edits".into(),
+        blocks: vec![],
+        connections: vec![],
     };
     assert!(matches!(
         store.save(SaveDefinition {
@@ -54,6 +56,8 @@ fn rejects_a_stale_save_without_overwriting() {
         schema_version: 1,
         id: "ecbca0a8-d457-4c42-89d4-6727261747bc".into(),
         name: "Stale".into(),
+        blocks: vec![],
+        connections: vec![],
     };
     assert!(matches!(
         store.save(SaveDefinition {
@@ -80,6 +84,8 @@ fn updates_only_the_expected_revision() {
         schema_version: 1,
         id: "ecbca0a8-d457-4c42-89d4-6727261747bc".into(),
         name: "Updated".into(),
+        blocks: vec![],
+        connections: vec![],
     };
     let saved = store
         .save(SaveDefinition {
@@ -171,6 +177,8 @@ fn saves_a_new_definition_at_revision_one() {
                 schema_version: 1,
                 id: "ecbca0a8-d457-4c42-89d4-6727261747bc".into(),
                 name: "Research".into(),
+                blocks: vec![],
+                connections: vec![],
             },
             expected_revision: None,
         })

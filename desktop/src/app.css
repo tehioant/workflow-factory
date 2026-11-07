@@ -24,4 +24,16 @@ ul { list-style: none; padding: 0; margin: 24px 0; }
 small { display: block; }
 [role=alert], .notice { color: #fde68a; }
 .notice { padding: 24px 40px; background: #292619; }
+* { box-sizing: border-box; }
+textarea, select { font: inherit; width:100%; padding:10px; border:1px solid #475569; border-radius:6px; background:#111b2c; }
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible { outline:2px solid #38bdf8;outline-offset:3px; }
+main { min-width:0; display:grid; grid-template-columns:minmax(210px,280px) minmax(280px,1fr) 300px; align-content:start; }
+main > header, main > .notice { grid-column:1 / -1; }
+.editor,.inspector { padding:20px; overflow:auto; max-height:calc(100vh - 90px); }
+.editor > button { margin:10px 0; }
+label { margin-top:16px; margin-bottom:6px; }
+.canvas { height:calc(100vh - 90px); min-height:480px; }
+.ai-card { width:150px; padding:10px 14px; border:1px solid #475569; border-radius:8px; background:#111b2c; }
+.ai-card strong { display:block; overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.svelte-flow__node.selected .ai-card { border-color:#38bdf8; }
 @media (max-width: 720px) { .app-shell { grid-template-columns: 220px 1fr; } aside, .editor { padding: 20px; } }

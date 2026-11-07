@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import Button from './lib/ui/button.svelte';
+  import Canvas from './lib/Canvas.svelte';
+  import { editGraph } from './lib/editor.ts';
   import { createCommands } from './lib/commands.ts';
   import { emptyEditor, saveEditor, openEditor, errorMessage } from './lib/editor.ts';
   import type { SavedDefinition } from './lib/transport.ts';
@@ -9,6 +11,10 @@
   let editor = $state(emptyEditor());
   let definitions = $state<SavedDefinition[]>([]);
   let busy = $state(false);
+  let selected = $state('');
+  let source = $state('');
+  let target = $state('');
+  let block = $derived(editor.working?.blocks.find(b=>b.id===selected));
   let listError = $state('');
   let confirmDiscard = $state(false);
   let pendingId = $state<string | null>(null);
@@ -29,7 +35,7 @@
         // Failed load must retain the old working copy, including its dirty flag.
         editor = opened.error ? { ...editor, error: opened.error } : opened;
       } else {
-        editor = { working: { schemaVersion: 1, id: crypto.randomUUID(), name: 'Untitled workflow' }, revision: null, dirty: true, error: '' };
+        editor = { working: { schemaVersion: 1, id: crypto.randomUUID(), name: 'Untitled workflow', blocks: [], connections: [] }, revision: null, dirty: true, error: '' };
       }
     } finally { busy = false; }
   }
@@ -66,10 +72,27 @@
       <section class="editor">
         <label for="workflow-name">Workflow name</label>
         <input id="workflow-name" maxlength="200" disabled={busy} value={editor.working.name} oninput={(event) => { if (editor.working) editor = { ...editor, working: { ...editor.working, name: event.currentTarget.value }, dirty: true, error: '' }; }} />
-        <p class="muted">Definition foundation. Canvas editing is a separate increment.</p>
+        <h2>Workflow properties</h2>
+        <Button disabled={busy} onclick={()=>{const id=crypto.randomUUID();editor=editGraph(editor,{type:'add',id});selected=id;}}>Add AI block</Button>
+        <label for="block-select">Select block</label><select id="block-select" disabled={busy} bind:value={selected}><option value="">Choose a block</option>{#each editor.working.blocks as b}<option value={b.id}>{b.name}</option>{/each}</select>
+        <label for="source">Connect from</label><select id="source" disabled={busy} bind:value={source}><option value="">Source block</option>{#each editor.working.blocks as b}<option value={b.id}>{b.name}</option>{/each}</select>
+        <label for="target">Connect to</label><select id="target" disabled={busy} bind:value={target}><option value="">Target block</option>{#each editor.working.blocks as b}<option value={b.id}>{b.name}</option>{/each}</select>
+        <Button disabled={busy||!source||!target} onclick={()=>{editor=editGraph(editor,{type:'connect',source,target});}}>Connect blocks</Button>
+        {#each editor.working.connections as c,i}<p>{editor.working.blocks.find(b=>b.id===c.source)?.name} → {editor.working.blocks.find(b=>b.id===c.target)?.name} <button disabled={busy} onclick={()=>{if(editor.working) editor={...editor,working:{...editor.working,connections:editor.working.connections.filter((_,index)=>index!==i)},dirty:true};}}>Remove connection {i+1}</button></p>{/each}
         <Button disabled={busy || !editor.dirty} onclick={save}>Save workflow</Button>
         {#if editor.error}<p role="alert">{editor.error}</p>{/if}
         <p class="muted">To resolve a revision conflict, keep/copy your name or explicitly discard and reopen the saved workflow from the list. Saving never forces an overwrite.</p>
+      </section>
+      <Canvas definition={editor.working} disabled={busy} onchange={(d)=>{editor={...editor,working:d,dirty:true,error:''};}} onselect={(id)=>selected=id}/>
+      <section class="inspector" aria-label="Block inspector">
+       <h2>Block inspector</h2>
+       {#if block}
+        <label for="block-name">Block name</label><input id="block-name" disabled={busy} value={block.name} oninput={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{name:e.currentTarget.value}})} />
+        <label for="prompt">Own prompt</label><textarea id="prompt" rows="12" disabled={busy} value={block.prompt} oninput={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{prompt:e.currentTarget.value}})}></textarea>
+        <label for="position-x">X position</label><input id="position-x" type="number" disabled={busy} value={block.position.x} oninput={(e)=>{if(block)editor=editGraph(editor,{type:'update',id:selected,patch:{position:{...block.position,x:e.currentTarget.valueAsNumber}}});}} />
+        <label for="position-y">Y position</label><input id="position-y" type="number" disabled={busy} value={block.position.y} oninput={(e)=>{if(block)editor=editGraph(editor,{type:'update',id:selected,patch:{position:{...block.position,y:e.currentTarget.valueAsNumber}}});}} />
+        <Button disabled={busy} onclick={()=>{editor=editGraph(editor,{type:'remove',id:selected});selected='';}}>Remove AI block</Button>
+       {:else}<p>Select a block on the canvas or in properties.</p>{/if}
       </section>
     {:else}
       <section class="editor"><h2>Your workflows, saved locally.</h2><p>Create a workflow or open one from the sidebar.</p></section>
