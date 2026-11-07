@@ -1,7 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 use std::{path::PathBuf, sync::Arc};
 use tauri::Manager;
-use workflow_engine::{Error, SaveDefinition, SavedDefinition, Store};
+use workflow_engine::{
+    resolve_inputs, Definition, Error, PreparedInputs, SaveDefinition, SavedDefinition, Store,
+};
 
 struct Database {
     directory: PathBuf,
@@ -51,6 +53,17 @@ async fn save_definition(
     database(&state, move |store| store.save(request)).await
 }
 
+#[tauri::command]
+async fn prepare_inputs(
+    definition: Definition,
+    supplied: std::collections::BTreeMap<String, String>,
+) -> Result<PreparedInputs, Error> {
+    tauri::async_runtime::spawn_blocking(move || resolve_inputs(&definition, supplied))
+        .await
+        .map_err(|_| Error::Busy {
+            message: "Input preparation interrupted. Retry.".into(),
+        })?
+}
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -76,7 +89,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_definitions,
             load_definition,
-            save_definition
+            save_definition,
+            prepare_inputs
         ])
         .run(tauri::generate_context!())
         .expect("desktop host failed");

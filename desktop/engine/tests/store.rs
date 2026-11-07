@@ -9,6 +9,7 @@ fn reports_storage_failure_without_a_saved_revision() {
         schema_version: 1,
         id: "ecbca0a8-d457-4c42-89d4-6727261747bc".into(),
         name: "Keep my edits".into(),
+        inputs: vec![],
         blocks: vec![],
         connections: vec![],
     };
@@ -56,6 +57,7 @@ fn rejects_a_stale_save_without_overwriting() {
         schema_version: 1,
         id: "ecbca0a8-d457-4c42-89d4-6727261747bc".into(),
         name: "Stale".into(),
+        inputs: vec![],
         blocks: vec![],
         connections: vec![],
     };
@@ -84,6 +86,7 @@ fn updates_only_the_expected_revision() {
         schema_version: 1,
         id: "ecbca0a8-d457-4c42-89d4-6727261747bc".into(),
         name: "Updated".into(),
+        inputs: vec![],
         blocks: vec![],
         connections: vec![],
     };
@@ -177,6 +180,7 @@ fn saves_a_new_definition_at_revision_one() {
                 schema_version: 1,
                 id: "ecbca0a8-d457-4c42-89d4-6727261747bc".into(),
                 name: "Research".into(),
+                inputs: vec![],
                 blocks: vec![],
                 connections: vec![],
             },

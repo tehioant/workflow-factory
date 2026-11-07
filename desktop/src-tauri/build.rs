@@ -4,6 +4,7 @@ fn main() {
             "list_definitions",
             "load_definition",
             "save_definition",
+            "prepare_inputs",
         ]),
     ))
     .expect("desktop build configuration");

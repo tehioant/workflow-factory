@@ -13,6 +13,21 @@ pub struct Definition {
     pub blocks: Vec<AiBlock>,
     #[serde(default)]
     pub connections: Vec<GraphConnection>,
+    #[serde(default)]
+    pub inputs: Vec<WorkflowInput>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowInput {
+    pub name: String,
+    pub required: bool,
+    pub default: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreparedInputs {
+    pub values: std::collections::BTreeMap<String, String>,
+    pub prompts: std::collections::BTreeMap<String, String>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -90,6 +105,35 @@ fn validation(message: &str) -> Error {
     }
 }
 fn validate_graph(d: &Definition) -> Result<(), Error> {
+    let mut input_names = std::collections::HashSet::new();
+    if d.inputs.len() > 100 {
+        return Err(validation("Limit is 100 workflow inputs."));
+    }
+    for input in &d.inputs {
+        let mut chars = input.name.bytes();
+        if !chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
+            || input.name.len() > 64
+            || !chars.all(|c| c.is_ascii_alphanumeric() || c == b'_')
+            || !input_names.insert(&input.name)
+            || input.default.as_ref().is_some_and(|s| s.len() > 65536)
+        {
+            return Err(validation("Invalid or duplicate input name. Use [A-Za-z_][A-Za-z0-9_]*, at most 64 bytes; defaults at most 64 KiB."));
+        }
+    }
+
+    for b in &d.blocks {
+        substitute(&b.prompt, |name| {
+            if input_names.contains(&name.to_string()) {
+                Ok(String::new())
+            } else {
+                Err(validation(
+                    "Dangling input reference; declare the input before saving.",
+                ))
+            }
+        })?;
+    }
     if d.blocks.len() > 100 || d.connections.len() > 100 {
         return Err(validation("Limit is 100 AI blocks and connections."));
     }
@@ -145,6 +189,77 @@ fn validate_graph(d: &Definition) -> Result<(), Error> {
         return Err(validation("Disconnected AI blocks cannot execute. Connect a single sequential chain before saving."));
     }
     Ok(())
+}
+fn substitute(
+    prompt: &str,
+    mut lookup: impl FnMut(&str) -> Result<String, Error>,
+) -> Result<String, Error> {
+    let mut rest = prompt;
+    let mut result = String::new();
+    while let Some(index) = rest.find("{{") {
+        result.push_str(&rest[..index]);
+        let tail = &rest[index + 2..];
+        let end = tail
+            .find("}}")
+            .ok_or_else(|| validation("Unclosed input reference."))?;
+        let name = tail[..end]
+            .strip_prefix("input.")
+            .ok_or_else(|| validation("Only {{input.name}} references are supported."))?;
+        result.push_str(&lookup(name)?);
+        rest = &tail[end + 2..];
+    }
+    result.push_str(rest);
+    Ok(result)
+}
+pub fn resolve_inputs(
+    d: &Definition,
+    supplied: std::collections::BTreeMap<String, String>,
+) -> Result<PreparedInputs, Error> {
+    validate_graph(d)?;
+    if supplied.len() > 100
+        || supplied
+            .iter()
+            .any(|(k, v)| v.len() > 65536 || !d.inputs.iter().any(|i| &i.name == k))
+    {
+        return Err(validation("Unknown input or input value exceeds 64 KiB."));
+    }
+    for input in &d.inputs {
+        if input.required
+            && supplied
+                .get(&input.name)
+                .or(input.default.as_ref())
+                .is_none_or(|v| v.is_empty())
+        {
+            return Err(validation(&format!(
+                "Required input '{}' needs a supplied value or default.",
+                input.name
+            )));
+        }
+    }
+    let mut values = std::collections::BTreeMap::new();
+    for input in &d.inputs {
+        values.insert(
+            input.name.clone(),
+            supplied
+                .get(&input.name)
+                .cloned()
+                .or_else(|| input.default.clone())
+                .unwrap_or_default(),
+        );
+    }
+    let mut prompts = std::collections::BTreeMap::new();
+    for b in &d.blocks {
+        prompts.insert(
+            b.id.clone(),
+            substitute(&b.prompt, |name| {
+                values
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| validation("Dangling input reference."))
+            })?,
+        );
+    }
+    Ok(PreparedInputs { values, prompts })
 }
 pub struct Store {
     path: PathBuf,

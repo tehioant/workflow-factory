@@ -3,6 +3,8 @@
   import { invoke } from '@tauri-apps/api/core';
   import Button from './lib/ui/button.svelte';
   import Canvas from './lib/Canvas.svelte';
+  import InputForm from './lib/InputForm.svelte';
+  import { insertInputReference } from './lib/inputs.ts';
   import { editGraph } from './lib/editor.ts';
   import { createCommands } from './lib/commands.ts';
   import { emptyEditor, saveEditor, openEditor, errorMessage } from './lib/editor.ts';
@@ -13,6 +15,8 @@
   let busy = $state(false);
   let selected = $state('');
   let source = $state('');
+  let inputChoice = $state('');
+  let promptField = $state<HTMLTextAreaElement>();
   let target = $state('');
   let block = $derived(editor.working?.blocks.find(b=>b.id===selected));
   let listError = $state('');
@@ -35,7 +39,7 @@
         // Failed load must retain the old working copy, including its dirty flag.
         editor = opened.error ? { ...editor, error: opened.error } : opened;
       } else {
-        editor = { working: { schemaVersion: 1, id: crypto.randomUUID(), name: 'Untitled workflow', blocks: [], connections: [] }, revision: null, dirty: true, error: '' };
+        editor = { working: { schemaVersion: 1, id: crypto.randomUUID(), name: 'Untitled workflow', blocks: [], connections: [], inputs: [] }, revision: null, dirty: true, error: '' };
       }
     } finally { busy = false; }
   }
@@ -73,6 +77,16 @@
         <label for="workflow-name">Workflow name</label>
         <input id="workflow-name" maxlength="200" disabled={busy} value={editor.working.name} oninput={(event) => { if (editor.working) editor = { ...editor, working: { ...editor.working, name: event.currentTarget.value }, dirty: true, error: '' }; }} />
         <h2>Workflow properties</h2>
+        <h3>Named text inputs</h3>
+        {#each editor.working.inputs as input,i}
+         <label for={`input-name-${i}`}>Input name</label><input id={`input-name-${i}`} disabled={busy} value={input.name} oninput={(e)=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:editor.working.inputs.map((v,n)=>n===i?{...v,name:e.currentTarget.value}:v)},dirty:true};}} />
+         <label><input type="checkbox" disabled={busy} checked={input.required} onchange={(e)=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:editor.working.inputs.map((v,n)=>n===i?{...v,required:e.currentTarget.checked}:v)},dirty:true};}} /> Required</label>
+         <label for={`input-default-${i}`}>Default (empty means no default)</label><textarea id={`input-default-${i}`} disabled={busy} value={input.default??''} oninput={(e)=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:editor.working.inputs.map((v,n)=>n===i?{...v,default:e.currentTarget.value||null}:v)},dirty:true};}}></textarea>
+         <button disabled={busy} onclick={()=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:editor.working.inputs.filter((_,n)=>n!==i)},dirty:true};}}>Remove input {i+1}</button>
+        {/each}
+        <Button disabled={busy} onclick={()=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:[...editor.working.inputs,{name:`input_${editor.working.inputs.length+1}`,required:true,default:null}]},dirty:true};}}>Add text input</Button>
+        <InputForm definition={editor.working} {commands}/>
+
         <Button disabled={busy} onclick={()=>{const id=crypto.randomUUID();editor=editGraph(editor,{type:'add',id});selected=id;}}>Add AI block</Button>
         <label for="block-select">Select block</label><select id="block-select" disabled={busy} bind:value={selected}><option value="">Choose a block</option>{#each editor.working.blocks as b}<option value={b.id}>{b.name}</option>{/each}</select>
         <label for="source">Connect from</label><select id="source" disabled={busy} bind:value={source}><option value="">Source block</option>{#each editor.working.blocks as b}<option value={b.id}>{b.name}</option>{/each}</select>
@@ -88,7 +102,9 @@
        <h2>Block inspector</h2>
        {#if block}
         <label for="block-name">Block name</label><input id="block-name" disabled={busy} value={block.name} oninput={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{name:e.currentTarget.value}})} />
-        <label for="prompt">Own prompt</label><textarea id="prompt" rows="12" disabled={busy} value={block.prompt} oninput={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{prompt:e.currentTarget.value}})}></textarea>
+        <label for="prompt">Own prompt</label><textarea bind:this={promptField} id="prompt" rows="12" disabled={busy} value={block.prompt} oninput={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{prompt:e.currentTarget.value}})}></textarea>
+        <label for="input-reference">Insert named input</label><select id="input-reference" disabled={busy} bind:value={inputChoice}><option value="">Choose input</option>{#each editor.working.inputs as input}<option value={input.name}>{input.name}</option>{/each}</select>
+        <Button disabled={busy||!inputChoice} onclick={()=>{if(block){editor=editGraph(editor,{type:'update',id:selected,patch:{prompt:insertInputReference(block.prompt,promptField?.selectionStart??block.prompt.length,promptField?.selectionEnd??block.prompt.length,inputChoice)}});promptField?.focus();}}}>Insert reference</Button>
         <label for="position-x">X position</label><input id="position-x" type="number" disabled={busy} value={block.position.x} oninput={(e)=>{if(block)editor=editGraph(editor,{type:'update',id:selected,patch:{position:{...block.position,x:e.currentTarget.valueAsNumber}}});}} />
         <label for="position-y">Y position</label><input id="position-y" type="number" disabled={busy} value={block.position.y} oninput={(e)=>{if(block)editor=editGraph(editor,{type:'update',id:selected,patch:{position:{...block.position,y:e.currentTarget.valueAsNumber}}});}} />
         <Button disabled={busy} onclick={()=>{editor=editGraph(editor,{type:'remove',id:selected});selected='';}}>Remove AI block</Button>
