@@ -1,0 +1,11 @@
+{
+  "identifier": "main",
+  "description": "Only definition operations in the local main webview.",
+  "local": true,
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "definitions"
+  ]
+}
