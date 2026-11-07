@@ -5,6 +5,10 @@ fn main() {
             "load_definition",
             "save_definition",
             "prepare_inputs",
+            "list_configurations",
+            "save_configuration",
+            "delete_configuration",
+            "auth_readiness",
         ]),
     ))
     .expect("desktop build configuration");

@@ -4,13 +4,18 @@
   import Button from './lib/ui/button.svelte';
   import Canvas from './lib/Canvas.svelte';
   import InputForm from './lib/InputForm.svelte';
+  import ConfigurationManager from './lib/ConfigurationManager.svelte';
   import { insertInputReference } from './lib/inputs.ts';
   import { editGraph } from './lib/editor.ts';
   import { createCommands } from './lib/commands.ts';
   import { emptyEditor, saveEditor, openEditor, errorMessage } from './lib/editor.ts';
-  import type { SavedDefinition } from './lib/transport.ts';
+  import type { AuthReadiness, SavedConfiguration, SavedDefinition } from './lib/transport.ts';
   const commands = createCommands(invoke);
   let editor = $state(emptyEditor());
+  let configurations = $state<SavedConfiguration[]>([]);
+  let readiness = $state<AuthReadiness|null>(null);
+  let configError = $state('');
+  async function refreshConfigurations(){configurations=await commands.listConfigurations();}
   let definitions = $state<SavedDefinition[]>([]);
   let busy = $state(false);
   let selected = $state('');
@@ -27,7 +32,7 @@
     try { definitions = await commands.list(); listError = ''; }
     catch (error) { listError = errorMessage(error); }
   }
-  onMount(() => { busy = true; void refresh().finally(() => { busy = false; }); });
+  onMount(() => { busy = true; void (async()=>{await refresh();try{await refreshConfigurations();readiness=await commands.authReadiness();configError='';}catch(error){configError=errorMessage(error);}})().finally(() => { busy = false; }); });
   async function navigate(id: string | null, discard = false) {
     if (editor.dirty && !discard) { pendingId = id; confirmDiscard = true; return; }
     confirmDiscard = false;
@@ -45,7 +50,7 @@
   }
   async function save() {
     busy = true;
-    try { editor = await saveEditor(editor, commands); if (!editor.dirty) await refresh(); }
+    try { editor = await saveEditor($state.snapshot(editor), commands); if (!editor.dirty) await refresh(); }
     finally { busy = false; }
   }
 </script>
@@ -61,6 +66,7 @@
     <ul>{#each definitions as saved (saved.definition.id)}
       <li><button class="workflow-link" disabled={busy} aria-current={editor.working?.id === saved.definition.id ? 'page' : undefined} onclick={() => navigate(saved.definition.id)}>{saved.definition.name}<small>Revision {saved.revision}</small></button></li>
     {:else}<li class="muted">No saved desktop workflows.</li>{/each}</ul>
+    <ConfigurationManager {configurations} {commands} onchanged={refreshConfigurations}/>
     <p class="muted">Private desktop storage · separate from browser data</p>
   </aside>
   <main aria-busy={busy}>
@@ -103,6 +109,8 @@
        {#if block}
         <label for="block-name">Block name</label><input id="block-name" disabled={busy} value={block.name} oninput={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{name:e.currentTarget.value}})} />
         <label for="prompt">Own prompt</label><textarea bind:this={promptField} id="prompt" rows="12" disabled={busy} value={block.prompt} oninput={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{prompt:e.currentTarget.value}})}></textarea>
+        <label for="block-config">Codex configuration</label><select id="block-config" disabled={busy} value={block.configurationId??''} onchange={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{configurationId:e.currentTarget.value||null}})}><option value="">Not configured</option>{#each configurations as saved}<option value={saved.config.id}>{saved.config.name} · {saved.config.model} / {saved.config.reasoning}</option>{/each}</select>
+        {#if block.configurationId&&!configurations.some(c=>c.config.id===block?.configurationId)}<p role="alert">Missing configuration. Select an existing one or clear this reference.</p>{/if}
         <label for="input-reference">Insert named input</label><select id="input-reference" disabled={busy} bind:value={inputChoice}><option value="">Choose input</option>{#each editor.working.inputs as input}<option value={input.name}>{input.name}</option>{/each}</select>
         <Button disabled={busy||!inputChoice} onclick={()=>{if(block){editor=editGraph(editor,{type:'update',id:selected,patch:{prompt:insertInputReference(block.prompt,promptField?.selectionStart??block.prompt.length,promptField?.selectionEnd??block.prompt.length,inputChoice)}});promptField?.focus();}}}>Insert reference</Button>
         <label for="position-x">X position</label><input id="position-x" type="number" disabled={busy} value={block.position.x} oninput={(e)=>{if(block)editor=editGraph(editor,{type:'update',id:selected,patch:{position:{...block.position,x:e.currentTarget.valueAsNumber}}});}} />
@@ -113,5 +121,11 @@
     {:else}
       <section class="editor"><h2>Your workflows, saved locally.</h2><p>Create a workflow or open one from the sidebar.</p></section>
     {/if}
+    <section class="readiness" aria-label="Execution readiness">
+     <h2>Execution unavailable</h2><button disabled>Run workflow (blocked)</button>
+     <p>{readiness?.guidance??'Auth readiness not checked. No execution route is enabled.'}</p>
+     <p>Credential source: {readiness?.credentialSource??'notInspected'} · No container authentication or concurrent refresh verified.</p>
+     {#if configError}<p role="alert">{configError}</p>{/if}
+    </section>
   </main>
 </div>

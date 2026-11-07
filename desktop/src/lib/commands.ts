@@ -1,7 +1,11 @@
-import type { Definition, PreparedInputs, SaveDefinition, SavedDefinition } from './transport.ts';
+import type { SaveConfiguration, SavedConfiguration, AuthReadiness, Definition, PreparedInputs, SaveDefinition, SavedDefinition } from './transport.ts';
 export type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 export function createCommands(invoke: Invoke) {
   return {
+    authReadiness:()=>invoke<AuthReadiness>('auth_readiness'),
+    listConfigurations:()=>invoke<SavedConfiguration[]>('list_configurations'),
+    saveConfiguration:(request:SaveConfiguration)=>invoke<SavedConfiguration>('save_configuration',{request}),
+    deleteConfiguration:(id:string,expectedRevision:number)=>invoke<void>('delete_configuration',{id,expectedRevision}),
     prepare: (definition:Definition,supplied:Record<string,string>)=>invoke<PreparedInputs>('prepare_inputs',{definition,supplied}),
     list: () => invoke<SavedDefinition[]>('list_definitions'),
     load: (id: string) => invoke<SavedDefinition>('load_definition', { id }),

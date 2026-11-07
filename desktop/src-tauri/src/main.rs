@@ -64,6 +64,34 @@ async fn prepare_inputs(
             message: "Input preparation interrupted. Retry.".into(),
         })?
 }
+#[tauri::command]
+async fn list_configurations(
+    state: tauri::State<'_, Database>,
+) -> Result<Vec<workflow_engine::SavedConfiguration>, Error> {
+    database(&state, |s| s.list_configurations()).await
+}
+#[tauri::command]
+async fn save_configuration(
+    state: tauri::State<'_, Database>,
+    request: workflow_engine::SaveConfiguration,
+) -> Result<workflow_engine::SavedConfiguration, Error> {
+    database(&state, move |s| s.save_configuration(request)).await
+}
+#[tauri::command]
+async fn delete_configuration(
+    state: tauri::State<'_, Database>,
+    id: String,
+    expected_revision: u32,
+) -> Result<(), Error> {
+    database(&state, move |s| {
+        s.delete_configuration(&id, expected_revision)
+    })
+    .await
+}
+#[tauri::command]
+fn auth_readiness() -> workflow_engine::AuthReadiness {
+    workflow_engine::auth_readiness()
+}
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -90,7 +118,11 @@ fn main() {
             list_definitions,
             load_definition,
             save_definition,
-            prepare_inputs
+            prepare_inputs,
+            list_configurations,
+            save_configuration,
+            delete_configuration,
+            auth_readiness
         ])
         .run(tauri::generate_context!())
         .expect("desktop host failed");

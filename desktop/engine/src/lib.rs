@@ -42,6 +42,8 @@ pub struct AiBlock {
     pub name: String,
     pub prompt: String,
     pub position: Position,
+    #[serde(default)]
+    pub configuration_id: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -261,6 +263,46 @@ pub fn resolve_inputs(
     }
     Ok(PreparedInputs { values, prompts })
 }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CodexConfiguration {
+    pub id: String,
+    pub name: String,
+    pub model: String,
+    pub reasoning: Reasoning,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum Reasoning {
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SavedConfiguration {
+    pub config: CodexConfiguration,
+    pub revision: u32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveConfiguration {
+    pub config: CodexConfiguration,
+    pub expected_revision: Option<u32>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthReadiness {
+    pub execution_enabled: bool,
+    pub credential_source: String,
+    pub status: String,
+    pub guidance: String,
+}
+pub fn auth_readiness() -> AuthReadiness {
+    AuthReadiness { execution_enabled:false, credential_source:"notInspected".into(), status:"unsupportedConcurrentAuth".into(), guidance:"Execution disabled: no approved supported concurrent subscription-auth staging/refresh route. Host credentials were not inspected. Copied refresh tokens race; the external-token bridge is internal-only. Configure non-secret settings here; resolve public-support, independent-login and secure-store gates before implementing execution. No API-key fallback or new login flow is available.".into() }
+}
 pub struct Store {
     path: PathBuf,
 }
@@ -288,7 +330,7 @@ impl Store {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(storage)?;
         let tables: u32 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |r| r.get(0)).map_err(storage)?;
-        if version > 1 || (version == 0 && tables != 0) {
+        if version > 2 || (version == 0 && tables != 0) {
             let backup = directory.join(format!("backup-{}.sqlite3", uuid::Uuid::new_v4()));
             let mut options = std::fs::OpenOptions::new();
             options.write(true).create_new(true);
@@ -310,9 +352,125 @@ impl Store {
             tx.execute_batch("CREATE TABLE revisions (id TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(id,revision)); PRAGMA user_version = 1;").map_err(storage)?;
             tx.commit().map_err(storage)?;
         }
+        if version <= 1 {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            tx.execute_batch("CREATE TABLE configurations (id TEXT PRIMARY KEY NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL); PRAGMA user_version=2;").map_err(storage)?;
+            tx.commit().map_err(storage)?;
+        }
         Ok(Self { path })
     }
 
+    pub fn delete_configuration(&self, id: &str, expected_revision: u32) -> Result<(), Error> {
+        if id.len() != 36 || uuid::Uuid::parse_str(id).is_err() {
+            return Err(validation("Configuration identity must be a UUID."));
+        }
+        let mut connection = Connection::open(&self.path).map_err(storage)?;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        {
+            let mut query=tx.prepare("SELECT r.body FROM revisions r WHERE r.revision=(SELECT MAX(s.revision) FROM revisions s WHERE s.id=r.id)").map_err(storage)?;
+            for body in query
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(storage)?
+            {
+                let d: Definition =
+                    serde_json::from_str(&body.map_err(storage)?).map_err(storage)?;
+                if d.blocks
+                    .iter()
+                    .any(|b| b.configuration_id.as_deref() == Some(id))
+                {
+                    return Err(validation("Configuration is referenced by a saved definition. Remove the reference and save first."));
+                }
+            }
+        }
+        if tx
+            .execute(
+                "DELETE FROM configurations WHERE id=?1 AND revision=?2",
+                params![id, expected_revision],
+            )
+            .map_err(storage)?
+            != 1
+        {
+            return Err(Error::Conflict {
+                message: "Configuration changed or was removed; reload before deleting.".into(),
+            });
+        }
+        tx.commit().map_err(storage)?;
+        Ok(())
+    }
+    pub fn list_configurations(&self) -> Result<Vec<SavedConfiguration>, Error> {
+        let connection = Connection::open(&self.path).map_err(storage)?;
+        let mut query = connection
+            .prepare("SELECT revision,body FROM configurations ORDER BY id LIMIT 501")
+            .map_err(storage)?;
+        let records = query
+            .query_map([], |row| {
+                Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(storage)?
+            .map(|row| {
+                let (revision, body) = row.map_err(storage)?;
+                Ok(SavedConfiguration {
+                    revision,
+                    config: serde_json::from_str(&body).map_err(storage)?,
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        if records.len() > 500 {
+            return Err(validation("Configuration limit is 500."));
+        }
+        Ok(records)
+    }
+    pub fn save_configuration(
+        &self,
+        request: SaveConfiguration,
+    ) -> Result<SavedConfiguration, Error> {
+        let c = &request.config;
+        if c.id.len() != 36
+            || uuid::Uuid::parse_str(&c.id).is_err()
+            || c.name.trim().is_empty()
+            || c.name.len() > 200
+            || c.model.is_empty()
+            || c.model.len() > 100
+            || !c
+                .model
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+        {
+            return Err(validation("Configuration needs a UUID, name (1–200 bytes), model identifier (1–100 ASCII letters/digits/-_.) and supported reasoning setting. Never enter credentials."));
+        }
+        let mut connection = Connection::open(&self.path).map_err(storage)?;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let current: Option<u32> = tx
+            .query_row(
+                "SELECT revision FROM configurations WHERE id=?1",
+                [&c.id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(storage)?;
+        if current != request.expected_revision {
+            return Err(Error::Conflict {
+                message: "Configuration changed. Keep edits or explicitly reload.".into(),
+            });
+        }
+        let revision = current
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or_else(|| storage("revision exhausted"))?;
+        let body = serde_json::to_string(c).map_err(storage)?;
+        tx.execute("INSERT INTO configurations(id,revision,body) VALUES (?1,?2,?3) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,body=excluded.body",params![c.id,revision,body]).map_err(storage)?;
+        tx.commit().map_err(storage)?;
+        Ok(SavedConfiguration {
+            config: request.config,
+            revision,
+        })
+    }
     pub fn list(&self) -> Result<Vec<SavedDefinition>, Error> {
         let connection = Connection::open(&self.path).map_err(storage)?;
         let mut query = connection.prepare("SELECT r.revision,r.body FROM revisions r WHERE r.revision=(SELECT MAX(s.revision) FROM revisions s WHERE s.id=r.id) ORDER BY r.id LIMIT 501").map_err(storage)?;
@@ -375,6 +533,22 @@ impl Store {
         let tx = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
+        for b in &request.definition.blocks {
+            if let Some(id) = &b.configuration_id {
+                if id.len() != 36
+                    || uuid::Uuid::parse_str(id).is_err()
+                    || !tx
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM configurations WHERE id=?1)",
+                            [id],
+                            |r| r.get::<_, bool>(0),
+                        )
+                        .map_err(storage)?
+                {
+                    return Err(validation("Missing or invalid Codex configuration reference. Select an existing configuration."));
+                }
+            }
+        }
         let current: Option<u32> = tx
             .query_row(
                 "SELECT MAX(revision) FROM revisions WHERE id=?1",

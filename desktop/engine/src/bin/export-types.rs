@@ -11,6 +11,15 @@ fn main() {
         PreparedInputs::decl(&Default::default()),
         output
     );
+    let output = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}",
+        workflow_engine::CodexConfiguration::decl(&Default::default()),
+        workflow_engine::Reasoning::decl(&Default::default()),
+        workflow_engine::SavedConfiguration::decl(&Default::default()),
+        workflow_engine::SaveConfiguration::decl(&Default::default()),
+        workflow_engine::AuthReadiness::decl(&Default::default()),
+        output
+    );
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/lib/transport.ts");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let output = format!(

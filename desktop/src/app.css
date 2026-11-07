@@ -24,6 +24,10 @@ ul { list-style: none; padding: 0; margin: 24px 0; }
 small { display: block; }
 [role=alert], .notice { color: #fde68a; }
 .notice { padding: 24px 40px; background: #292619; }
+input[type=checkbox] {width:auto;}
+.readiness {grid-column:1/-1;padding:20px;border-top:1px solid #29364a;}
+pre {white-space:pre-wrap;overflow-wrap:anywhere;}
+aside {max-height:100vh;overflow:auto;}
 * { box-sizing: border-box; }
 textarea, select { font: inherit; width:100%; padding:10px; border:1px solid #475569; border-radius:6px; background:#111b2c; }
 button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible { outline:2px solid #38bdf8;outline-offset:3px; }
