@@ -207,7 +207,18 @@ fn substitute(
         let name = tail[..end]
             .strip_prefix("input.")
             .ok_or_else(|| validation("Only {{input.name}} references are supported."))?;
-        result.push_str(&lookup(name)?);
+        let value = lookup(name)?;
+        if result
+            .len()
+            .saturating_add(value.len())
+            .saturating_add(tail.len() - end - 2)
+            > 1_048_576
+        {
+            return Err(validation(
+                "Prepared prompt exceeds 1 MiB; shorten input values or references.",
+            ));
+        }
+        result.push_str(&value);
         rest = &tail[end + 2..];
     }
     result.push_str(rest);

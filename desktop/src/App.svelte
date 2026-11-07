@@ -66,6 +66,10 @@
     <ul>{#each definitions as saved (saved.definition.id)}
       <li><button class="workflow-link" disabled={busy} aria-current={editor.working?.id === saved.definition.id ? 'page' : undefined} onclick={() => navigate(saved.definition.id)}>{saved.definition.name}<small>Revision {saved.revision}</small></button></li>
     {:else}<li class="muted">No saved desktop workflows.</li>{/each}</ul>
+    <section aria-label="Block palette"><h2>Block palette</h2>
+      <Button disabled={busy||!editor.working} onclick={()=>{const id=crypto.randomUUID();editor=editGraph(editor,{type:'add',id});selected=id;}}>Add AI block</Button>
+      <p class="muted">AI blocks only. Connect them in workflow properties; edit each prompt in the inspector.</p>
+    </section>
     <ConfigurationManager {configurations} {commands} onchanged={refreshConfigurations}/>
     <p class="muted">Private desktop storage · separate from browser data</p>
   </aside>
@@ -93,7 +97,7 @@
         <Button disabled={busy} onclick={()=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:[...editor.working.inputs,{name:`input_${editor.working.inputs.length+1}`,required:true,default:null}]},dirty:true};}}>Add text input</Button>
         <InputForm definition={editor.working} {commands}/>
 
-        <Button disabled={busy} onclick={()=>{const id=crypto.randomUUID();editor=editGraph(editor,{type:'add',id});selected=id;}}>Add AI block</Button>
+
         <label for="block-select">Select block</label><select id="block-select" disabled={busy} bind:value={selected}><option value="">Choose a block</option>{#each editor.working.blocks as b}<option value={b.id}>{b.name}</option>{/each}</select>
         <label for="source">Connect from</label><select id="source" disabled={busy} bind:value={source}><option value="">Source block</option>{#each editor.working.blocks as b}<option value={b.id}>{b.name}</option>{/each}</select>
         <label for="target">Connect to</label><select id="target" disabled={busy} bind:value={target}><option value="">Target block</option>{#each editor.working.blocks as b}<option value={b.id}>{b.name}</option>{/each}</select>
