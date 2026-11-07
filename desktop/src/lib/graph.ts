@@ -1,8 +1,30 @@
 import type { Node, Edge } from '@xyflow/svelte';
 import type { Definition } from './transport.ts';
-export function toFlow(d: Definition): { nodes: Node[]; edges: Edge[] } {
- return { nodes:d.blocks.map(b=>({id:b.id,type:'ai',position:{...b.position},data:{label:b.name}})), edges:d.connections.map((c,i)=>({id:`connection-${i}`,source:c.source,target:c.target})) };
+
+export function toFlow(definition: Definition): { nodes: Node[]; edges: Edge[] } {
+  return {
+    nodes: definition.blocks.map(block => ({
+      id: block.id,
+      type: 'ai',
+      position: { ...block.position },
+      data: { label: block.name },
+    })),
+    edges: definition.connections.map((connection, index) => ({
+      id: `connection-${index}`,
+      source: connection.source,
+      target: connection.target,
+    })),
+  };
 }
-export function fromFlow(d: Definition, nodes: Node[], edges: Edge[]): Definition {
- return {...d,blocks:nodes.flatMap(n=>{const b=d.blocks.find(b=>b.id===n.id); return b?[{...b,position:{x:n.position.x,y:n.position.y}}]:[];}),connections:edges.map(e=>({source:e.source,target:e.target}))};
+
+export function fromFlow(definition: Definition, nodes: Node[], edges: Edge[]): Definition {
+  return {
+    ...definition,
+    blocks: nodes.flatMap(node => {
+      const block = definition.blocks.find(block => block.id === node.id);
+      if (!block) return [];
+      return [{ ...block, position: { x: node.position.x, y: node.position.y } }];
+    }),
+    connections: edges.map(edge => ({ source: edge.source, target: edge.target })),
+  };
 }
