@@ -21,11 +21,47 @@ Ubuntu 24.04/macOS acceptance observation. Original hardware metadata was incomp
 Do not reinterpret this checkpoint as results from the new script.
 
 This source adds one opt-in **Linux-only** process/window observer, outside routine
-unit-test discovery. Metadata mode was exercised without desktop launch; launch
-mode is pending the parent's final candidate. No arbitrary budget or
+unit-test discovery. Metadata mode and a later explicit release idle launch were
+exercised; the latter's actual evidence is recorded below. No arbitrary budget or
 "lightweight" verdict follows. No macOS native host is available here; no macOS
 startup, CPU, process-tree memory, install or interaction result exists. Linux
 numbers are never substituted for it.
+
+## Stabilized editor release: actual available-host observation
+
+The release built and observed at `fd111c2d52afde5e24506948ccaf85fd0b8d0b03`
+includes the canvas/configuration/runtime-settings source, but this observation
+shows only its **empty saved-workflow screen**, not a loaded canvas or log view.
+It ran on Ubuntu **26.04.1 x86_64**, Intel Xeon E3-1231 v3 at 3.40 GHz,
+8 logical CPUs and 33,470,361,600 physical memory bytes, with private Xvfb,
+private D-Bus and disposable HOME/XDG directories. No Docker/model/auth call or
+UI interaction was performed.
+
+- Release executable: **14,457,104 bytes**, SHA-256
+  `31eb6b2a2f20a39863f58b5bd5d0941e2cf3320c1132e33dcc0e5f7fb3fa8769`.
+- Local uninstalled release `.deb`: **4,400,860 bytes**, SHA-256
+  `0128af16a60cd441fed729f19b7f14eb683de573c2c0ac3b6a837f3fdbf0765b`.
+  Declared Installed-Size **14183 KiB**; actual installed/dependency footprint
+  remains unmeasured. Its installed-path payload includes the full 1712-byte
+  third-party notice, byte-identical to source.
+- After five seconds of startup sampling, actual idle interval **10.1661 s**:
+  **18.001% of one CPU core** and peak sampled summed RSS **551,063,552 bytes**
+  (about **525.5 MiB**). Main, WebKit web and network processes are included;
+  shared pages are double-counted. This single virtual-display sample is not a
+  stable performance benchmark or proof of low overhead.
+- The inspected screenshot shows the workflow list, configuration controls and
+  runtime-readiness panel rendered, with execution explicitly disabled. Window-map
+  timing is unavailable because xdotool/xwininfo were absent; screenshot capture
+  is not a first-paint or startup-latency measurement.
+- The observer completed successfully. Its cleanup list was empty, and an
+  independent subsequent PID/start-time check found no observed processes alive.
+
+Retained external receipts under `final-fd111c2/`: `checks.json` (including actual
+release-build command/exit and unchanged-source fingerprints), `count.json`
+(**151/151**), `idle-observation/observation.json`, `native-window.png`, and
+`package-and-cleanup.json`. Later documentation-only corrections do not change
+these measured application bytes. Ubuntu 24.04 ABI/install acceptance, macOS,
+saved-canvas/log scenarios and native interaction are still unverified.
 
 ## Candidate-bound receipts
 
