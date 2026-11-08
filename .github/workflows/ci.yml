@@ -27,6 +27,11 @@ jobs:
             bundle: dmg
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
+    env:
+      # CI packages are debug builds; symbols/incremental state only inflate compile and cache work.
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -44,7 +49,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             desktop/target
-          key: desktop-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-${{ hashFiles('desktop/Cargo.lock') }}
+          key: desktop-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-debug0-noincremental-${{ hashFiles('desktop/Cargo.lock') }}
       - name: Linux native build libraries
         if: runner.os == 'Linux'
         run: |
@@ -53,8 +58,8 @@ jobs:
       - name: Pinned Rust tooling
         working-directory: desktop
         run: rustup show active-toolchain
-      - run: npm ci --ignore-scripts
-      - run: npm ci --prefix desktop --ignore-scripts
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm ci --prefix desktop --ignore-scripts --no-audit --no-fund
       - run: npm run typecheck
       - run: npm --prefix desktop run check
       - run: npm --prefix desktop run build
@@ -70,3 +75,14 @@ jobs:
       - name: Compile and package bundled desktop assets (no launch or upload)
         working-directory: desktop
         run: npm exec -- tauri build --debug --bundles ${{ matrix.bundle }}
+      - name: Advisory npm audits (once, outside dependency installation)
+        if: runner.os == 'Linux'
+        timeout-minutes: 1
+        continue-on-error: true
+        run: |
+          set +e
+          npm audit --fetch-timeout=10000 --fetch-retries=0
+          root_status=$?
+          npm audit --prefix desktop --fetch-timeout=10000 --fetch-retries=0
+          desktop_status=$?
+          test "$root_status" -eq 0 && test "$desktop_status" -eq 0
