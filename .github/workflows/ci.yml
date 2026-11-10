@@ -26,7 +26,8 @@ jobs:
           - os: macos-15-intel
             bundle: dmg
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 5
+    # Approved exception for Intel cold toolchain/native compilation only.
+    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 10 || 5 }}
     env:
       # CI packages are debug builds; symbols/incremental state only inflate compile and cache work.
       CARGO_PROFILE_DEV_DEBUG: '0'
