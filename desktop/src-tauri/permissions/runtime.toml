@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "runtime-readiness"
+description = "Manual bounded local Docker inspection and non-executing setup plan only."
+commands.allow = ["runtime_readiness", "runtime_setup_plan"]

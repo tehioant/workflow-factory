@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "definitions"
+description = "List, load and revision-checked save of private desktop definitions only."
+commands.allow = ["list_definitions", "load_definition", "save_definition", "prepare_inputs", "list_configurations", "save_configuration", "delete_configuration", "auth_readiness"]

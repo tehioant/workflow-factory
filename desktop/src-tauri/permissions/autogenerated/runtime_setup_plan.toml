@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-runtime-setup-plan"
+description = "Enables the runtime_setup_plan command without any pre-configured scope."
+commands.allow = ["runtime_setup_plan"]
+
+[[permission]]
+identifier = "deny-runtime-setup-plan"
+description = "Denies the runtime_setup_plan command without any pre-configured scope."
+commands.deny = ["runtime_setup_plan"]

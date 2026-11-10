@@ -1,0 +1,12 @@
+[package]
+name = "workflow-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.5", features = [] }
+tokio = { version = "=1.48.0", features = ["sync"] }
+workflow-engine = { path = "../engine" }

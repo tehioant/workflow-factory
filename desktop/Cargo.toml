@@ -1,0 +1,4 @@
+[workspace]
+members = ["engine", "src-tauri"]
+default-members = ["engine"]
+resolver = "2"

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-prepare-inputs"
+description = "Enables the prepare_inputs command without any pre-configured scope."
+commands.allow = ["prepare_inputs"]
+
+[[permission]]
+identifier = "deny-prepare-inputs"
+description = "Denies the prepare_inputs command without any pre-configured scope."
+commands.deny = ["prepare_inputs"]
