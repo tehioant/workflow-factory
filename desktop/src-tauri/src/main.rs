@@ -188,12 +188,13 @@ async fn start_run(
         });
     }
     let scope = format!(
-        "Data: {}\nRequest: {}\nDefinition: {} revision {}\nConfiguration revision: {}",
+        "Data: {}\nRequest: {}\nDefinition: {} revision {}\nLegacy configuration revision: {}\nCaptured configuration revisions: {:?}",
         state.directory.display(),
         request.request_id,
         request.definition_id,
         request.expected_revision,
-        request.expected_configuration_revision
+        request.expected_configuration_revision,
+        request.expected_configuration_revisions
     );
     let status = database(&state, move |s| {
         if let Some(original) = s.recorded_run(&request)? {

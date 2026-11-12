@@ -15,6 +15,8 @@ fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() 
         "cancelled",
         "duplicate",
         "storage",
+        "result-storage",
+        "execution-failed",
     ] {
         let (_dir, store, c) = prepared();
         let mut s = status();
@@ -42,7 +44,7 @@ fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() 
         }
         seed_run(&c, &s, true);
         let config = serde_json::json!({"config":{"id":CONFIG,"name":"Captured","model":"captured-model","reasoning":"high"},"revision":2});
-        let snapshot = serde_json::json!({"definition":{"definition":{"schemaVersion":1,"id":DEFINITION,"name":"Captured","blocks":[],"connections":[],"inputs":[]},"revision":1},"configuration":config,"inputs":{"values":{},"prompts":{}},"imageId":"captured-image","plans":[{"block_id":"a","segments":[{"Literal":"A own"}],"configuration":config},{"block_id":"b","segments":[{"Literal":"B own $ 雪 / "},{"Output":"a"}],"configuration":config}]});
+        let snapshot = serde_json::json!({"definition":{"definition":{"schemaVersion":1,"id":DEFINITION,"name":"Captured","blocks":[{"id":"b","name":"B","prompt":"B own $ 雪 / {{output.a.finalResponse}}","position":{"x":0,"y":0},"configurationId":CONFIG},{"id":"a","name":"A","prompt":"A own","position":{"x":0,"y":0},"configurationId":CONFIG}],"connections":[{"source":"a","target":"b"}],"inputs":[]},"revision":1},"configuration":config,"inputs":{"values":{},"prompts":{}},"imageId":"captured-image","plans":[{"block_id":"a","segments":[{"Literal":"A own"}],"configuration":config},{"block_id":"b","segments":[{"Literal":"B own $ 雪 / "},{"Output":"a"}],"configuration":config}]});
         c.execute("UPDATE runs SET snapshot=?1", [snapshot.to_string()])
             .unwrap();
         c.execute("DELETE FROM configurations", []).unwrap();
@@ -65,6 +67,9 @@ fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() 
             cancel.0.store(true, std::sync::atomic::Ordering::SeqCst);
         }
         let mut calls = 0;
+        if scenario == "result-storage" {
+            c.execute_batch("CREATE TRIGGER refuse_result BEFORE UPDATE ON runs WHEN NEW.status LIKE '%B [REDACTED]%' BEGIN SELECT RAISE(FAIL,'result storage failure'); END;").unwrap();
+        }
         let result = store.execute_next_block(
             "owned",
             &lease,
@@ -76,13 +81,32 @@ fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() 
                 assert_eq!(plan.block_id, "b");
                 assert_eq!(plan.configuration.config.model, "captured-model");
                 assert_eq!(prompt, "B own $ 雪 / A literal {{input.topic}} <img>");
+                if scenario == "execution-failed" {
+                    return Err(workflow_engine::Error::Validation {
+                        message: "Prepared immediate adapter failure".into(),
+                    });
+                }
                 Ok("B [REDACTED]".into())
             },
         );
         assert_eq!(result.is_ok(), scenario == "success", "{scenario}");
-        assert_eq!(calls, usize::from(scenario == "success"));
+        assert_eq!(
+            calls,
+            usize::from(matches!(
+                scenario,
+                "success" | "result-storage" | "execution-failed"
+            ))
+        );
         let after = store.run_status("owned").unwrap();
         assert_eq!(after.blocks[0].final_response, s.blocks[0].final_response);
+        if scenario == "execution-failed" {
+            assert_eq!(after.blocks[1].state, RunState::Failed);
+            assert_eq!(after.final_response, s.final_response);
+        }
+        if scenario == "result-storage" {
+            assert_eq!(after.blocks[1].state, RunState::Running);
+            assert_eq!(after.blocks[1].final_response, None);
+        }
         if scenario == "success" {
             assert_eq!(after.blocks.len(), 2);
             assert_eq!(after.blocks[1].state, RunState::Succeeded);
