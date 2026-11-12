@@ -53,7 +53,7 @@ Local raw argv/exit/log and byte/mode evidence is retained by the delivery owner
 under `d09-build`, not represented as live/native UI qualification. Native runtime,
 login, container-removal and platform UI qualification are deliberately separate.
 
-## Interrupted recovery checkpoint (#37)
+## Interrupted run recovery (#37)
 
 The explicit selected **Retry owned cleanup** action can reconstruct the existing
 cleanup context from private, bounded `run_recovery` metadata. The worker records
@@ -70,11 +70,23 @@ selected storage-only replay through the existing settlement validator. That
 replay performs no Docker, secure-store, confirmation or successor operations.
 History/status reads remain on the checked read-only reader.
 
-This is a partial source checkpoint, not full #37 completion. Acknowledged partial
-creation without a complete resource context remains held. A death after cache
-write/removal but before the completion receipt is durably saved remains held:
-no cache digest/export provenance is yet durable for reconstructing that window.
-Per-block handoff invalidates the old durable context before effects; interrupted
-overlap/retirement must still be correlated explicitly rather than selecting an
-agent by ordinal. Missing keeper/checkpoint authority never authorizes seed-cache
-fallback. Mounted selected interrupted-action coverage is still outstanding.
+Acknowledged partial creation can be reconciled from its durable creating phase
+without secure-store access only when staging is positively excluded. Before a
+current-cache secure mutation, a digest is bound to the exact lease, resources
+and keeper epoch. Recovery after write/removal requires fresh matching native
+readback and exact-ID absence, not the original cache seed. Acknowledged handoff
+successor, peer, epoch and retirement records are correlated explicitly; resource
+names or ordinals never grant adoption authority.
+
+Unknown create/start effects, incomplete overlap/removal acknowledgements, and
+interruption before the started epoch is durably published remain held. So do a
+missing keeper without current-cache provenance, changed epochs, cache mismatch
+and unavailable cleanup/storage dependencies. Durable results and ownership holds
+remain until a positive explicit recheck; lost legacy volatile text is unavailable.
+
+Prepared-record checks cover the actual selected native reconciliation caller
+with strict process/secure-store fakes. A mounted RunPanel check exercises the
+real command transport for selected cleanup, errors, stale replies and storage-only
+replay despite edited/deleted definitions or unavailable runtime. These are focused
+source checks, not live crash/restart, Docker/keyring or installed-platform
+interaction qualification; those native observations remain **UNRUN**.
