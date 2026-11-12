@@ -620,17 +620,25 @@ impl Store {
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
-        let bodies: Vec<String> = {
+        let bodies: Vec<(String, Option<String>)> = {
             let mut q = tx
-                .prepare("SELECT status FROM runs WHERE active=1")
+                .prepare("SELECT r.status,q.phase FROM runs r LEFT JOIN run_queue q ON q.run_id=r.id WHERE r.active=1")
                 .map_err(storage)?;
-            let rows = q.query_map([], |r| r.get(0)).map_err(storage)?;
+            let rows = q
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(storage)?;
             rows.collect::<Result<_, _>>().map_err(storage)?
         };
-        for body in bodies {
+        for (body, phase) in bodies {
             let mut s: RunStatus = serde_json::from_str(&body).map_err(storage)?;
-            let waiting = s.state == RunState::Queued;
-            if waiting {
+            // Durable queue-only authority survives repeated startup. Inconsistent
+            // state/phase pairs and existing cleanup holds remain fail-closed.
+            let waiting = !s.cleanup_pending
+                && matches!(
+                    (phase.as_deref(), &s.state),
+                    (Some("waiting"), RunState::Queued) | (Some("withheld"), RunState::Held)
+                );
+            if phase.as_deref() == Some("waiting") {
                 tx.execute(
                     "UPDATE run_queue SET phase='withheld' WHERE run_id=?1 AND phase='waiting'",
                     [&s.id],

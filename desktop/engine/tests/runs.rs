@@ -553,19 +553,116 @@ fn c04_restart_withholds_active_run_and_session_without_releasing() {
         [],
     )
     .unwrap();
-    store.withhold_unfinished_runs().unwrap();
-    assert_eq!(store.run_status("owned").unwrap().state, RunState::Held);
-    assert_eq!(
-        c.query_row("SELECT state FROM managed_sessions", [], |r| r
-            .get::<_, String>(0))
-            .unwrap(),
-        "quarantined"
-    );
-    assert_eq!(
-        c.query_row("SELECT active FROM runs", [], |r| r.get::<_, u32>(0))
-            .unwrap(),
-        1
-    );
+    for _ in 0..3 {
+        store.withhold_unfinished_runs().unwrap();
+        let held = store.run_status("owned").unwrap();
+        assert_eq!(held.state, RunState::Held);
+        assert!(held.cleanup_pending);
+        assert_eq!(
+            c.query_row("SELECT state FROM managed_sessions", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "quarantined"
+        );
+        assert_eq!(
+            c.query_row("SELECT active FROM runs", [], |r| r.get::<_, u32>(0))
+                .unwrap(),
+            1
+        );
+    }
+    // Prepared durable startup predicates only: no admission, launch or workflow.
+    for (phase, state, queue_only) in [
+        (Some("waiting"), RunState::Queued, true),
+        (Some("withheld"), RunState::Held, true),
+        (Some("occupied"), RunState::Held, false),
+        (Some("settled"), RunState::Held, false),
+        (None, RunState::Running, false),
+        (None, RunState::Queued, false),
+        (Some("occupied"), RunState::Queued, false),
+        (Some("waiting"), RunState::Running, false),
+    ] {
+        let (_dir, store, c) = prepared();
+        let mut seeded = status();
+        seeded.state = state;
+        seed_run(&c, &seeded, true);
+        if let Some(phase) = phase {
+            c.execute(
+                "INSERT INTO run_queue(run_id,phase) VALUES('owned',?1)",
+                [phase],
+            )
+            .unwrap();
+        }
+        if phase == Some("occupied") {
+            c.execute(
+                "UPDATE run_queue SET slot='held-slot',generation=7 WHERE run_id='owned'",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO managed_sessions VALUES('held-slot','leased',7,'owned')",
+                [],
+            )
+            .unwrap();
+        }
+        c.execute(
+            "INSERT INTO managed_sessions VALUES('unused','available',11,NULL)",
+            [],
+        )
+        .unwrap();
+        for startup in 1..=3 {
+            store.withhold_unfinished_runs().unwrap();
+            let held = store.run_status("owned").unwrap();
+            assert_eq!(held.state, RunState::Held);
+            assert_eq!(
+                held.cleanup_pending, !queue_only,
+                "phase={phase:?}, startup={startup}"
+            );
+            assert_eq!(held.final_response.as_deref(), Some("retained"));
+            assert_eq!(
+                c.query_row("SELECT active FROM runs", [], |r| r.get::<_, u32>(0))
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                c.query_row(
+                    "SELECT state||':'||generation FROM managed_sessions WHERE id='unused' AND owner IS NULL",
+                    [],
+                    |r| r.get::<_, String>(0)
+                ).unwrap(),
+                "available:11"
+            );
+            let durable: Option<String> = c
+                .query_row(
+                    "SELECT (SELECT phase FROM run_queue WHERE run_id='owned')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                durable.as_deref(),
+                match phase {
+                    Some("waiting") => Some("withheld"),
+                    other => other,
+                }
+            );
+            assert_eq!(
+                c.query_row("SELECT COUNT(*) FROM run_queue WHERE slot IS NOT NULL OR generation IS NOT NULL", [], |r| r.get::<_, u32>(0)).unwrap(),
+                u32::from(phase == Some("occupied"))
+            );
+            if phase == Some("occupied") {
+                assert_eq!(c.query_row("SELECT state||':'||generation||':'||owner FROM managed_sessions WHERE id='held-slot'", [], |r| r.get::<_, String>(0)).unwrap(), "quarantined:7:owned");
+                assert_eq!(
+                    c.query_row(
+                        "SELECT slot||':'||generation FROM run_queue WHERE run_id='owned'",
+                        [],
+                        |r| r.get::<_, String>(0)
+                    )
+                    .unwrap(),
+                    "held-slot:7"
+                );
+            }
+        }
+    }
 }
 struct FailingStore(bool);
 impl SecureStore for FailingStore {
