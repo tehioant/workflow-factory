@@ -61,8 +61,8 @@ fn identity(id: &str) -> Result<(), Error> {
 fn unavailable() -> Error {
     validation("Captured run unavailable: unsupported, incomplete, oversized or inconsistent retained record.")
 }
-/// Retains the actual SQLite connection and checked handles. SQLite may canonicalize
-/// /dev/fd on open; these checks detect path drift, not arbitrary ancestor races.
+/// Retains the actual SQLite connection and checked handles. These checks detect
+/// path drift, not arbitrary ancestor races.
 pub struct HistoryReader {
     c: Connection,
     root: std::path::PathBuf,
@@ -98,10 +98,7 @@ impl HistoryReader {
         Ok(workflow)
     }
     pub fn open(root: &std::path::Path) -> Result<Self, Error> {
-        use std::os::{
-            fd::AsRawFd,
-            unix::fs::{MetadataExt, OpenOptionsExt},
-        };
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
         let parent = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -114,9 +111,18 @@ impl HistoryReader {
             libc::O_RDONLY | libc::O_NONBLOCK,
         )?;
         super::inspection::private(&db, false)?;
+        // SQLite NOFOLLOW rejects symlinks in *any* component (including macOS
+        // /var). Resolve only the already checked private root, never an unchecked
+        // database or /dev/fd path, then retain NOFOLLOW on SQLite's actual open.
+        let resolved_root = root.canonicalize().map_err(storage)?;
+        let named_parent = resolved_root.metadata().map_err(storage)?;
+        let held_parent = parent.metadata().map_err(storage)?;
+        if named_parent.dev() != held_parent.dev() || named_parent.ino() != held_parent.ino() {
+            return Err(unavailable());
+        }
         let c = Connection::open_with_flags(
-            format!("/dev/fd/{}", db.as_raw_fd()),
-            OpenFlags::SQLITE_OPEN_READ_ONLY,
+            resolved_root.join("definitions.sqlite3"),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
         .map_err(storage)?;
         c.busy_timeout(std::time::Duration::from_millis(250))
@@ -158,21 +164,8 @@ impl HistoryReader {
         list(self.checked()?, workflow, cursor, limit)
     }
 }
-fn connection(store: &Store) -> Result<Connection, Error> {
-    let c = Connection::open_with_flags(
-        &store.path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )
-    .map_err(storage)?;
-    c.busy_timeout(std::time::Duration::from_millis(250))
-        .map_err(storage)?;
-    let version: u32 = c
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
-        .map_err(storage)?;
-    if version != 3 {
-        return Err(unavailable());
-    }
-    Ok(c)
+fn reader(store: &Store) -> Result<HistoryReader, Error> {
+    HistoryReader::open(store.path.parent().ok_or_else(unavailable)?)
 }
 pub(crate) fn detail(c: &Connection, workflow: &str, id: &str) -> Result<RunDetail, Error> {
     // Check bytes in SQL before materializing any stored JSON in Rust.
@@ -355,9 +348,7 @@ impl Store {
     pub fn run_detail(&self, workflow: &str, id: &str) -> Result<RunDetail, Error> {
         identity(workflow)?;
         identity(id)?;
-        let mut c = connection(self)?;
-        let tx = c.transaction().map_err(storage)?;
-        detail(&tx, workflow, id)
+        reader(self)?.run_detail(workflow, id)
     }
     pub fn list_run_history(
         &self,
@@ -365,7 +356,7 @@ impl Store {
         cursor: Option<&str>,
         limit: u32,
     ) -> Result<HistoryPage, Error> {
-        list(&connection(self)?, workflow, cursor, limit)
+        reader(self)?.list_run_history(workflow, cursor, limit)
     }
 }
 fn list(

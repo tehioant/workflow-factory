@@ -614,7 +614,14 @@ fn c13_quarantine_retirement_requires_positive_resource_and_secure_item_absence(
 
 #[test]
 fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
-    let dir = tempfile::tempdir().unwrap();
+    // Prepared trusted ancestor alias, as with macOS /var -> /private/var.
+    // The private root itself and its database must still never be symlinks.
+    let ancestor = tempfile::tempdir().unwrap();
+    let real = ancestor.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    let alias = ancestor.path().join("alias");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    let dir = tempfile::tempdir_in(&alias).unwrap();
     let store = Store::open(dir.path()).unwrap();
     let c = Connection::open(dir.path().join("definitions.sqlite3")).unwrap();
     let config = serde_json::json!({"config":{"id":CONFIG,"name":"Captured <img>","model":"captured-model","reasoning":"high"},"revision":2});
@@ -646,6 +653,26 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
+    // Differential proof: legacy SQLite read-only accepts the trusted alias,
+    // whereas SQLite's NOFOLLOW rejects even an ancestor link.
+    let db_path = dir.path().join("definitions.sqlite3");
+    let legacy =
+        Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    assert_eq!(
+        legacy
+            .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        3
+    );
+    let rejected = Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .unwrap_err();
+    assert_eq!(
+        rejected.sqlite_error().unwrap().extended_code,
+        rusqlite::ffi::SQLITE_CANTOPEN_SYMLINK
+    );
     let page = store.list_run_history(DEFINITION, None, 2).unwrap();
     assert_eq!(page.entries.len(), 2);
     assert!(page.entries[0].id.ends_with('4'));
@@ -679,6 +706,21 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
     std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o600)).unwrap();
     let saved = dir.path().join("original.sqlite3");
     std::fs::rename(&db_path, &saved).unwrap();
+    std::os::unix::fs::symlink(&saved, &db_path).unwrap();
+    assert!(workflow_engine::runs::history::HistoryReader::open(dir.path()).is_err());
+    assert!(reader.run_detail(DEFINITION, id).is_err());
+    assert!(store.list_run_history(DEFINITION, None, 2).is_err());
+    std::fs::remove_file(&db_path).unwrap();
+    std::fs::rename(&saved, &db_path).unwrap();
+    let saved_root = alias.join("held-root");
+    std::fs::rename(dir.path(), &saved_root).unwrap();
+    std::os::unix::fs::symlink(&saved_root, dir.path()).unwrap();
+    assert!(workflow_engine::runs::history::HistoryReader::open(dir.path()).is_err());
+    assert!(reader.run_detail(DEFINITION, id).is_err());
+    assert!(store.list_run_history(DEFINITION, None, 2).is_err());
+    std::fs::remove_file(dir.path()).unwrap();
+    std::fs::rename(&saved_root, dir.path()).unwrap();
+    std::fs::rename(&db_path, &saved).unwrap();
     std::fs::copy(&saved, &db_path).unwrap();
     assert!(
         reader.run_detail(DEFINITION, id).is_err(),
@@ -689,9 +731,11 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
     let link = dir.path().join("linked.sqlite3");
     std::fs::hard_link(&db_path, &link).unwrap();
     assert!(reader.workflow(id).is_err());
+    assert!(store.list_run_history(DEFINITION, None, 2).is_err());
     std::fs::remove_file(link).unwrap();
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(reader.list_run_history(DEFINITION, None, 2).is_err());
+    assert!(store.run_detail(DEFINITION, id).is_err());
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     assert!(reader.run_detail(CONFIG, id).is_err());
     assert!(reader.list_run_history(DEFINITION, None, 51).is_err());
