@@ -1,6 +1,9 @@
 pub mod auth;
 pub mod auth_file;
+pub mod output;
+pub mod runs;
 pub mod runtime;
+pub mod sessions;
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -456,7 +459,7 @@ impl Store {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(storage)?;
         let tables: u32 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |r| r.get(0)).map_err(storage)?;
-        if version > 2 || (version == 0 && tables != 0) {
+        if version > 3 || (version == 0 && tables != 0) {
             let backup = directory.join(format!("backup-{}.sqlite3", uuid::Uuid::new_v4()));
             let mut options = std::fs::OpenOptions::new();
             options.write(true).create_new(true);
@@ -484,6 +487,9 @@ impl Store {
                 .map_err(storage)?;
             tx.execute_batch("CREATE TABLE configurations (id TEXT PRIMARY KEY NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL); PRAGMA user_version=2;").map_err(storage)?;
             tx.commit().map_err(storage)?;
+        }
+        if version <= 2 {
+            connection.execute_batch("BEGIN IMMEDIATE; CREATE TABLE runs(id TEXT PRIMARY KEY,request_id TEXT UNIQUE NOT NULL,request TEXT NOT NULL,snapshot TEXT NOT NULL,status TEXT NOT NULL,active INTEGER NOT NULL); CREATE UNIQUE INDEX one_active_run ON runs(active) WHERE active=1; CREATE TABLE managed_sessions(id TEXT PRIMARY KEY,state TEXT NOT NULL,generation INTEGER NOT NULL,owner TEXT); PRAGMA user_version=3; COMMIT;").map_err(storage)?;
         }
         Ok(Self { path })
     }

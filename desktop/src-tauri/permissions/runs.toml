@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "single-block-runs"
+description = "Local main-window durable single-block admission, retained status and scoped stop only."
+commands.allow = ["start_run", "run_status", "stop_run", "managed_session_status"]

@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod run_host;
 mod runtime_host;
 use std::{path::PathBuf, sync::Arc};
 use tauri::Manager;
@@ -132,12 +133,70 @@ async fn runtime_setup_plan() -> Result<workflow_engine::runtime::SetupPlan, Err
             message: "Setup plan interrupted. Retry.".into(),
         })
 }
+#[tauri::command]
+async fn start_run(
+    state: tauri::State<'_, Database>,
+    request: workflow_engine::runs::StartRun,
+) -> Result<workflow_engine::runs::RunStatus, Error> {
+    database(&state, move |s| s.admit_run(request, run_host::admission())).await
+}
+#[tauri::command]
+async fn run_status(
+    state: tauri::State<'_, Database>,
+    id: Option<String>,
+) -> Result<Option<workflow_engine::runs::RunStatus>, Error> {
+    database(&state, move |s| match id {
+        Some(id) => s.run_status(&id).map(Some),
+        None => s.latest_run(),
+    })
+    .await
+}
+#[tauri::command]
+async fn stop_run(
+    state: tauri::State<'_, Database>,
+    id: String,
+) -> Result<workflow_engine::runs::RunStatus, Error> {
+    database(&state, move |s| s.stop_run(&id)).await
+}
+#[tauri::command]
+async fn managed_session_status(
+    state: tauri::State<'_, Database>,
+) -> Result<workflow_engine::sessions::ManagedSessionStatus, Error> {
+    database(&state, move |s| s.managed_session_status()).await
+}
+struct DataLock {
+    _file: std::fs::File,
+}
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
             app.manage(RuntimeGate(Arc::new(tokio::sync::Semaphore::new(1))));
+            let directory = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&directory)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+                if directory.symlink_metadata()?.file_type().is_symlink() {
+                    return Err("Unsafe data directory".into());
+                }
+                std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .mode(0o600)
+                    .custom_flags(libc::O_NOFOLLOW)
+                    .open(directory.join("desktop.lock"))?;
+                file.try_lock()
+                    .map_err(|_| "Another process owns this desktop data directory")?;
+                app.manage(DataLock { _file: file });
+            }
+            Store::open(&directory)
+                .and_then(|s| s.withhold_unfinished_runs())
+                .map_err(|_| "Startup storage reconciliation failed; execution withheld")?;
             app.manage(Database {
-                directory: app.path().app_data_dir()?,
+                directory,
                 gate: Arc::new(tokio::sync::Semaphore::new(1)),
             });
             tauri::WebviewWindowBuilder::new(
@@ -165,7 +224,11 @@ fn main() {
             delete_configuration,
             auth_readiness,
             runtime_readiness,
-            runtime_setup_plan
+            runtime_setup_plan,
+            start_run,
+            run_status,
+            stop_run,
+            managed_session_status
         ])
         .run(tauri::generate_context!())
         .expect("desktop host failed");

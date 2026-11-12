@@ -7,6 +7,7 @@
   ],
   "permissions": [
     "definitions",
-    "runtime-readiness"
+    "runtime-readiness",
+    "single-block-runs"
   ]
 }

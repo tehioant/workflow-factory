@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-managed-session-status"
+description = "Enables the managed_session_status command without any pre-configured scope."
+commands.allow = ["managed_session_status"]
+
+[[permission]]
+identifier = "deny-managed-session-status"
+description = "Denies the managed_session_status command without any pre-configured scope."
+commands.deny = ["managed_session_status"]

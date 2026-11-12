@@ -11,6 +11,10 @@ fn main() {
             "auth_readiness",
             "runtime_readiness",
             "runtime_setup_plan",
+            "start_run",
+            "run_status",
+            "stop_run",
+            "managed_session_status",
         ]),
     ))
     .expect("desktop build configuration");
