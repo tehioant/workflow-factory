@@ -173,6 +173,8 @@ pub struct Resources {
     pub container: String,
     pub workspace: Option<String>,
     pub peer: Option<String>,
+    pub started_at: Option<String>,
+    pub retired: Option<String>,
 }
 pub struct Sandbox<P: Pipe> {
     pub pipe: P,
@@ -349,7 +351,7 @@ impl<P: Pipe> Sandbox<P> {
             },
             args,
         )?;
-        let r = Resources {
+        let mut r = Resources {
             owner: owner.into(),
             image: image_id.into(),
             network,
@@ -358,6 +360,8 @@ impl<P: Pipe> Sandbox<P> {
             container,
             workspace,
             peer: None,
+            started_at: None,
+            retired: None,
         };
         self.owned("container", &r.helper, owner)?;
         self.owned("network", &r.network, owner)?;
@@ -381,6 +385,9 @@ impl<P: Pipe> Sandbox<P> {
             receipt("agent-start-0", None)?;
         }
         self.work_success(&strings(&["start", &r.container]), &[], 131072, cancel)?;
+        if r.workspace.is_some() {
+            r.started_at = Some(self.live_epoch(&r)?);
+        }
         self.inspect_work(&r)?;
         if r.workspace.is_some() {
             cancel.check()?;
@@ -700,6 +707,9 @@ impl<P: Pipe> Sandbox<P> {
         #[cfg(target_os = "macos")]
         self.check_guest(r, cancel)?;
         self.check_no_swap(r)?;
+        if let Some(id) = &r.retired {
+            self.absent_container(id, cancel)?;
+        }
         self.work_success(
             &strings(&[
                 "exec",
@@ -726,6 +736,12 @@ impl<P: Pipe> Sandbox<P> {
         self.inspect_work(r)?;
         #[cfg(target_os = "macos")]
         self.check_guest(r, cancel)?;
+        if r.workspace.is_some() {
+            self.check_no_swap(r)?;
+        }
+        if let Some(id) = &r.retired {
+            self.absent_container(id, cancel)?;
+        }
         cancel.check()?;
         let (code, out, _) = self.pipe.call(
             &strings(&[

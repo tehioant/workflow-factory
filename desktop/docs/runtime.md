@@ -67,3 +67,29 @@ The desktop registers and narrowly permissions the parameterless `runtime_readin
 Production uses `std::process::Command`, explicit argv, `env_clear`, fixed PATH/HOME/empty-config location, and null stdin (**0 bytes accepted**). It ignores inherited Docker contexts, proxy variables and login/config environment. Nonblocking Unix socket pairs drain both outputs without reader threads; total retained stdout+stderr is limited to **128 KiB**, with a **3-second per-probe deadline** (normal readiness has at most two probes). Each loop reads at most one chunk per stream so flood output cannot starve deadline checks. On every post-spawn error the read-only CLI is killed and synchronously waited/reaped; no detached/unjoined background client or reader is left. As with any process kill/wait, kernel-level uninterruptible process states are outside a userspace deadline guarantee. Killing this CLI is never interpreted as container termination.
 
 Seven focused injected-response/argv/conversion cases only; no parameterized scenarios or execution journeys. Production process spawning, macOS compilation, live daemon capabilities, credential refresh, actual egress and containers were deliberately not exercised. Passing module checks do not close #28 or the parent desktop specification.
+
+## Workflow agent isolation
+
+Saved schema-1 definitions default to `perRun`. Workflow properties can save
+`perBlock`; admission captures that choice with the immutable definition. The
+existing host loop and executor consume only that snapshot. Per-run workspaces
+remain container-private tmpfs. Per-block runs explicitly create one owned
+local-driver tmpfs volume; it is never implicitly created or adopted.
+
+At a successful durable block boundary, the stopped writer's current cache is
+checkpointed and read back under the same lease, owner and generation. A fresh,
+credential-free inert keeper overlaps the old live mount before old removal.
+Live mount, start-epoch and exact-ID absence checks plus durable receipts precede
+staging the exact checkpoint. The helper has no workspace or credential mounts.
+No execution transcript, home directory or `/tmp` is copied. Captured responses
+are resolved from durable block results, not predecessor container lifetime.
+
+Unknown cache, storage, mount continuity, restart or removal outcomes hold the
+resources and quarantine the session; no successor or rollback to old grants.
+Final cleanup verifies exact owned agent/helper, volume and network removal.
+Only final `finish_session` releases the lease and increments its generation.
+
+These are source contracts and fake-boundary component checks, not live Docker
+or native secure-store qualification. Local-driver tmpfs support, continuous
+mount behavior and two-keeper resource headroom still require explicitly
+authorized native qualification; no limits or platform gates are relaxed.

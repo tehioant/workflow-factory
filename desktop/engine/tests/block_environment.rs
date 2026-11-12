@@ -84,7 +84,7 @@ impl Prepared {
         let mount = json!({"Type":"volume","Name":r.workspace,"Driver":"local","Destination":if self.scenario=="mount"{"/other"}else{"/workspace"},"RW":true});
         let declared = json!({"Type":"volume","Source":r.workspace,"Target":"/workspace","ReadOnly":false,"VolumeOptions":{"NoCopy":true}});
         let memory = if helper { 134217728u64 } else { 536870912 };
-        json!({"Id":id,"Image":r.image,"State":{"Running":id!=next||self.started},"Config":{"Labels":label,"User":"1000:1000","Entrypoint":["node"],"Cmd":["/opt/workflow-factory/keeper.mjs"]},"HostConfig":{"ReadonlyRootfs":true,"Privileged":false,"Init":true,"Ulimits":[{"Name":"core","Soft":0,"Hard":0}],"Memory":memory,"MemorySwap":memory,"PidsLimit":if helper{32}else{128},"NanoCpus":1000000000u64,"LogConfig":{"Type":"none"},"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges"],"Tmpfs":tmpfs,"Mounts":if helper{json!([])}else{json!([declared])}},"Mounts":if helper {if self.scenario=="helper" {json!([mount])}else{json!([])}}else{json!([mount])},"NetworkSettings":{"Networks":if helper{json!({private:{"NetworkID":r.network},outer:{"NetworkID":r.outer}})}else{json!({private:{"NetworkID":r.network}})}}})
+        json!({"Id":id,"Image":r.image,"State":{"Running":id!=next||self.started,"StartedAt":if self.scenario=="restart"&&self.started{"changed-epoch"}else{"prepared-start-epoch"}},"RestartCount":0,"Config":{"Labels":label,"User":"1000:1000","Entrypoint":["node"],"Cmd":["/opt/workflow-factory/keeper.mjs"]},"HostConfig":{"ReadonlyRootfs":true,"Privileged":false,"Init":true,"Ulimits":[{"Name":"core","Soft":0,"Hard":0}],"Memory":memory,"MemorySwap":memory,"PidsLimit":if helper{32}else{128},"NanoCpus":1000000000u64,"LogConfig":{"Type":"none"},"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges"],"Tmpfs":tmpfs,"Mounts":if helper{json!([])}else{json!([declared])}},"Mounts":if helper {if self.scenario=="helper" {json!([mount])}else{json!([])}}else{json!([mount])},"NetworkSettings":{"Networks":if helper{json!({private:{"NetworkID":r.network},outer:{"NetworkID":r.outer}})}else{json!({private:{"NetworkID":r.network}})}}})
     }
 }
 impl Pipe for Prepared {
@@ -165,6 +165,9 @@ impl Pipe for Prepared {
                     .any(|s| s == "receipt:agent-remove-0"));
                 assert!(self.events.borrow().iter().any(|s| s == "qualify"));
                 assert_eq!(input, CACHE);
+                if self.scenario == "stage" {
+                    return Err(fail());
+                }
                 self.events.borrow_mut().push("stage".into());
             } else if args.last().is_some_and(|s| s.contains("memory.swap.max")) {
                 out = b"0\n".to_vec();
@@ -201,11 +204,16 @@ fn f1_prepared_environment_switch_checkpoints_same_lease_before_verified_handoff
         "helper",
         "inspect",
         "continuity",
+        "restart",
         "credentials",
         "remove",
         "list",
         "present",
         "receipt",
+        "create-receipt",
+        "start-intent",
+        "overlap-receipt",
+        "stage",
         "cancel",
         "qualify",
     ] {
@@ -216,6 +224,12 @@ fn f1_prepared_environment_switch_checkpoints_same_lease_before_verified_handoff
         c.execute(
             "INSERT INTO managed_sessions VALUES(?1,'leased',7,?2)",
             rusqlite::params![SLOT, OWNER],
+        )
+        .unwrap();
+        let predecessor=json!({"id":OWNER,"requestId":"prepared","state":"running","finalResponse":null,"diagnostic":"","cleanupPending":false,"blocks":[{"blockId":"a","state":"succeeded","resolvedPrompt":"A own prompt","finalResponse":"A durable final response"}]}).to_string();
+        c.execute(
+            "INSERT INTO runs VALUES(?1,'prepared','{}','{}',?2,1)",
+            rusqlite::params![OWNER, predecessor],
         )
         .unwrap();
         let lease = Lease {
@@ -238,6 +252,8 @@ fn f1_prepared_environment_switch_checkpoints_same_lease_before_verified_handoff
                 Some(format!("wf-workspace-{OWNER}"))
             },
             peer: None,
+            started_at: Some("prepared-start-epoch".into()),
+            retired: None,
         };
         let mut sandbox = Sandbox {
             pipe: Prepared {
@@ -268,6 +284,12 @@ fn f1_prepared_environment_switch_checkpoints_same_lease_before_verified_handoff
                     if id.is_some() { "receipt" } else { "intent" }
                 ));
                 if scenario == "receipt" && kind == "agent-remove-0" && id.is_some() {
+                    return Err(fail());
+                }
+                if (scenario == "create-receipt" && kind == "work-container-1" && id.is_some())
+                    || (scenario == "start-intent" && kind == "agent-start-1" && id.is_none())
+                    || (scenario == "overlap-receipt" && kind == "agent-overlap-1" && id.is_some())
+                {
                     return Err(fail());
                 }
                 store.resource_intent(OWNER, kind, id)
@@ -305,6 +327,10 @@ fn f1_prepared_environment_switch_checkpoints_same_lease_before_verified_handoff
             assert_eq!(next.helper, r.helper);
             assert!(next.peer.is_none());
         }
+        let retained: String = c
+            .query_row("SELECT status FROM runs WHERE id=?1", [OWNER], |r| r.get(0))
+            .unwrap();
+        assert_eq!(retained, predecessor, "{scenario}");
         let state: (String, String, u32) = c
             .query_row(
                 "SELECT state,owner,generation FROM managed_sessions",

@@ -84,6 +84,19 @@ impl<P: Pipe> Sandbox<P> {
         }
         Ok(())
     }
+    pub(super) fn live_epoch(&mut self, r: &Resources) -> Result<String, Error> {
+        let row = self.owned("container", &r.container, &r.owner)?;
+        if row["State"]["Running"] != true || row["RestartCount"] != 0 {
+            return Err(validation(
+                "Keeper continuity lost; restart is not recovery.",
+            ));
+        }
+        row["State"]["StartedAt"]
+            .as_str()
+            .filter(|s| !s.is_empty() && !s.starts_with("0001-"))
+            .map(str::to_string)
+            .ok_or_else(|| validation("Keeper start epoch unavailable."))
+    }
     pub(super) fn inspect_workspace_mount(
         &mut self,
         r: &Resources,
@@ -94,6 +107,16 @@ impl<P: Pipe> Sandbox<P> {
             return Ok(());
         };
         self.inspect_workspace(name, &r.owner)?;
+        if started
+            && (c["RestartCount"] != 0
+                || r.started_at
+                    .as_deref()
+                    .is_none_or(|epoch| c["State"]["StartedAt"] != epoch))
+        {
+            return Err(validation(
+                "Keeper restarted; workspace continuity unknown.",
+            ));
+        }
         let mounts = c["Mounts"]
             .as_array()
             .ok_or_else(|| validation("Workspace mount inspection missing."))?;
@@ -118,7 +141,19 @@ impl<P: Pipe> Sandbox<P> {
         {
             return Err(validation("Inert keeper command unconfirmed."));
         }
+        if mounts
+            .iter()
+            .filter(|m| m["Type"] == "tmpfs")
+            .any(|m| m["Destination"] != "/tmp" && m["Destination"] != "/run/wf-codex")
+        {
+            return Err(validation("Unexpected agent mount."));
+        }
         let h = &c["HostConfig"];
+        if h["Tmpfs"].as_object().is_none_or(|a| {
+            a.len() != 2 || !a.contains_key("/tmp") || !a.contains_key("/run/wf-codex")
+        }) {
+            return Err(validation("Unexpected private tmpfs."));
+        }
         let declared = h["Mounts"]
             .as_array()
             .ok_or_else(|| validation("Explicit workspace mount missing."))?;
@@ -134,7 +169,7 @@ impl<P: Pipe> Sandbox<P> {
         }
         Ok(())
     }
-    fn absent_container(&mut self, id: &str, cancel: &Cancel) -> Result<(), Error> {
+    pub(super) fn absent_container(&mut self, id: &str, cancel: &Cancel) -> Result<(), Error> {
         if !opaque(id) {
             return Err(validation("Invalid recorded container."));
         }
@@ -196,6 +231,7 @@ impl<P: Pipe> Sandbox<P> {
         let mut next = Resources {
             container: id.clone(),
             peer: Some(old.container.clone()),
+            started_at: None,
             ..old.clone()
         };
         self.inspect_phase(&next, false)?;
@@ -203,6 +239,7 @@ impl<P: Pipe> Sandbox<P> {
         cancel.check()?;
         receipt(&start, None)?;
         self.work_success(&strings(&["start", &id]), &[], 131072, cancel)?;
+        next.started_at = Some(self.live_epoch(&next)?);
         self.inspect_work(&next)?;
         let previous = Resources {
             peer: Some(id.clone()),
@@ -220,12 +257,14 @@ impl<P: Pipe> Sandbox<P> {
         let remove = format!("agent-remove-{}", ordinal - 1);
         cancel.check()?;
         receipt(&remove, None)?;
-        self.owned("container", &old.container, &old.owner)?;
+        self.inspect_work(&previous)?;
+        self.inspect_work(&next)?;
         self.work_success(&strings(&["rm", "-f", &old.container]), &[], 131072, cancel)?;
         self.absent_container(&old.container, cancel)?;
         cancel.check()?;
         receipt(&remove, Some(&old.container))?;
         next.peer = None;
+        next.retired = Some(old.container.clone());
         self.inspect_work(&next)?;
         cancel.check()?;
         qualify()?;

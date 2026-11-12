@@ -246,6 +246,7 @@ impl Store {
             return Err(validation("Session lease does not match."));
         }
         // Quarantine commits before any uncertain external persistence/cleanup operation.
+        cancel.check()?;
         tx.execute(
             "UPDATE managed_sessions SET state='quarantined' WHERE id=?1",
             [slot],

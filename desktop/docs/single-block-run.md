@@ -15,3 +15,29 @@ Linux requires `/usr/bin/zenity` for a host-owned native question on each acquis
 Unclaimed Admitted stop requires no resource intents transactionally before releasing only the reservation/active marker. Running/uncertain records stay held. Pending setup ownership is installed before fallible login start; cancellation remains operable on failure and retryable after partial deletion. Explicit quarantined retirement requires positive owned resource/recorded-ID absence and deletion/readback absence of the exact old secure item. Errors retain quarantine. Only fresh provider authorization under a new slot may follow; no old grant is read/copied/reused. This is narrow explicit recovery, not general automatic reconciliation.
 
 No real keyring, Docker, login, model, container or native dialog was exercised. Fake-boundary checks establish source contracts, not live provider or platform qualification. Pinned keeper/CLI/Docker findings must be settled before source is declared complete. Full native close/Quit UX remains later scope.
+
+## Workflow agent isolation
+
+Saved schema-1 definitions default to `perRun`. Workflow properties can save
+`perBlock`; admission captures that choice with the immutable definition. The
+existing host loop and executor consume only that snapshot. Per-run workspaces
+remain container-private tmpfs. Per-block runs explicitly create one owned
+local-driver tmpfs volume; it is never implicitly created or adopted.
+
+At a successful durable block boundary, the stopped writer's current cache is
+checkpointed and read back under the same lease, owner and generation. A fresh,
+credential-free inert keeper overlaps the old live mount before old removal.
+Live mount, start-epoch and exact-ID absence checks plus durable receipts precede
+staging the exact checkpoint. The helper has no workspace or credential mounts.
+No execution transcript, home directory or `/tmp` is copied. Captured responses
+are resolved from durable block results, not predecessor container lifetime.
+
+Unknown cache, storage, mount continuity, restart or removal outcomes hold the
+resources and quarantine the session; no successor or rollback to old grants.
+Final cleanup verifies exact owned agent/helper, volume and network removal.
+Only final `finish_session` releases the lease and increments its generation.
+
+These are source contracts and fake-boundary component checks, not live Docker
+or native secure-store qualification. Local-driver tmpfs support, continuous
+mount behavior and two-keeper resource headroom still require explicitly
+authorized native qualification; no limits or platform gates are relaxed.

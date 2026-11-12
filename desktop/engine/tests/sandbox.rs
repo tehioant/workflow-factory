@@ -27,6 +27,8 @@ fn c09_real_sandbox_mutation_refuses_nonowned_resource_before_any_effect() {
         container: "d".repeat(64),
         workspace: None,
         peer: None,
+        started_at: Some("prepared-start-epoch".into()),
+        retired: None,
     };
     assert!(Sandbox {
         pipe: PreparedInspect
@@ -146,6 +148,8 @@ fn c14_inspection_accepts_inert_static_endpoints_but_requires_applied_ids_after_
         container: "d".repeat(64),
         workspace: None,
         peer: None,
+        started_at: Some("prepared-start-epoch".into()),
+        retired: None,
     };
     assert!(Sandbox {
         pipe: Inspect {
