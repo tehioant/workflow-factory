@@ -63,6 +63,50 @@ release-build command/exit and unchanged-source fingerprints), `count.json`
 these measured application bytes. Ubuntu 24.04 ABI/install acceptance, macOS,
 saved-canvas/log scenarios and native interaction are still unverified.
 
+## Current-feature preparation (phase A; native observations UNRUN)
+
+The retained `d15-build/artifact.json` release was built from
+`6155a1b9659202e7314556586ca3019bd06fde7e` (tree identical to integrated baseline
+`ae0e5138b19f711796b92df50ae5f193271b22bb`). It is **not rebuilt** for this
+observer-only change. Historical measurements above are not this release's results.
+Current startup/idle, saved-canvas/log rendering, installed/dependency footprint
+and native interaction remain **UNRUN**.
+
+Opt-in `--prepared-fixture /absolute/private/synthetic-source` stages only with
+`--observe-idle`, into new `data/com.workflowfactory.desktop` before spawn.
+Metadata mode neither reads nor stages that fixture. No production-data discovery
+occurs. Source paths must be explicit absolute paths without `.`/`..` or symlink
+components. The root and payload directories/files must be owned/private; files
+must be regular and single-link. Originals remain read-only inputs.
+
+The <=16 KiB `synthetic-fixture.json` declares scenario
+`SYNTHETIC-neverexecuted-A-B`, a canonical run UUID, `generator_sha256`, and exactly
+two `files` entries with `bytes` and `sha256`: `definitions.sqlite3` (<=2 MiB) and
+`inspection/<run UUID>/journal` (<=1 MiB). No other paths are copied. Exclusive new
+destination directories use0700/files0600. The receipt binds manifest/generator,
+payload hashes/sizes/source modes and scenario. Copy refusal prevents spawn.
+A synthetic label/hash is **not universal proof of nonsensitivity**: review the
+offline generator/provenance and current read-only projections before launch
+admission. The helper is not a SQLite safety validator or arbitrary tree copier.
+
+External `d16-build/` retains the offline seed source, compile/generate/read argv,
+logs, manifest, original private fixture and separate copied projection. The seed
+contains a saved2-block/1-edge A→B definition, multiline prompts, named synthetic
+input, nonsecret configuration/layout, terminal inactive synthetic capture/results
+and40 small journal entries (32+8). Success-looking names/results/diagnostics say
+SYNTHETIC/neverexecuted; none is execution, cleanup or settlement evidence. No queue
+rows, managed sessions, resource/recovery records or credentials are prepared.
+Real current engine history/detail/status and journal readers validate copied data;
+this establishes prepared projection validity, **not native rendering**.
+
+After separate parent review/admission, append `--prepared-fixture` to the explicit
+bounded observation command below. Manually reopen the saved definition/select the
+retained run and page logs during startup (1–30s). Record screenshots and an honest
+content-ready timestamp; reject representative idle evidence unless readiness
+precedes idle. Do not click Start, runtime readiness, sign-in, authorization, Stop
+or recovery. Cross-check WebKit helpers and cleanup independently. No display,
+D-Bus, application or observer launch is part of phase A.
+
 ## Candidate-bound receipts
 
 `../scripts/measure-release.py` uses Python 3's standard library, Git, and optional
@@ -163,7 +207,7 @@ candidate-after fields before accepting a receipt. An error receipt is not a pas
   Record responsiveness/visible errors, process-tree idle cost and manual timing
   method separately. Do not start a run or automate the UI. No such final-candidate
   observation has been performed here.
-- **Bounded logs:** once durable run/log rendering contracts exist, use explicitly
+- **Bounded logs:** delivered read-only history/inspection contracts support explicitly
   prepared non-secret retained records, never a model call to generate data.
   Record row/byte counts, caps/truncation and page/cursor behavior; manually inspect
   scrolling and bounded retention while checking that canvas state is unaffected.
@@ -184,7 +228,7 @@ candidate-after fields before accepting a receipt. An error receipt is not a pas
   Desktop's VM. This Linux sampler declines rather than pretending `ps` ancestry
   is complete. Repeat on both Apple Silicon and Intel. Both remain unavailable.
 
-Both isolation procedures describe the specification, not delivered execution.
+Both isolation procedures remain unperformed methods, not measured execution.
 Authentication feasibility, final saved-canvas/log scenarios, approved-host
 installation/native interaction, actual full installed/dependency footprint,
 first paint, live containment and workload measurements remain unverified. Existing

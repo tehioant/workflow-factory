@@ -22,6 +22,96 @@ def absolute(value):
     return path.resolve()
 
 
+def fixture_path(value):
+    if not os.path.isabs(value) or any(p in (".", "..", "") for p in value.split("/")[1:]):
+        raise argparse.ArgumentTypeError("fixture requires an explicit absolute path without aliases")
+    return Path(value)
+
+
+def copy_prepared_fixture(source, destination):
+    """Copy exactly the two admitted synthetic payloads, never an arbitrary tree.
+
+    A declaration/hash is provenance, not proof of nonsensitivity. Independently
+    review the offline generator and validate projections before launch admission.
+    """
+    import stat
+    import uuid
+    from contextlib import ExitStack
+
+    source = fixture_path(str(source))
+    if destination.resolve() == source or source in destination.resolve().parents:
+        raise ValueError("fixture destination must be separate from source")
+    with ExitStack() as stack:
+        def opened(name, parent=None, directory=False, private=True):
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            if directory:
+                flags |= os.O_DIRECTORY
+            fd = os.open(name, flags, dir_fd=parent)
+            stack.callback(os.close, fd)
+            info = os.fstat(fd)
+            if private and (info.st_uid != os.geteuid() or info.st_mode & 0o077):
+                raise ValueError("fixture inputs must be private and owned")
+            if not directory and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
+                raise ValueError("fixture inputs must be single-link regular files")
+            return fd
+
+        root = opened("/", directory=True, private=False)
+        for index, part in enumerate(source.parts[1:]):
+            root = opened(part, root, directory=True, private=index == len(source.parts) - 2)
+
+        def read(name, parent, limit):
+            fd = opened(name, parent)
+            before = os.fstat(fd)
+            if before.st_size > limit:
+                raise ValueError("fixture byte limit exceeded")
+            data = bytearray()
+            while len(data) <= limit:
+                chunk = os.read(fd, min(65536, limit + 1 - len(data)))
+                if not chunk:
+                    break
+                data.extend(chunk)
+            after = os.fstat(fd)
+            if len(data) > limit or (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise ValueError("fixture changed or exceeded byte limit")
+            return bytes(data), {"sha256": hashlib.sha256(data).hexdigest(),
+                                 "bytes": len(data), "mode": oct(stat.S_IMODE(before.st_mode))}
+
+        manifest_bytes, manifest_identity = read("synthetic-fixture.json", root, 16384)
+        manifest = json.loads(manifest_bytes)
+        run_id = manifest["run"]
+        if not isinstance(run_id, str) or str(uuid.UUID(run_id)) != run_id:
+            raise ValueError("invalid fixture run identity")
+        if manifest["scenario"] != "SYNTHETIC-neverexecuted-A-B" or not re.fullmatch(r"[0-9a-f]{64}", manifest["generator_sha256"]):
+            raise ValueError("explicit synthetic scenario and generator identity required")
+        journal_path = f"inspection/{run_id}/journal"
+        expected = {"definitions.sqlite3", journal_path}
+        if set(manifest["files"]) != expected:
+            raise ValueError("fixture must name only the database and selected journal")
+        inspection = opened("inspection", root, directory=True)
+        journal_dir = opened(run_id, inspection, directory=True)
+        payloads = {}
+        identities = {}
+        for name, parent, leaf, limit in [("definitions.sqlite3", root, "definitions.sqlite3", 2097152),
+                                          (journal_path, journal_dir, "journal", 1048576)]:
+            data, identity = read(leaf, parent, limit)
+            if manifest["files"][name] != {k: identity[k] for k in ("sha256", "bytes")}:
+                raise ValueError("fixture payload differs from manifest")
+            payloads[name] = data
+            identities[name] = identity
+        destination.mkdir(mode=0o700, exist_ok=False)
+        (destination / "inspection").mkdir(mode=0o700)
+        (destination / "inspection" / run_id).mkdir(mode=0o700)
+        for name, data in payloads.items():
+            fd = os.open(destination / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as target:
+                target.write(data)
+        return {"source": str(source), "destination": str(destination),
+                "scenario": manifest["scenario"], "generator_sha256": manifest["generator_sha256"],
+                "manifest": manifest_identity, "files": identities,
+                "destination_directory_mode": "0o700", "destination_file_mode": "0o600",
+                "limit": "exactly 2 payloads; database <=2 MiB, journal <=1 MiB; no arbitrary tree copy"}
+
+
 def run(argv, cwd=None):
     return subprocess.check_output(argv, cwd=cwd, text=True, timeout=5).strip()
 
@@ -125,6 +215,9 @@ def observe(args, report):
         path = args.output / folder
         path.mkdir(mode=0o700)
         env[key] = str(path)
+    if args.prepared_fixture is not None:
+        report["prepared_fixture"] = copy_prepared_fixture(
+            args.prepared_fixture, Path(env["XDG_DATA_HOME"]) / "com.workflowfactory.desktop")
     owned = {}  # (PID, kernel start time) -> pidfd; never signal a reused PID.
     samples = []
     obs = {"status": "started", "window_map": None, "samples": samples}
@@ -230,6 +323,8 @@ def main():
     parser.add_argument("--binary-sha256", required=True)
     parser.add_argument("--package", type=absolute, help="Optional local .deb/.dmg; never installed or mounted")
     parser.add_argument("--observe-idle", action="store_true", help="Explicitly permit one bounded desktop launch")
+    parser.add_argument("--prepared-fixture", type=fixture_path,
+                        help="Explicit private synthetic fixture root; copied only with --observe-idle")
     parser.add_argument("--display", help="Private pre-existing X11 display; tool does not start Xvfb")
     parser.add_argument("--startup-seconds", type=float, default=5)
     parser.add_argument("--idle-seconds", type=float, default=10)
