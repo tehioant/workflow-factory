@@ -40,6 +40,7 @@
   let dirtyStart=$state(false);
   let pendingStart=$state<StartRun|null>(null);
   onMount(()=>{let alive=true;void commands.runStatus().then(value=>{if(alive){run=value;runReady=true;}}).catch(error=>{if(alive)runError=errorMessage(error);});return()=>{alive=false;};});
+  let activeInspectionWorkflow=$state<string|null>(null);
   async function begin(mode:'save'|'saved'|'retry'){
     if(busy||!runReady||(mode!=='retry'&&(!editor.working||pendingStart!==null)))return;
     const inputs=$state.snapshot(supplied);
@@ -60,7 +61,7 @@
         pendingStart={requestId:crypto.randomUUID(),definitionId:saved.definition.id,expectedRevision:saved.revision,expectedConfigurationRevision:config.revision,expectedConfigurationRevisions:revisions,supplied:inputs};
       }
       if(!pendingStart)return;
-      run=await commands.startRun($state.snapshot(pendingStart));pendingStart=null;dirtyStart=false;
+      run=await commands.startRun($state.snapshot(pendingStart));activeInspectionWorkflow=pendingStart.definitionId;pendingStart=null;dirtyStart=false;
     }catch(error){runError=errorMessage(error);}
     finally{busy=false;}
   }
@@ -177,7 +178,7 @@
       {#if pendingStart}<p>Admission outcome may be unknown. Retry the same immutable request, not a new start.</p><button disabled={busy} onclick={()=>begin('retry')}>Retry same request</button>{/if}
       {#if runError}<p role="alert">{runError}</p>{/if}
     </section>
-    {#key run?.id}<RunPanel {commands} {run} onstatus={(value)=>{run=value;}}/>{/key}
+    {#key run?.id}<RunPanel {commands} {run} definitionId={activeInspectionWorkflow} onstatus={(value)=>{run=value;}}/>{/key}
     {#if editor.working}{#key editor.working.id}<RunHistory {commands} definitionId={editor.working.id}/>{/key}{/if}
     <RuntimeSettings {commands}/>
     <AuthReadinessPanel {commands}/>

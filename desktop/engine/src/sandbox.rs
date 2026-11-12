@@ -28,6 +28,16 @@ impl Cancel {
     }
 }
 pub trait Pipe {
+    /// Only workload execution may enter the incremental diagnostic transport.
+    fn execution(
+        &mut self,
+        _args: &[String],
+        _input: &[u8],
+        _cancel: &Cancel,
+        _consume: &mut dyn FnMut(&[u8]) -> Result<(), Error>,
+    ) -> Result<i32, Error> {
+        Err(validation("Incremental execution transport unsupported."))
+    }
     fn call(
         &mut self,
         args: &[String],
@@ -37,13 +47,36 @@ pub trait Pipe {
     ) -> Result<(i32, Vec<u8>, Vec<u8>), Error>;
 }
 pub struct NativePipe;
+type ExecutionSink<'a> = &'a mut dyn FnMut(&[u8]) -> Result<(), Error>;
 impl Pipe for NativePipe {
+    fn execution(
+        &mut self,
+        args: &[String],
+        input: &[u8],
+        cancel: &Cancel,
+        consume: &mut dyn FnMut(&[u8]) -> Result<(), Error>,
+    ) -> Result<i32, Error> {
+        self.transport(args, input, 1_048_576, cancel, Some(consume))
+            .map(|v| v.0)
+    }
     fn call(
         &mut self,
         args: &[String],
         input: &[u8],
         limit: usize,
         cancel: &Cancel,
+    ) -> Result<(i32, Vec<u8>, Vec<u8>), Error> {
+        self.transport(args, input, limit, cancel, None)
+    }
+}
+impl NativePipe {
+    fn transport(
+        &mut self,
+        args: &[String],
+        input: &[u8],
+        limit: usize,
+        cancel: &Cancel,
+        mut consume: Option<ExecutionSink<'_>>,
     ) -> Result<(i32, Vec<u8>, Vec<u8>), Error> {
         use std::io::{ErrorKind, Read, Write};
         use std::os::{fd::OwnedFd, unix::net::UnixStream};
@@ -77,6 +110,7 @@ impl Pipe for NativePipe {
             let start = std::time::Instant::now();
             let mut stdout = vec![];
             let mut stderr = vec![];
+            let mut received: usize = 0;
             let mut sent = 0;
             let mut closed = [false; 2];
             let mut input_closed = false;
@@ -113,12 +147,18 @@ impl Pipe for NativePipe {
                     match stream.read(&mut buf) {
                         Ok(0) => closed[i] = true,
                         Ok(n) => {
-                            if stdout.len() + stderr.len() + n > limit {
+                            received = received.saturating_add(n);
+                            if received > limit {
                                 return Err(validation(
                                     "Sandbox output limit exceeded; ownership held.",
                                 ));
                             }
-                            if i == 0 {
+                            if let Some(consume) = consume.as_deref_mut() {
+                                if i == 0 {
+                                    consume(&buf[..n])?;
+                                }
+                                // Untrusted exec stderr is drained but never logged or retained.
+                            } else if i == 0 {
                                 stdout.extend_from_slice(&buf[..n]);
                             } else {
                                 stderr.extend_from_slice(&buf[..n]);
@@ -731,7 +771,9 @@ impl<P: Pipe> Sandbox<P> {
         prompt: &str,
         config: &crate::CodexConfiguration,
         cancel: &Cancel,
-    ) -> Result<(i32, Vec<u8>), Error> {
+        block: &str,
+        consume: &mut dyn FnMut(&[u8]) -> Result<(), Error>,
+    ) -> Result<i32, Error> {
         cancel.check()?;
         self.inspect_work(r)?;
         #[cfg(target_os = "macos")]
@@ -743,7 +785,7 @@ impl<P: Pipe> Sandbox<P> {
             self.absent_container(id, cancel)?;
         }
         cancel.check()?;
-        let (code, out, _) = self.pipe.call(
+        let code = self.pipe.execution(
             &strings(&[
                 "exec",
                 "-i",
@@ -755,12 +797,100 @@ impl<P: Pipe> Sandbox<P> {
                 serde_json::to_string(&config.reasoning)
                     .map_err(crate::storage)?
                     .trim_matches('"'),
+                &r.owner,
+                block,
+                r.started_at
+                    .as_deref()
+                    .ok_or_else(|| validation("Execution epoch unavailable."))?,
             ]),
             prompt.as_bytes(),
-            1_048_576,
             cancel,
+            consume,
         )?;
-        Ok((code, out))
+        Ok(code)
+    }
+    pub fn diagnostics(
+        &mut self,
+        r: &Resources,
+        block: &str,
+        cache: &[u8],
+        secrets: &[String],
+        discard: bool,
+    ) -> Result<crate::output::Publication, Error> {
+        self.inspect_work(r)?;
+        crate::sessions::validate_cache(cache)?;
+        let identity = crate::output::DiagnosticIdentity {
+            run_id: r.owner.clone(),
+            block_id: block.into(),
+            epoch: r
+                .started_at
+                .clone()
+                .ok_or_else(|| validation("Diagnostic epoch unavailable."))?,
+        };
+        let request=serde_json::to_vec(&serde_json::json!({"identity":identity,"cache":std::str::from_utf8(cache).map_err(crate::storage)?,"secrets":secrets})).map_err(crate::storage)?;
+        if request.len() > 262144 {
+            return Err(validation("Known-secret publication budget exceeded."));
+        }
+        let bytes = self.success(
+            &strings(&[
+                "exec",
+                "-i",
+                &r.container,
+                "node",
+                "/opt/workflow-factory/keeper.mjs",
+                if discard {
+                    "discard-diagnostics"
+                } else {
+                    "publish-diagnostics"
+                },
+            ]),
+            &request,
+            1_048_576,
+        )?;
+        if discard {
+            return Ok(crate::output::Publication::acknowledged(identity));
+        }
+        crate::output::Publication::decode(&bytes, &identity, secrets)
+    }
+    pub fn capture_artifacts(
+        &mut self,
+        r: &Resources,
+        block: &str,
+        cache: &[u8],
+        secrets: &[String],
+        root: &std::path::Path,
+    ) -> Result<(), Error> {
+        self.inspect_work(r)?;
+        if self.live_epoch(r)?
+            != r.started_at
+                .clone()
+                .ok_or_else(|| validation("Artifact epoch unavailable."))?
+        {
+            return Err(validation("Artifact epoch changed."));
+        }
+        crate::sessions::validate_cache(cache)?;
+        let identity = crate::output::DiagnosticIdentity {
+            run_id: r.owner.clone(),
+            block_id: block.into(),
+            epoch: r.started_at.clone().unwrap(),
+        };
+        let request=serde_json::to_vec(&serde_json::json!({"identity":identity,"cache":std::str::from_utf8(cache).map_err(crate::storage)?,"secrets":secrets})).map_err(crate::storage)?;
+        if request.len() > 262144 {
+            return Err(validation("Artifact request limit exceeded."));
+        }
+        let bytes = self.success(
+            &strings(&[
+                "exec",
+                "-i",
+                &r.container,
+                "node",
+                "/opt/workflow-factory/capture-artifacts.mjs",
+            ]),
+            &request,
+            1_048_576,
+        )?;
+        self.inspect_work(r)?;
+        crate::runs::inspection::artifacts::Artifacts::commit(root, &identity, &bytes, secrets)
     }
     pub fn export(&mut self, r: &Resources) -> Result<Vec<u8>, Error> {
         self.inspect_work(r)?;

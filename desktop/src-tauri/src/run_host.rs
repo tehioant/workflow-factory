@@ -82,6 +82,7 @@ pub fn execute(
         let mut cache_ready = false;
         let mut secrets = Vec::new();
         let mut completed = 0;
+        let mut capture_block = None;
         let final_result = loop {
             if completed > 0 && completed < snapshot.plans.len() {
                 resources = sandbox.switch_block_environment(
@@ -108,8 +109,9 @@ pub fn execute(
                     native_prerequisites()
                         .map_err(|message| workflow_engine::Error::Validation { message })?;
                     cancel.check()?;
-                    let execution =
-                        sandbox.execute(resources, prompt, &plan.configuration.config, &cancel);
+                    let identity=workflow_engine::output::DiagnosticIdentity{run_id:id.clone(),block_id:plan.block_id.clone(),epoch:resources.started_at.clone().ok_or_else(||workflow_engine::Error::Validation{message:"Diagnostic epoch unavailable.".into()})?};
+                    let mut live=workflow_engine::runs::inspection::LiveJournal::new(&directory,identity)?;
+                    let execution = sandbox.execute(resources,prompt,&plan.configuration.config,&cancel,&plan.block_id,&mut |chunk|live.push(chunk,||crate::inspection_host::notify(&directory,&id)));
                     // Even on Codex error, export its CURRENT cache before stopping the keeper.
                     if execution.is_err() {
                         sandbox.stop_writers(resources)?;
@@ -142,10 +144,20 @@ pub fn execute(
                             }
                         }
                     }
-                    let final_result = execution.and_then(|(code, output)| {
-                        workflow_engine::output::Decoder::decode(&output, code, &secrets)
-                    });
                     cache_ready = true;
+                    capture_block = Some(plan.block_id.clone());
+                    secrets.sort();secrets.dedup();
+                    let final_result = (|| {
+                        if serde_json::to_vec(&secrets).map_err(|_|workflow_engine::Error::Validation{message:"Known-secret set invalid.".into()})?.len()>196608{return Err(workflow_engine::Error::Validation{message:"Known-secret publication budget exceeded.".into()});}
+                        let publication=sandbox.diagnostics(resources,&plan.block_id,&rotated,&secrets,false)?;
+                        // Failure here must still reach mandatory cache writeback and cleanup below.
+                        workflow_engine::runs::inspection::Journal::commit(&directory,&id,&publication).map_err(|_| workflow_engine::Error::Validation{message:"Sanitized diagnostics unavailable: private journal commit failed; no retained-byte claim.".into()})?;
+                        crate::inspection_host::notify(&directory,&id);
+                        sandbox.diagnostics(resources,&plan.block_id,&rotated,&secrets,true)?;
+                        let code=execution?;live.finish()?;
+                        if code!=0||!publication.completed||publication.incomplete{return Err(workflow_engine::Error::Validation{message:"Incomplete or failed diagnostic publication.".into()});}
+                        publication.final_response.ok_or_else(||workflow_engine::Error::Validation{message:"Final response unavailable.".into()})
+                    })().map_err(|_|workflow_engine::Error::Validation{message:"Diagnostic publication incomplete or unavailable; no uncommitted retained-byte claim. Mandatory credential recovery remains independent.".into()});
                     if let Ok(text) = &final_result {
                         pending_output = Some(retain_output(&key, text.clone())?);
                     }
@@ -170,6 +182,48 @@ pub fn execute(
                 }
             }
         };
+        // Capture once from the final stopped writer/current-cache checkpoint, before
+        // secure writeback and final mount removal. Failure cannot revoke recovery.
+        let artifact_result = if cache_ready {
+            match capture_block.as_deref() {
+                Some(block) => sandbox.capture_artifacts(
+                    &resources,
+                    block,
+                    &latest_cache,
+                    &secrets,
+                    &directory,
+                ),
+                None => Err(workflow_engine::Error::Validation {
+                    message: "Artifacts unavailable: no safe checkpoint.".into(),
+                }),
+            }
+        } else {
+            Err(workflow_engine::Error::Validation {
+                message: "Artifacts unavailable: writers/cache unconfirmed.".into(),
+            })
+        };
+        let artifact_result = artifact_result.and_then(|_| {
+            let identity = workflow_engine::output::DiagnosticIdentity {
+                run_id: id.clone(),
+                block_id: capture_block.clone().ok_or_else(|| {
+                    workflow_engine::Error::Validation {
+                        message: "Capture identity unavailable.".into(),
+                    }
+                })?,
+                epoch: resources.started_at.clone().ok_or_else(|| {
+                    workflow_engine::Error::Validation {
+                        message: "Capture epoch unavailable.".into(),
+                    }
+                })?,
+            };
+            workflow_engine::runs::inspection::Journal::capture_committed(
+                &directory,
+                &id,
+                identity,
+                || crate::inspection_host::notify(&directory, &id),
+            )?;
+            Ok(())
+        });
         store.finish_session(
             &lease.slot,
             &id,
@@ -186,7 +240,12 @@ pub fn execute(
                 }
             },
         )?;
-        match final_result {Ok(text)=>store.finish_run(&id,Some(text),"Completed; secure cache persisted and owned resources removed.",true,true),Err(_)=>store.finish_run(&id,None,"Codex output failed validation or was interrupted. Cache persisted and resources removed.",true,false)}
+        let artifact_message = if artifact_result.is_ok() {
+            "Completed; immutable sanitized artifacts captured; cache persisted and resources removed."
+        } else {
+            "Completed; artifacts unavailable or incomplete; cache persisted and resources removed."
+        };
+        match final_result {Ok(text)=>store.finish_run(&id,Some(text),artifact_message,true,true),Err(_)=>store.finish_run(&id,None,"Codex output failed validation or was interrupted. Cache persisted and resources removed.",true,false)}
     })();
     if result.is_err() {
         let _ = store.quarantine_session(&lease);

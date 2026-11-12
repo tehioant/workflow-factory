@@ -8,6 +8,12 @@ use workflow_engine::{
 fn main() {
     let config = Default::default();
     let declarations = [
+        workflow_engine::runs::inspection::view::Notice::decl(&config),
+        workflow_engine::runs::inspection::view::InspectionPage::decl(&config),
+        workflow_engine::runs::inspection::view::LogEntry::decl(&config),
+        workflow_engine::runs::inspection::view::ArtifactPage::decl(&config),
+        workflow_engine::runs::inspection::view::ArtifactItem::decl(&config),
+        workflow_engine::runs::inspection::view::ArtifactText::decl(&config),
         workflow_engine::sessions::SignInStatus::decl(&config),
         workflow_engine::runs::StartRun::decl(&config),
         workflow_engine::runs::history::HistoryEntry::decl(&config),

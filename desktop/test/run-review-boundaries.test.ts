@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { compile } from 'svelte/compiler';
+import {compileComponent} from './compile-component.ts';
 import { Window } from 'happy-dom';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -15,8 +16,7 @@ test('p3 mounted inspector picker inserts only predecessor final response at the
  Object.defineProperty(globalThis,'window',{configurable:true,value:window});Object.defineProperty(globalThis,'navigator',{configurable:true,value:window.navigator});
  const {mount,unmount,flushSync}=await import(new URL('../node_modules/svelte/src/index-client.js',import.meta.url).href);
  const filename=new URL('../src/lib/OutputReferencePicker.svelte',import.meta.url);
- const compiled=compile(await readFile(filename,'utf8'),{filename:filename.pathname,generate:'client'}).js.code;
- const code=compiled.replace(/import (['"])([^'"]+)\1/g,(_a,_q,s)=>`import ${JSON.stringify(import.meta.resolve(s))}`).replace(/from (['"])([^'"]+)\1/g,(_a,_q,s)=>`from ${JSON.stringify(s==='svelte'?new URL('../node_modules/svelte/src/index-client.js',import.meta.url).href:s.startsWith('.')?new URL(s,filename).href:import.meta.resolve(s))}`);
+ const code=await compileComponent(filename);
  const directory=await mkdtemp(join(tmpdir(),'output-picker-'));let component:any;
  try{
   const modulePath=join(directory,'picker.mjs');await writeFile(modulePath,code);const Component=(await import(pathToFileURL(modulePath).href)).default;
@@ -38,7 +38,7 @@ test('ambiguous admission preserves the exact pending payload across every dirty
  const body=source.slice(source.indexOf("  async function begin("),source.indexOf('\n  async function refresh()')).replace("mode:'save'|'saved'|'retry'","mode").replaceAll('$state.snapshot','snapshot');
  const original={requestId:'prepared-ambiguous-uuid',definitionId:'prepared',expectedRevision:3,expectedConfigurationRevision:2,supplied:{topic:'original'}};
  const calls:any[]=[];
- const make=new Function('commands','pending','snapshot',`let pendingStart=pending;let busy=false,runReady=true,editor={working:{id:'changed'},dirty:true},supplied={topic:'changed'},runError='',run=null,dirtyStart=true;const errorMessage=String;${body};return {begin,pending:()=>pendingStart};`);
+ const make=new Function('commands','pending','snapshot',`let activeInspectionWorkflow=null;let pendingStart=pending;let busy=false,runReady=true,editor={working:{id:'changed'},dirty:true},supplied={topic:'changed'},runError='',run=null,dirtyStart=true;const errorMessage=String;${body};return {begin,pending:()=>pendingStart};`);
  const harness=make({startRun:async(request:any)=>{calls.push(request);throw Error('reply lost');},load:()=>{throw Error('new work forbidden');}},original,(x:any)=>structuredClone(x));
  for(const mode of ['save','saved']){await harness.begin(mode);assert.deepEqual(harness.pending(),original);assert.equal(calls.length,0);}
  await harness.begin('retry');assert.deepEqual(calls,[original]);assert.deepEqual(harness.pending(),original);
@@ -54,8 +54,7 @@ test('held and long-running panels remain refreshable and reject stale or unmoun
  Object.defineProperty(globalThis,'window',{configurable:true,value:window});Object.defineProperty(globalThis,'navigator',{configurable:true,value:window.navigator});
  const {mount,unmount,flushSync}=await import(new URL('../node_modules/svelte/src/index-client.js',import.meta.url).href);
  const filename=new URL('../src/lib/RunPanel.svelte',import.meta.url);
- const compiled=compile(await readFile(filename,'utf8'),{filename:filename.pathname,generate:'client'}).js.code;
- const code=compiled.replace(/import (['"])([^'"]+)\1/g,(_a,_q,s)=>`import ${JSON.stringify(import.meta.resolve(s))}`).replace(/from (['"])([^'"]+)\1/g,(_a,_q,s)=>`from ${JSON.stringify(s==='svelte'?new URL('../node_modules/svelte/src/index-client.js',import.meta.url).href:s.startsWith('.')?new URL(s,filename).href:import.meta.resolve(s))}`);
+ const code=await compileComponent(filename);
  const directory=await mkdtemp(join(tmpdir(),'run-panel-review-'));let component:any;
  const realSet=globalThis.setTimeout,realClear=globalThis.clearTimeout;let tick:(()=>Promise<void>)|undefined;
  try{
@@ -106,14 +105,14 @@ test('fhistory mounted selected capture rejects stale identities and renders onl
  const {mount,unmount,flushSync}=await import(new URL('../node_modules/svelte/src/index-client.js',import.meta.url).href);
  const {createCommands}=await import('../src/lib/commands.ts');
  const filename=new URL('../src/lib/RunHistory.svelte',import.meta.url);
- const compiled=compile(await readFile(filename,'utf8'),{filename:filename.pathname,generate:'client'}).js.code;
- const code=compiled.replace(/import (['"])([^'"]+)\1/g,(_a,_q,s)=>`import ${JSON.stringify(import.meta.resolve(s))}`).replace(/from (['"])([^'"]+)\1/g,(_a,_q,s)=>`from ${JSON.stringify(s==='svelte'?new URL('../node_modules/svelte/src/index-client.js',import.meta.url).href:s.startsWith('.')?new URL(s,filename).href:import.meta.resolve(s))}`);
+ const code=await compileComponent(filename);
  const directory=await mkdtemp(join(tmpdir(),'run-history-'));let component:any;
  try{
   const modulePath=join(directory,'component.mjs');await writeFile(modulePath,code);const Component=(await import(pathToFileURL(modulePath).href)).default;
   const target=window.document.createElement('main');window.document.body.append(target);
   const pending:any[]=[];
-  const commands=createCommands(((command:string,args:any)=>new Promise((resolve,reject)=>pending.push({command,args,resolve,reject}))) as any);
+  const commands=createCommands(((command:string,args:any)=>command.startsWith('inspect_')?Promise.reject(Error('prepared unavailable inspection')):new Promise((resolve,reject)=>pending.push({command,args,resolve,reject}))) as any);
+  commands.inspectSubscribe=async()=>{throw Error('prepared unavailable inspection');};
   const settle=async()=>{await Promise.resolve();await Promise.resolve();flushSync();};
   const page=(cursor:string|null=null)=>({definitionId:'workflow',cursor,entries:['a','b'].map(id=>({id,state:'held',inputSummary:'雪 <img src=x>',unavailable:false})),nextCursor:cursor?null:'b',unavailableRecords:true,unknownScopeRecords:true});
   const capture=(id:string)=>({id,definitionId:'workflow',definition:{revision:8,definition:{id:'workflow',name:'Captured <img src=x>',isolation:'perBlock',blocks:[{id:'first',name:'Captured first',prompt:'Own <script>bad</script>'}],connections:[],inputs:[]}},inputs:{values:{topic:'Captured input'},prompts:{first:'Prepared <img>'}},imageId:'retained-image',state:'held',cleanupPending:true,diagnostic:'held <script>',finalResponse:'Durable <img onerror=bad>',legacy:false,legacyConfiguration:null,blocks:[{blockId:'first',configuration:{revision:4,config:{name:'Settings <img>',model:'captured-model',reasoning:'high'}},result:{state:'succeeded',resolvedPrompt:'Actual <script>',finalResponse:'Predecessor durable'}},{blockId:'successor',configuration:null,result:null}]});

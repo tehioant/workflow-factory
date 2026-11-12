@@ -1,7 +1,14 @@
 import type { Readiness, SetupPlan, SaveConfiguration, SavedConfiguration, AuthReadiness, Definition, PreparedInputs, SaveDefinition, SavedDefinition } from './transport.ts';
+import { Channel } from '@tauri-apps/api/core';
 export type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 export function createCommands(invoke: Invoke) {
   return {
+    inspectWorkflow:(run:string)=>invoke<string>('inspect_workflow',{run}),
+    inspectSubscribe:(definitionId:string,run:string,onmessage:(notice:import('./transport.ts').Notice)=>void)=>{const channel=new Channel<import('./transport.ts').Notice>();channel.onmessage=onmessage;return invoke<import('./transport.ts').InspectionPage>('inspect_subscribe',{definitionId,run,channel});},
+    inspectPage:(definitionId:string,run:string,subscription:string,cursor:string|null)=>invoke<import('./transport.ts').InspectionPage>('inspect_page',{definitionId,run,subscription,cursor}),
+    inspectClose:(definitionId:string,run:string,subscription:string)=>invoke<void>('inspect_close',{definitionId,run,subscription}),
+    inspectArtifacts:(definitionId:string,run:string,subscription:string,cursor:string|null)=>invoke<import('./transport.ts').ArtifactPage>('inspect_artifacts',{definitionId,run,subscription,cursor}),
+    inspectArtifact:(definitionId:string,run:string,subscription:string,generation:string,id:string,cursor:string|null)=>invoke<import('./transport.ts').ArtifactText>('inspect_artifact',{definitionId,run,subscription,generation,id,cursor}),
     listRunHistory: (definitionId:string,cursor:string|null=null,limit=20) => invoke<import('./transport.ts').HistoryPage>('list_run_history',{definitionId,cursor,limit}),
     runDetail: (definitionId:string,id:string) => invoke<import('./transport.ts').RunDetail>('run_detail',{definitionId,id}),
     openSessionSignIn: () => invoke<void>('open_session_sign_in'),
