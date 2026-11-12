@@ -66,6 +66,17 @@ fn c14_inspection_accepts_inert_static_endpoints_but_requires_applied_ids_after_
         guest_observations: usize,
     }
     impl Pipe for Inspect {
+        fn execution(
+            &mut self,
+            args: &[String],
+            input: &[u8],
+            cancel: &Cancel,
+            consume: &mut dyn FnMut(&[u8]) -> Result<(), Error>,
+        ) -> Result<i32, Error> {
+            let (code, bytes, _) = self.call(args, input, 1_048_576, cancel)?;
+            consume(&bytes)?;
+            Ok(code)
+        }
         fn call(
             &mut self,
             args: &[String],
@@ -109,7 +120,10 @@ fn c14_inspection_accepts_inert_static_endpoints_but_requires_applied_ids_after_
                         "/opt/workflow-factory/keeper.mjs",
                         "run",
                         "codex",
-                        "high"
+                        "high",
+                        &self.r.owner,
+                        "a",
+                        "prepared-start-epoch"
                     ]
                     .map(str::to_string)
                 );
@@ -205,7 +219,14 @@ fn c14_inspection_accepts_inert_static_endpoints_but_requires_applied_ids_after_
         let config: workflow_engine::CodexConfiguration = serde_json::from_value(serde_json::json!({"id":"00000000-0000-0000-0000-000000000001","name":"Prepared","model":"codex","reasoning":"high"})).unwrap();
         assert_eq!(
             sandbox
-                .execute(&r, "literal $HOME; not shell", &config, &cancel)
+                .execute(
+                    &r,
+                    "literal $HOME; not shell",
+                    &config,
+                    &cancel,
+                    "a",
+                    &mut |_| Ok(())
+                )
                 .is_ok(),
             !interrupted && guest_allowed
         );

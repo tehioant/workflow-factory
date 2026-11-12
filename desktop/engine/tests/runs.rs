@@ -363,6 +363,73 @@ fn c06_structured_terminal_output_redacts_staged_and_rotated_secrets() {
     );
 }
 #[test]
+fn d10_live_stream_projects_bounded_durable_pages() {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::PermissionsExt;
+    use workflow_engine::{
+        output::{DiagnosticIdentity, LiveDecoder, Publication},
+        runs::inspection::Journal,
+    };
+    let root = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let id = "00000000-0000-0000-0000-000000000001";
+    let identity = DiagnosticIdentity {
+        run_id: id.into(),
+        block_id: "a".into(),
+        epoch: "prepared-epoch".into(),
+    };
+    let mut live = LiveDecoder::default();
+    let frames=concat!("{\"version\":1,\"type\":\"wf.diagnostic\",\"seq\":1,\"kind\":\"command\",\"bytes\":10,\"text\":\"WITHHELD\",\"incomplete\":false}\n",
+        "{\"version\":1,\"type\":\"wf.diagnostic\",\"seq\":2,\"kind\":\"stopped\",\"bytes\":20,\"text\":\"WITHHELD\",\"incomplete\":false}\n");
+    for byte in frames.bytes() {
+        live.push(&[byte]).unwrap();
+    }
+    live.finish().unwrap();
+    assert!(live.push(b"{}\n").is_err());
+    assert!(LiveDecoder::default().push(&vec![b'a'; 1025]).is_err());
+    let raw = serde_json::json!({"version":1,"identity":identity,"records":[{"kind":"command","command":"check.py","text":"check.py:42 expected café, got 3 prepared-token","status":"completed","exitCode":1}],"final":"safe final","incomplete":false,"completed":true,"exit":0});
+    let publication = Publication::decode(
+        &serde_json::to_vec(&raw).unwrap(),
+        &identity,
+        &["prepared-token".into()],
+    )
+    .unwrap();
+    Journal::commit(root.path(), id, &publication).unwrap();
+    let page = Journal::page(root.path(), id, None, 0).unwrap();
+    assert!(page.resync);
+    assert_eq!(page.high, 1);
+    assert_eq!(page.next, 1);
+    assert!(page.entries[0].text.contains("café"));
+    assert!(!page.entries[0].text.contains("prepared-token"));
+    let path = root.path().join("inspection").join(id).join("journal");
+    assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+    let before = std::fs::read(&path).unwrap();
+    let next = Journal::page(root.path(), id, Some(&page.generation), page.next).unwrap();
+    assert!(!next.resync);
+    assert!(next.entries.is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(Journal::page(root.path(), "00000000-0000-0000-0000-000000000002", None, 0).is_err());
+    let mut wrong = identity.clone();
+    wrong.block_id = "other".into();
+    assert!(Publication::decode(&serde_json::to_vec(&raw).unwrap(), &wrong, &[]).is_err());
+    let mut bulk = raw.clone();
+    bulk["records"][0]["text"] = serde_json::json!("x".repeat(16000));
+    let bulk = Publication::decode(&serde_json::to_vec(&bulk).unwrap(), &identity, &[]).unwrap();
+    for _ in 0..70 {
+        Journal::commit(root.path(), id, &bulk).unwrap();
+    }
+    let retained = Journal::page(root.path(), id, Some(&page.generation), 0).unwrap();
+    assert!(retained.resync);
+    assert!(retained.floor > 0);
+    assert!(retained.incomplete);
+    assert!(std::fs::metadata(&path).unwrap().len() <= 1_048_576);
+    assert!(serde_json::to_vec(&retained.entries).unwrap().len() <= 32768);
+    std::fs::remove_file(&path).unwrap();
+    std::os::unix::fs::symlink(root.path().join("outside"), &path).unwrap();
+    assert!(Journal::page(root.path(), id, None, 0).is_err());
+    assert!(Journal::commit(root.path(), id, &publication).is_err());
+}
+#[test]
 fn c07_bounded_decoder_refuses_oversized_frame() {
     assert!(workflow_engine::output::Decoder::decode(&vec![b' '; 65537], 0, &[]).is_err());
 }

@@ -108,8 +108,8 @@ pub fn execute(
                     native_prerequisites()
                         .map_err(|message| workflow_engine::Error::Validation { message })?;
                     cancel.check()?;
-                    let execution =
-                        sandbox.execute(resources, prompt, &plan.configuration.config, &cancel);
+                    let mut live=workflow_engine::output::LiveDecoder::default();
+                    let execution = sandbox.execute(resources,prompt,&plan.configuration.config,&cancel,&plan.block_id,&mut |chunk|live.push(chunk));
                     // Even on Codex error, export its CURRENT cache before stopping the keeper.
                     if execution.is_err() {
                         sandbox.stop_writers(resources)?;
@@ -142,10 +142,18 @@ pub fn execute(
                             }
                         }
                     }
-                    let final_result = execution.and_then(|(code, output)| {
-                        workflow_engine::output::Decoder::decode(&output, code, &secrets)
-                    });
                     cache_ready = true;
+                    secrets.sort();secrets.dedup();
+                    let final_result = (|| {
+                        if serde_json::to_vec(&secrets).map_err(|_|workflow_engine::Error::Validation{message:"Known-secret set invalid.".into()})?.len()>196608{return Err(workflow_engine::Error::Validation{message:"Known-secret publication budget exceeded.".into()});}
+                        let publication=sandbox.diagnostics(resources,&plan.block_id,&rotated,&secrets,false)?;
+                        // Failure here must still reach mandatory cache writeback and cleanup below.
+                        workflow_engine::runs::inspection::Journal::commit(&directory,&id,&publication).map_err(|_| workflow_engine::Error::Validation{message:"Sanitized diagnostics unavailable: private journal commit failed; no retained-byte claim.".into()})?;
+                        sandbox.diagnostics(resources,&plan.block_id,&rotated,&secrets,true)?;
+                        let code=execution?;live.finish()?;
+                        if code!=0||!publication.completed||publication.incomplete{return Err(workflow_engine::Error::Validation{message:"Incomplete or failed diagnostic publication.".into()});}
+                        publication.final_response.ok_or_else(||workflow_engine::Error::Validation{message:"Final response unavailable.".into()})
+                    })().map_err(|_|workflow_engine::Error::Validation{message:"Diagnostic publication incomplete or unavailable; no uncommitted retained-byte claim. Mandatory credential recovery remains independent.".into()});
                     if let Ok(text) = &final_result {
                         pending_output = Some(retain_output(&key, text.clone())?);
                     }
