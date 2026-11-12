@@ -1,5 +1,6 @@
 <script lang="ts">
   import RunHistory from './lib/RunHistory.svelte';
+  import QueuePanel from './lib/QueuePanel.svelte';
   import { onMount } from 'svelte';
   import IsolationSelect from './lib/IsolationSelect.svelte';
   import RunPanel from './lib/RunPanel.svelte';
@@ -41,6 +42,11 @@
   let pendingStart=$state<StartRun|null>(null);
   onMount(()=>{let alive=true;void commands.runStatus().then(value=>{if(alive){run=value;runReady=true;}}).catch(error=>{if(alive)runError=errorMessage(error);});return()=>{alive=false;};});
   let activeInspectionWorkflow=$state<string|null>(null);
+  let runSelection=0;
+  async function selectQueued(entry:import('./lib/transport.ts').QueueEntry){
+    const generation=++runSelection;
+    try{const selected=await commands.runStatus(entry.id);if(generation===runSelection&&selected?.id===entry.id){run=selected;activeInspectionWorkflow=entry.definitionId;runError='';}}catch(error){if(generation===runSelection)runError=errorMessage(error);}
+  }
   async function begin(mode:'save'|'saved'|'retry'){
     if(busy||!runReady||(mode!=='retry'&&(!editor.working||pendingStart!==null)))return;
     const inputs=$state.snapshot(supplied);
@@ -178,6 +184,7 @@
       {#if pendingStart}<p>Admission outcome may be unknown. Retry the same immutable request, not a new start.</p><button disabled={busy} onclick={()=>begin('retry')}>Retry same request</button>{/if}
       {#if runError}<p role="alert">{runError}</p>{/if}
     </section>
+    <QueuePanel {commands} onselect={selectQueued} admissionError={runError}/>
     {#key run?.id}<RunPanel {commands} {run} definitionId={activeInspectionWorkflow} onstatus={(value)=>{run=value;}}/>{/key}
     {#if editor.working}{#key editor.working.id}<RunHistory {commands} definitionId={editor.working.id}/>{/key}{/if}
     <RuntimeSettings {commands}/>

@@ -1,6 +1,7 @@
 //! Durable sequential admission. External effects never occur inside a transaction.
 pub mod history;
 pub mod inspection;
+pub mod queue;
 use crate::{
     params, read_configuration, resolve_inputs, storage, stored_definition, validation, Error,
     OptionalExtension, Store, TransactionBehavior,
@@ -22,6 +23,8 @@ pub struct StartRun {
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum RunState {
+    Queued,
+    AuthorizationRequired,
     Admitted,
     Running,
     Succeeded,
@@ -313,6 +316,27 @@ impl Store {
             )
             .map_err(storage)?;
         let mut status: RunStatus = serde_json::from_str(&body).map_err(storage)?;
+        if status.id != id {
+            return Err(storage("Run completion identity changed"));
+        }
+        let phase: Option<String> = tx
+            .query_row("SELECT phase FROM run_queue WHERE run_id=?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(storage)?;
+        if phase.as_deref().is_some_and(|p| p != "occupied") {
+            return Err(validation("Only an occupied reservation may settle."));
+        }
+        let reservation:Option<(String,u32)>=tx.query_row("SELECT slot,generation FROM run_queue WHERE run_id=?1 AND phase='occupied' AND slot IS NOT NULL",[id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(storage)?;
+        if clean {
+            if let Some((slot, generation)) = reservation {
+                let released:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM managed_sessions WHERE id=?1 AND state='available' AND owner IS NULL AND generation=?2)",params![slot,generation+1],|r|r.get(0)).map_err(storage)?;
+                if !released {
+                    return Err(validation("Execution slot retained until exact cache persistence and cleanup receipt."));
+                }
+            }
+        }
         status.state = if !clean {
             RunState::Held
         } else if status.state == RunState::Held {
@@ -330,6 +354,14 @@ impl Store {
             params![serde_json::to_string(&status).map_err(storage)?, !clean, id],
         )
         .map_err(storage)?;
+        if clean {
+            tx.execute(
+                "UPDATE run_queue SET phase='settled' WHERE run_id=?1 AND phase='occupied'",
+                [id],
+            )
+            .map_err(storage)?;
+            queue::reserve(&tx)?;
+        }
         tx.commit().map_err(storage)
     }
 
@@ -380,16 +412,12 @@ impl Store {
             }
             return serde_json::from_str(&status).map_err(storage);
         }
-        if tx
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM runs WHERE active=1)",
-                [],
-                |r| r.get::<_, bool>(0),
-            )
-            .map_err(storage)?
+        if admission.blocker.is_none()
+            && !queue::can_reserve(&tx)?
+            && queue::counts(&tx)?.1 >= queue::settings(&tx)?.waiting
         {
             return Err(Error::Busy {
-                message: "An active run or unresolved ownership hold exists.".into(),
+                message: "Waiting queue is full. No run was accepted.".into(),
             });
         }
         let row: Option<(u32, String)> = tx
@@ -462,26 +490,24 @@ impl Store {
             state: if blocked {
                 RunState::Blocked
             } else {
-                RunState::Admitted
+                RunState::Queued
             },
             final_response: None,
-            diagnostic: admission.blocker.unwrap_or_default(),
+            diagnostic: admission.blocker.unwrap_or_else(||"FIFO waiting: execution capacity or an independently acquired credential is unavailable.".into()),
             cleanup_pending: false,
             blocks: Vec::new(),
         };
-        if !blocked {
-            let slot: String = tx
-                .query_row(
-                    "SELECT id FROM managed_sessions WHERE state='available' ORDER BY id LIMIT 1",
-                    [],
-                    |r| r.get(0),
-                )
-                .map_err(|_| validation("No app-owned managed session is available."))?;
-            tx.execute("UPDATE managed_sessions SET state='leased',owner=?1 WHERE id=?2 AND state='available'",params![status.id,slot]).map_err(storage)?;
-        }
         tx.execute("INSERT INTO runs(id,request_id,request,snapshot,status,active) VALUES(?1,?2,?3,?4,?5,?6)",params![status.id,status.request_id,payload,serde_json::to_string(&snapshot).map_err(storage)?,serde_json::to_string(&status).map_err(storage)?,!blocked]).map_err(storage)?;
+        if !blocked {
+            tx.execute(
+                "INSERT INTO run_queue(run_id,phase) VALUES(?1,'waiting')",
+                [&status.id],
+            )
+            .map_err(storage)?;
+            queue::reserve(&tx)?;
+        }
         tx.commit().map_err(storage)?;
-        Ok(status)
+        self.run_status(&status.id)
     }
     pub fn run_status(&self, id: &str) -> Result<RunStatus, Error> {
         let c = rusqlite::Connection::open(&self.path).map_err(storage)?;
@@ -526,7 +552,31 @@ impl Store {
                 |r| r.get(0),
             )
             .map_err(storage)?;
-        if s.state == RunState::Admitted && !intent {
+        if s.state == RunState::Queued && !intent {
+            if tx
+                .execute(
+                    "UPDATE run_queue SET phase='settled' WHERE run_id=?1 AND phase='waiting'",
+                    [id],
+                )
+                .map_err(storage)?
+                != 1
+            {
+                return Err(storage("Queued ownership changed"));
+            }
+            s.state = RunState::Stopped;
+            s.diagnostic =
+                "Dequeued before reservation; no credential or resource ownership.".into();
+            tx.execute(
+                "UPDATE runs SET status=?1,active=0 WHERE id=?2",
+                params![serde_json::to_string(&s).map_err(storage)?, id],
+            )
+            .map_err(storage)?;
+            queue::reserve(&tx)?;
+        } else if matches!(
+            s.state,
+            RunState::Admitted | RunState::AuthorizationRequired
+        ) && !intent
+        {
             // The same IMMEDIATE transaction excludes claim and intent races. Only
             // this unclaimed reservation is safe to release; never a running lease.
             let released = tx.execute("UPDATE managed_sessions SET state='available',owner=NULL WHERE owner=?1 AND state='leased'", [id]).map_err(storage)?;
@@ -543,6 +593,12 @@ impl Store {
                 params![serde_json::to_string(&s).map_err(storage)?, id],
             )
             .map_err(storage)?;
+            tx.execute(
+                "UPDATE run_queue SET phase='settled' WHERE run_id=?1 AND phase='occupied'",
+                [id],
+            )
+            .map_err(storage)?;
+            queue::reserve(&tx)?;
         } else if matches!(
             s.state,
             RunState::Admitted | RunState::Running | RunState::Held
@@ -564,17 +620,33 @@ impl Store {
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
-        let bodies: Vec<String> = {
+        let bodies: Vec<(String, Option<String>)> = {
             let mut q = tx
-                .prepare("SELECT status FROM runs WHERE active=1")
+                .prepare("SELECT r.status,q.phase FROM runs r LEFT JOIN run_queue q ON q.run_id=r.id WHERE r.active=1")
                 .map_err(storage)?;
-            let rows = q.query_map([], |r| r.get(0)).map_err(storage)?;
+            let rows = q
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(storage)?;
             rows.collect::<Result<_, _>>().map_err(storage)?
         };
-        for body in bodies {
+        for (body, phase) in bodies {
             let mut s: RunStatus = serde_json::from_str(&body).map_err(storage)?;
+            // Durable queue-only authority survives repeated startup. Inconsistent
+            // state/phase pairs and existing cleanup holds remain fail-closed.
+            let waiting = !s.cleanup_pending
+                && matches!(
+                    (phase.as_deref(), &s.state),
+                    (Some("waiting"), RunState::Queued) | (Some("withheld"), RunState::Held)
+                );
+            if phase.as_deref() == Some("waiting") {
+                tx.execute(
+                    "UPDATE run_queue SET phase='withheld' WHERE run_id=?1 AND phase='waiting'",
+                    [&s.id],
+                )
+                .map_err(storage)?;
+            }
             s.state = RunState::Held;
-            s.cleanup_pending = true;
+            s.cleanup_pending = !waiting;
             s.diagnostic="Interrupted run withheld. No automatic resume, resource deletion or session reuse.".into();
             tx.execute(
                 "UPDATE runs SET status=?1 WHERE id=?2",

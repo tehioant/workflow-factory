@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-queue-status"
+description = "Enables the queue_status command without any pre-configured scope."
+commands.allow = ["queue_status"]
+
+[[permission]]
+identifier = "deny-queue-status"
+description = "Denies the queue_status command without any pre-configured scope."
+commands.deny = ["queue_status"]

@@ -5,11 +5,567 @@ use workflow_engine::{
     Store,
 };
 const DEFINITION: &str = "00000000-0000-0000-0000-000000000001";
+
+#[test]
+fn d11_prepared_admission_bounds_snapshot_and_idempotency() {
+    use workflow_engine::runs::queue::QueueSettings;
+    for mode in ["perRun", "perBlock"] {
+        let (dir, store, c) = prepared();
+        c.execute(
+            "UPDATE revisions SET body=json_set(body,'$.isolation',?1)",
+            [mode],
+        )
+        .unwrap();
+        let mut captures = Vec::new();
+        for topic in ["first own prompt", "second own prompt"] {
+            let mut request = request();
+            request.request_id = uuid::Uuid::new_v4().to_string();
+            request.supplied.insert("topic".into(), topic.into());
+            let accepted = store
+                .admit_run(
+                    request.clone(),
+                    Admission {
+                        image_id: "captured-image".into(),
+                        blocker: None,
+                    },
+                )
+                .unwrap();
+            // Seed observed results independently: no workflow execution chain.
+            c.execute(
+                "UPDATE runs SET status=json_set(status,'$.finalResponse',?1) WHERE id=?2",
+                params![format!("{topic} result"), accepted.id],
+            )
+            .unwrap();
+            let reader = workflow_engine::runs::history::HistoryReader::open(dir.path()).unwrap();
+            let captured = reader.run_detail(DEFINITION, &accepted.id).unwrap();
+            assert_eq!(captured.inputs.prompts["a"], format!("Hello {topic}"));
+            assert_eq!(
+                captured.final_response.as_deref(),
+                Some(format!("{topic} result").as_str())
+            );
+            assert_eq!(
+                reader
+                    .run_status(Some(&accepted.id))
+                    .unwrap()
+                    .unwrap()
+                    .request_id,
+                request.request_id
+            );
+            captures.push((
+                accepted.id.clone(),
+                workflow_engine::sandbox::resource_names(&accepted.id),
+            ));
+        }
+        assert_ne!(captures[0].0, captures[1].0);
+        for i in 0..3 {
+            assert_ne!(captures[0].1[i], captures[1].1[i]);
+        }
+        // Direct production reservation boundary, with independently prepared slots.
+        for generation in [7, 11] {
+            c.execute(
+                "INSERT INTO managed_sessions VALUES(?1,'available',?2,NULL)",
+                params![uuid::Uuid::new_v4().to_string(), generation],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            store.reserve_next_run().unwrap().as_deref(),
+            Some(captures[0].0.as_str())
+        );
+        assert_eq!(
+            store.reserve_next_run().unwrap().as_deref(),
+            Some(captures[1].0.as_str())
+        );
+        let first = store
+            .execution_reservation(&captures[0].0)
+            .unwrap()
+            .unwrap();
+        let second = store
+            .execution_reservation(&captures[1].0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.owner, captures[0].0);
+        assert_eq!(second.owner, captures[1].0);
+        assert_ne!(first.slot, second.slot);
+        // One stage operation per independently captured owner; never execute/settle a workflow.
+        struct Seed {
+            slot: String,
+            bytes: Vec<u8>,
+            reads: usize,
+        }
+        impl SecureStore for Seed {
+            fn read(&mut self, slot: &str) -> Result<Vec<u8>, workflow_engine::Error> {
+                assert_eq!(slot, self.slot);
+                self.reads += 1;
+                Ok(self.bytes.clone())
+            }
+            fn write(&mut self, _: &str, _: &[u8]) -> Result<(), workflow_engine::Error> {
+                panic!("stage must not write secure store")
+            }
+        }
+        struct Stage {
+            r: workflow_engine::sandbox::Resources,
+            bytes: Vec<u8>,
+            staged: Vec<(String, Vec<u8>)>,
+            observations: usize,
+            unsafe_guest: bool,
+            cancel_after_observation: bool,
+        }
+        impl workflow_engine::sandbox::Pipe for Stage {
+            fn call(
+                &mut self,
+                args: &[String],
+                input: &[u8],
+                limit: usize,
+                cancel: &workflow_engine::sandbox::Cancel,
+            ) -> Result<(i32, Vec<u8>, Vec<u8>), workflow_engine::Error> {
+                use serde_json::json;
+                let r = &self.r;
+                if args.last().map(String::as_str) == Some("stage") {
+                    assert_eq!(
+                        args,
+                        &[
+                            "exec",
+                            "-i",
+                            &r.container,
+                            "node",
+                            "/opt/workflow-factory/keeper.mjs",
+                            "stage"
+                        ]
+                        .map(str::to_string)
+                    );
+                    assert_eq!(input, self.bytes);
+                    self.staged.push((r.container.clone(), input.to_vec()));
+                    return Ok((0, vec![], vec![]));
+                }
+                assert!(input.is_empty());
+                if args[0] == "exec" {
+                    let guest = ["exec", &r.container, "node", "-e", "const fs=require('node:fs');process.stdout.write(JSON.stringify({swaps:fs.readFileSync('/proc/swaps','utf8'),core:fs.readFileSync('/proc/sys/kernel/core_pattern','utf8')}))"].map(str::to_string);
+                    let cgroup = ["exec", &r.container, "node", "-e", "process.stdout.write(require('node:fs').readFileSync('/sys/fs/cgroup/memory.swap.max','utf8'))"].map(str::to_string);
+                    if args == guest {
+                        assert_eq!(limit, 16384);
+                        self.observations += 1;
+                        assert_eq!(self.observations, 1);
+                        if self.cancel_after_observation {
+                            cancel.0.store(true, std::sync::atomic::Ordering::Release);
+                        }
+                        return Ok((0, serde_json::to_vec(&json!({
+                            "swaps": "Filename\tType\tSize\tUsed\tPriority\n",
+                            "core": if self.unsafe_guest { "|unsafe-handler\n" } else { "core\n" }
+                        })).unwrap(), vec![]));
+                    }
+                    assert_eq!(args, cgroup, "unknown observation command");
+                    assert_eq!(limit, 1024);
+                    return Ok((0, b"0\n".to_vec(), vec![]));
+                }
+                assert_eq!(args[1], "inspect");
+                let label = json!({"org.workflow-factory.owner":r.owner});
+                let private = format!("wf-private-{}", r.owner);
+                let outer = format!("wf-outer-{}", r.owner);
+                let host = |memory: u64, pids: u32| json!({"ReadonlyRootfs":true,"Privileged":false,"Init":true,"Ulimits":[{"Name":"core","Soft":0,"Hard":0}],"Memory":memory,"MemorySwap":memory,"PidsLimit":pids,"NanoCpus":1000000000u64,"LogConfig":{"Type":"none"},"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges"],"Tmpfs":{"/workspace":"rw,exec,nosuid,nodev,uid=1000,mode=700","/run/wf-codex":"rw,noexec,nosuid,nodev,uid=1000,mode=700","/tmp":"rw,noexec,nosuid,nodev,uid=1000,mode=700"}});
+                let value = if args[0] == "volume" {
+                    assert_eq!(Some(&args[2]), r.workspace.as_ref());
+                    json!({"Name":args[2],"Driver":"local","Scope":"local","Labels":label,"Options":{"type":"tmpfs","device":"tmpfs","o":"rw,exec,nosuid,nodev,size=256m,uid=1000,gid=1000,mode=700"}})
+                } else if args[0] == "network" {
+                    assert!([&r.network, &r.outer].contains(&&args[2]));
+                    json!({"Id":args[2],"Labels":label,"Driver":"bridge","Internal":args[2]==r.network,"EnableIPv6":false,"Options":{"com.docker.network.bridge.gateway_mode_ipv4":"isolated"},"Containers":if args[2]==r.network {json!({r.container.clone():{},r.helper.clone():{}})}else{json!({r.helper.clone():{}})}})
+                } else if args[2] == r.helper {
+                    {
+                        let mut helper_host = host(134217728, 32);
+                        helper_host["Tmpfs"] =
+                            json!({"/tmp":"rw,noexec,nosuid,nodev,uid=1000,mode=700"});
+                        json!({"Id":r.helper,"Image":r.image,"Config":{"Labels":label,"User":"1000:1000"},"HostConfig":helper_host,"Mounts":[],"NetworkSettings":{"Networks":{private:{"NetworkID":r.network},outer:{"NetworkID":r.outer}}}})
+                    }
+                } else {
+                    assert_eq!(args[2], r.container);
+                    let mut row = json!({"State":{"Running":true,"StartedAt":"prepared-stage-epoch"},"RestartCount":0,"Id":r.container,"Image":r.image,"Config":{"Labels":label,"User":"1000:1000","Entrypoint":["node"],"Cmd":["/opt/workflow-factory/keeper.mjs"]},"HostConfig":host(536870912,128),"Mounts":[],"NetworkSettings":{"Networks":{private:{"NetworkID":r.network}}}});
+                    if let Some(name) = &r.workspace {
+                        row["HostConfig"]["Tmpfs"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("/workspace");
+                        row["HostConfig"]["Mounts"] = json!([{"Type":"volume","Source":name,"Target":"/workspace","VolumeOptions":{"NoCopy":true}}]);
+                        row["Mounts"] = json!([{"Type":"volume","Name":name,"Driver":"local","Destination":"/workspace","RW":true}]);
+                    }
+                    row
+                };
+                Ok((0, serde_json::to_vec(&json!([value])).unwrap(), vec![]))
+            }
+        }
+        let mut bindings = Vec::new();
+        for (index, lease) in [&first, &second].into_iter().enumerate() {
+            let captured = workflow_engine::runs::history::HistoryReader::open(dir.path())
+                .unwrap()
+                .run_detail(DEFINITION, &captures[index].0)
+                .unwrap();
+            assert_eq!(lease.owner, captured.id);
+            let resources = workflow_engine::sandbox::Resources {
+                owner: captured.id.clone(),
+                image: format!("sha256:{}", "f".repeat(64)),
+                network: format!("{:064x}", index * 4 + 1),
+                outer: format!("{:064x}", index * 4 + 2),
+                helper: format!("{:064x}", index * 4 + 3),
+                container: format!("{:064x}", index * 4 + 4),
+                workspace: (mode == "perBlock").then(|| format!("wf-workspace-{}", captured.id)),
+                peer: None,
+                started_at: Some("prepared-stage-epoch".into()),
+                retired: None,
+            };
+            let cache=serde_json::to_vec(&serde_json::json!({"auth_mode":"chatgpt","tokens":{"login_owner_id":format!("synthetic-owner-{index}"),"access_token":format!("synthetic-access-{index}"),"refresh_token":format!("synthetic-refresh-{index}"),"id_token":"a.b.c","account_id":"synthetic","oauth_provenance":{"issuer":"https://auth.openai.com","client_id":"synthetic-client"}}})).unwrap();
+            let mut secure = Seed {
+                slot: lease.slot.clone(),
+                bytes: cache.clone(),
+                reads: 0,
+            };
+            let mut sandbox = workflow_engine::sandbox::Sandbox {
+                pipe: Stage {
+                    r: resources.clone(),
+                    bytes: cache.clone(),
+                    staged: Vec::new(),
+                    observations: 0,
+                    unsafe_guest: false,
+                    cancel_after_observation: false,
+                },
+            };
+            assert_eq!(
+                sandbox
+                    .stage_owned(
+                        lease,
+                        &resources,
+                        &mut secure,
+                        &workflow_engine::sandbox::Cancel::default()
+                    )
+                    .unwrap(),
+                cache
+            );
+            assert_eq!(secure.reads, 1);
+            assert_eq!(
+                sandbox.pipe.staged,
+                vec![(resources.container.clone(), cache.clone())]
+            );
+            assert_eq!(
+                sandbox.pipe.observations,
+                usize::from(cfg!(target_os = "macos"))
+            );
+            #[cfg(target_os = "macos")]
+            for (unsafe_guest, cancel_after_observation) in [(true, false), (false, true)] {
+                let mut denied = workflow_engine::sandbox::Sandbox {
+                    pipe: Stage {
+                        r: resources.clone(),
+                        bytes: cache.clone(),
+                        staged: Vec::new(),
+                        observations: 0,
+                        unsafe_guest,
+                        cancel_after_observation,
+                    },
+                };
+                let cancel = workflow_engine::sandbox::Cancel::default();
+                let error = denied
+                    .stage_owned(lease, &resources, &mut secure, &cancel)
+                    .unwrap_err();
+                let message = format!("{error:?}");
+                assert!(
+                    message.contains(if unsafe_guest {
+                        "Docker Desktop guest swap/core policy unavailable"
+                    } else {
+                        "Scoped stop requested"
+                    }),
+                    "{message}"
+                );
+                assert_eq!(denied.pipe.observations, 1);
+                assert!(denied.pipe.staged.is_empty());
+                assert_eq!(
+                    cancel.0.load(std::sync::atomic::Ordering::Acquire),
+                    cancel_after_observation
+                );
+            }
+            bindings.push((
+                captured.id,
+                lease.slot.clone(),
+                lease.generation,
+                resources.container,
+                resources.workspace,
+                cache,
+            ));
+        }
+        assert_ne!(bindings[0].0, bindings[1].0);
+        assert_ne!(bindings[0].1, bindings[1].1);
+        assert_ne!(bindings[0].3, bindings[1].3);
+        assert_ne!(bindings[0].5, bindings[1].5);
+        if mode == "perBlock" {
+            assert_ne!(bindings[0].4, bindings[1].4);
+        }
+
+        assert!(store.reserve_next_run().unwrap().is_none());
+    }
+    {
+        let (dir, _store, c) = prepared();
+        let held = status();
+        seed_run(&c, &held, true);
+        c.execute(
+            "INSERT INTO managed_sessions VALUES('owned-slot','quarantined',7,'owned')",
+            [],
+        )
+        .unwrap();
+        let before: String = c
+            .query_row("SELECT request||snapshot||status FROM runs", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        c.execute_batch("DROP TABLE run_queue; DROP TABLE queue_settings; CREATE UNIQUE INDEX one_active_run ON runs(active) WHERE active=1; PRAGMA user_version=3;").unwrap();
+        let migrated = Store::open(dir.path()).unwrap();
+        assert_eq!(migrated.queue_settings().unwrap().active, 2);
+        assert_eq!(
+            c.query_row("SELECT request||snapshot||status FROM runs", [], |r| r
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+            before
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT phase||':'||slot||':'||generation FROM run_queue WHERE run_id='owned'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "occupied:owned-slot:7"
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='one_active_run'",
+                [],
+                |r| r.get::<_, u32>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+    let (_dir, store, c) = prepared();
+    assert_eq!(
+        (
+            store.queue_settings().unwrap().active,
+            store.queue_settings().unwrap().waiting
+        ),
+        (2, 16)
+    );
+    for (active, waiting) in [(0, 16), (9, 16), (2, 65)] {
+        assert!(store
+            .save_queue_settings(QueueSettings { active, waiting })
+            .is_err());
+    }
+    store
+        .save_queue_settings(QueueSettings {
+            active: 8,
+            waiting: 1,
+        })
+        .unwrap();
+    let accepted = store
+        .admit_run(
+            request(),
+            Admission {
+                image_id: "captured-image".into(),
+                blocker: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(accepted.state, RunState::Queued);
+    let frozen: String = c
+        .query_row(
+            "SELECT snapshot FROM runs WHERE id=?1",
+            [&accepted.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let snapshot: serde_json::Value = serde_json::from_str(&frozen).unwrap();
+    assert_eq!(snapshot["inputs"]["values"]["topic"], "literal $HOME");
+    assert_eq!(snapshot["plans"][0]["configuration"]["revision"], 2);
+    c.execute("DELETE FROM configurations", []).unwrap();
+    assert_eq!(
+        store
+            .admit_run(
+                request(),
+                Admission {
+                    image_id: "changed".into(),
+                    blocker: None
+                }
+            )
+            .unwrap()
+            .id,
+        accepted.id
+    );
+    let mut changed = request();
+    changed.request_id = uuid::Uuid::new_v4().to_string();
+    assert!(store
+        .admit_run(
+            changed,
+            Admission {
+                image_id: "other".into(),
+                blocker: None
+            }
+        )
+        .is_err());
+    assert!(store
+        .save_queue_settings(QueueSettings {
+            active: 1,
+            waiting: 0
+        })
+        .is_err());
+    assert_eq!(
+        c.query_row("SELECT COUNT(*) FROM runs", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        c.query_row("SELECT COUNT(*) FROM managed_sessions", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        c.query_row("SELECT COUNT(*) FROM run_resources", [], |r| r
+            .get::<_, u32>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        c.query_row("SELECT snapshot FROM runs", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        frozen
+    );
+    let stopped = store.stop_run(&accepted.id).unwrap();
+    assert_eq!(stopped.state, RunState::Stopped);
+    assert_eq!(
+        c.query_row("SELECT phase FROM run_queue", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "settled"
+    );
+}
+#[test]
+fn d11_prepared_release_reserves_oldest_once_and_retains_holds() {
+    for scenario in [
+        "clean",
+        "hold",
+        "no-session",
+        "persistence-failure",
+        "wrong-generation",
+    ] {
+        let (_dir, store, c) = prepared();
+        let owner = uuid::Uuid::new_v4().to_string();
+        let oldest = uuid::Uuid::new_v4().to_string();
+        let later = uuid::Uuid::new_v4().to_string();
+        let slot = uuid::Uuid::new_v4().to_string();
+        let mut s = status();
+        s.id = owner.clone();
+        s.request_id = uuid::Uuid::new_v4().to_string();
+        seed_run(&c, &s, true);
+        c.execute(
+            "INSERT INTO run_queue(run_id,phase,slot,generation) VALUES(?1,'occupied',?2,7)",
+            params![owner, slot],
+        )
+        .unwrap();
+        c.execute("UPDATE queue_settings SET active=1", []).unwrap();
+        c.execute(
+            "INSERT INTO managed_sessions VALUES(?1,?2,?3,?4)",
+            params![
+                slot,
+                if scenario == "hold" {
+                    "leased"
+                } else if scenario == "no-session" {
+                    "quarantined"
+                } else {
+                    "available"
+                },
+                if scenario == "wrong-generation" { 9 } else { 8 },
+                if scenario == "hold" {
+                    Some(owner.clone())
+                } else {
+                    None
+                }
+            ],
+        )
+        .unwrap();
+        for id in [&oldest, &later] {
+            let mut wait = status();
+            wait.id = id.clone();
+            wait.request_id = uuid::Uuid::new_v4().to_string();
+            wait.state = RunState::Queued;
+            wait.final_response = None;
+            seed_run(&c, &wait, true);
+            c.execute(
+                "INSERT INTO run_queue(run_id,phase) VALUES(?1,'waiting')",
+                [id],
+            )
+            .unwrap();
+        }
+        if scenario == "persistence-failure" {
+            c.execute_batch("CREATE TRIGGER refuse_release BEFORE UPDATE ON run_queue BEGIN SELECT RAISE(FAIL,'prepared refusal'); END;").unwrap();
+        }
+        let before: String = c
+            .query_row("SELECT status FROM runs WHERE id=?1", [&owner], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let result = store.finish_run(
+            &owner,
+            None,
+            "prepared completion",
+            scenario != "hold",
+            true,
+        );
+        assert_eq!(
+            result.is_ok(),
+            matches!(scenario, "clean" | "hold"),
+            "{scenario}"
+        );
+        assert_eq!(
+            store.run_status(&oldest).unwrap().state,
+            if scenario == "clean" {
+                RunState::AuthorizationRequired
+            } else {
+                RunState::Queued
+            }
+        );
+        assert_eq!(store.run_status(&later).unwrap().state, RunState::Queued);
+        if scenario == "clean" {
+            assert!(store
+                .finish_run(&owner, None, "duplicate", true, true)
+                .is_err());
+            let lease = store.execution_reservation(&oldest).unwrap().unwrap();
+            assert_eq!(lease.owner, oldest);
+            assert_eq!(lease.slot, slot);
+            assert_eq!(lease.generation, 8);
+            assert!(store.execution_reservation(&later).unwrap().is_none());
+            assert_eq!(
+                c.query_row(
+                    "SELECT COUNT(*) FROM run_queue WHERE phase='occupied'",
+                    [],
+                    |r| r.get::<_, u32>(0)
+                )
+                .unwrap(),
+                1
+            );
+        } else if scenario == "hold" {
+            assert_eq!(store.run_status(&owner).unwrap().state, RunState::Held);
+            assert!(store.run_status(&owner).unwrap().cleanup_pending);
+        } else {
+            assert_eq!(
+                c.query_row("SELECT status FROM runs WHERE id=?1", [&owner], |r| r
+                    .get::<_, String>(0))
+                    .unwrap(),
+                before
+            );
+        }
+    }
+}
+
 #[test]
 fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() {
     use workflow_engine::{runs::BlockResult, sandbox::Cancel, sessions::Lease};
     for scenario in [
         "success",
+        "success-per-block",
         "failed",
         "held",
         "cancelled",
@@ -46,7 +602,13 @@ fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() 
         }
         seed_run(&c, &s, true);
         let config = serde_json::json!({"config":{"id":CONFIG,"name":"Captured","model":"captured-model","reasoning":"high"},"revision":2});
-        let snapshot = serde_json::json!({"definition":{"definition":{"schemaVersion":1,"id":DEFINITION,"name":"Captured","blocks":[{"id":"b","name":"B","prompt":"B own $ 雪 / {{output.a.finalResponse}}","position":{"x":0,"y":0},"configurationId":CONFIG},{"id":"a","name":"A","prompt":"A own","position":{"x":0,"y":0},"configurationId":CONFIG}],"connections":[{"source":"a","target":"b"}],"inputs":[]},"revision":1},"configuration":config,"inputs":{"values":{},"prompts":{}},"imageId":"captured-image","plans":[{"block_id":"a","segments":[{"Literal":"A own"}],"configuration":config},{"block_id":"b","segments":[{"Literal":"B own $ 雪 / "},{"Output":"a"}],"configuration":config}]});
+        let mut snapshot = serde_json::json!({"definition":{"definition":{"schemaVersion":1,"id":DEFINITION,"name":"Captured","blocks":[{"id":"b","name":"B","prompt":"B own $ 雪 / {{output.a.finalResponse}}","position":{"x":0,"y":0},"configurationId":CONFIG},{"id":"a","name":"A","prompt":"A own","position":{"x":0,"y":0},"configurationId":CONFIG}],"connections":[{"source":"a","target":"b"}],"inputs":[]},"revision":1},"configuration":config,"inputs":{"values":{},"prompts":{}},"imageId":"captured-image","plans":[{"block_id":"a","segments":[{"Literal":"A own"}],"configuration":config},{"block_id":"b","segments":[{"Literal":"B own $ 雪 / "},{"Output":"a"}],"configuration":config}]});
+        snapshot["definition"]["definition"]["isolation"] =
+            serde_json::json!(if scenario == "success-per-block" {
+                "perBlock"
+            } else {
+                "perRun"
+            });
         c.execute("UPDATE runs SET snapshot=?1", [snapshot.to_string()])
             .unwrap();
         c.execute("DELETE FROM configurations", []).unwrap();
@@ -106,7 +668,7 @@ fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() 
         );
         assert_eq!(
             result.is_ok(),
-            matches!(scenario, "success" | "recovery-won"),
+            matches!(scenario, "success" | "success-per-block" | "recovery-won"),
             "{scenario}"
         );
         assert_eq!(
@@ -114,6 +676,7 @@ fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() 
             usize::from(matches!(
                 scenario,
                 "success"
+                    | "success-per-block"
                     | "result-storage"
                     | "execution-failed"
                     | "recovery-won"
@@ -130,7 +693,7 @@ fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() 
             assert_eq!(after.blocks[1].state, RunState::Running);
             assert_eq!(after.blocks[1].final_response, None);
         }
-        if matches!(scenario, "success" | "recovery-won") {
+        if matches!(scenario, "success" | "success-per-block" | "recovery-won") {
             assert_eq!(after.blocks.len(), 2);
             assert_eq!(after.blocks[1].state, RunState::Succeeded);
             assert_eq!(
@@ -279,19 +842,116 @@ fn c04_restart_withholds_active_run_and_session_without_releasing() {
         [],
     )
     .unwrap();
-    store.withhold_unfinished_runs().unwrap();
-    assert_eq!(store.run_status("owned").unwrap().state, RunState::Held);
-    assert_eq!(
-        c.query_row("SELECT state FROM managed_sessions", [], |r| r
-            .get::<_, String>(0))
-            .unwrap(),
-        "quarantined"
-    );
-    assert_eq!(
-        c.query_row("SELECT active FROM runs", [], |r| r.get::<_, u32>(0))
-            .unwrap(),
-        1
-    );
+    for _ in 0..3 {
+        store.withhold_unfinished_runs().unwrap();
+        let held = store.run_status("owned").unwrap();
+        assert_eq!(held.state, RunState::Held);
+        assert!(held.cleanup_pending);
+        assert_eq!(
+            c.query_row("SELECT state FROM managed_sessions", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "quarantined"
+        );
+        assert_eq!(
+            c.query_row("SELECT active FROM runs", [], |r| r.get::<_, u32>(0))
+                .unwrap(),
+            1
+        );
+    }
+    // Prepared durable startup predicates only: no admission, launch or workflow.
+    for (phase, state, queue_only) in [
+        (Some("waiting"), RunState::Queued, true),
+        (Some("withheld"), RunState::Held, true),
+        (Some("occupied"), RunState::Held, false),
+        (Some("settled"), RunState::Held, false),
+        (None, RunState::Running, false),
+        (None, RunState::Queued, false),
+        (Some("occupied"), RunState::Queued, false),
+        (Some("waiting"), RunState::Running, false),
+    ] {
+        let (_dir, store, c) = prepared();
+        let mut seeded = status();
+        seeded.state = state;
+        seed_run(&c, &seeded, true);
+        if let Some(phase) = phase {
+            c.execute(
+                "INSERT INTO run_queue(run_id,phase) VALUES('owned',?1)",
+                [phase],
+            )
+            .unwrap();
+        }
+        if phase == Some("occupied") {
+            c.execute(
+                "UPDATE run_queue SET slot='held-slot',generation=7 WHERE run_id='owned'",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO managed_sessions VALUES('held-slot','leased',7,'owned')",
+                [],
+            )
+            .unwrap();
+        }
+        c.execute(
+            "INSERT INTO managed_sessions VALUES('unused','available',11,NULL)",
+            [],
+        )
+        .unwrap();
+        for startup in 1..=3 {
+            store.withhold_unfinished_runs().unwrap();
+            let held = store.run_status("owned").unwrap();
+            assert_eq!(held.state, RunState::Held);
+            assert_eq!(
+                held.cleanup_pending, !queue_only,
+                "phase={phase:?}, startup={startup}"
+            );
+            assert_eq!(held.final_response.as_deref(), Some("retained"));
+            assert_eq!(
+                c.query_row("SELECT active FROM runs", [], |r| r.get::<_, u32>(0))
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                c.query_row(
+                    "SELECT state||':'||generation FROM managed_sessions WHERE id='unused' AND owner IS NULL",
+                    [],
+                    |r| r.get::<_, String>(0)
+                ).unwrap(),
+                "available:11"
+            );
+            let durable: Option<String> = c
+                .query_row(
+                    "SELECT (SELECT phase FROM run_queue WHERE run_id='owned')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                durable.as_deref(),
+                match phase {
+                    Some("waiting") => Some("withheld"),
+                    other => other,
+                }
+            );
+            assert_eq!(
+                c.query_row("SELECT COUNT(*) FROM run_queue WHERE slot IS NOT NULL OR generation IS NOT NULL", [], |r| r.get::<_, u32>(0)).unwrap(),
+                u32::from(phase == Some("occupied"))
+            );
+            if phase == Some("occupied") {
+                assert_eq!(c.query_row("SELECT state||':'||generation||':'||owner FROM managed_sessions WHERE id='held-slot'", [], |r| r.get::<_, String>(0)).unwrap(), "quarantined:7:owned");
+                assert_eq!(
+                    c.query_row(
+                        "SELECT slot||':'||generation FROM run_queue WHERE run_id='owned'",
+                        [],
+                        |r| r.get::<_, String>(0)
+                    )
+                    .unwrap(),
+                    "held-slot:7"
+                );
+            }
+        }
+    }
 }
 struct FailingStore(bool);
 impl SecureStore for FailingStore {
@@ -662,7 +1322,7 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
         legacy
             .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        3
+        4
     );
     let rejected = Connection::open_with_flags(
         &db_path,
@@ -696,6 +1356,11 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
         before_read,
         std::fs::read(dir.path().join("definitions.sqlite3")).unwrap()
     );
+    let selected = reader.run_status(Some(id)).unwrap().unwrap();
+    assert_eq!(selected.id, *id);
+    assert_eq!(selected.request_id, "20000000-0000-0000-0000-000000000004");
+    assert_eq!(reader.run_status(None).unwrap().unwrap().id, *id);
+    assert!(reader.run_status(Some(CONFIG)).is_err());
     use std::os::unix::fs::PermissionsExt;
     let db_path = dir.path().join("definitions.sqlite3");
     std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -747,7 +1412,7 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
     assert_eq!(
         c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        3
+        4
     );
     let missing = tempfile::tempdir().unwrap();
     assert!(workflow_engine::runs::history::HistoryReader::open(missing.path()).is_err());
@@ -852,6 +1517,13 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
         .unwrap();
         let page = store.list_run_history(DEFINITION, None, 1).unwrap();
         assert!(page.unknown_scope_records);
+        c.execute_batch("CREATE TRIGGER forbid_status_write BEFORE UPDATE ON runs BEGIN SELECT RAISE(FAIL,'unrelated pending output write failure'); END;").unwrap();
+        let reader = workflow_engine::runs::history::HistoryReader::open(dir.path()).unwrap();
+        let before_status = std::fs::read(&db_path).unwrap();
+        assert_eq!(reader.run_status(Some(id)).unwrap().unwrap().id, *id);
+        assert!(reader.run_status(None).is_err());
+        assert_eq!(before_status, std::fs::read(&db_path).unwrap());
+        c.execute_batch("DROP TRIGGER forbid_status_write").unwrap();
         assert!(!page.unavailable_records);
         assert_eq!(page.entries.len(), 1);
         assert!(!page.entries[0].unavailable);

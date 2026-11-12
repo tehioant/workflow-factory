@@ -2,6 +2,13 @@
 use crate::{runtime::verify_private_network, sessions::CACHE_LIMIT, validation, Error};
 use serde_json::Value;
 mod block;
+pub fn resource_names(owner: &str) -> [String; 3] {
+    [
+        format!("wf-private-{owner}"),
+        format!("wf-outer-{owner}"),
+        format!("wf-workspace-{owner}"),
+    ]
+}
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -284,7 +291,7 @@ impl<P: Pipe> Sandbox<P> {
                 "com.docker.network.bridge.gateway_mode_ipv4=isolated",
                 "--label",
                 &label,
-                &format!("wf-private-{owner}"),
+                &resource_names(owner)[0],
             ]),
         )?;
         let outer = create(
@@ -297,7 +304,7 @@ impl<P: Pipe> Sandbox<P> {
                 "--ipv6=false",
                 "--label",
                 &label,
-                &format!("wf-outer-{owner}"),
+                &resource_names(owner)[1],
             ]),
         )?;
         let base = |network: &str, memory: &str, pids: &str| {
@@ -740,6 +747,18 @@ impl<P: Pipe> Sandbox<P> {
             return Err(validation("Applied container no-swap policy unavailable."));
         }
         Ok(())
+    }
+    pub fn stage_owned(
+        &mut self,
+        lease: &crate::sessions::Lease,
+        r: &Resources,
+        secure: &mut impl crate::sessions::SecureStore,
+        cancel: &Cancel,
+    ) -> Result<Vec<u8>, Error> {
+        let seed = secure.read(&lease.slot)?;
+        cancel.check()?;
+        self.stage(r, &seed, cancel)?;
+        Ok(seed)
     }
     pub fn stage(&mut self, r: &Resources, cache: &[u8], cancel: &Cancel) -> Result<(), Error> {
         crate::sessions::validate_cache(cache)?;

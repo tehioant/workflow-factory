@@ -8,6 +8,9 @@ use workflow_engine::{
 fn main() {
     let config = Default::default();
     let declarations = [
+        workflow_engine::runs::queue::QueueSettings::decl(&config),
+        workflow_engine::runs::queue::QueueEntry::decl(&config),
+        workflow_engine::runs::queue::QueueStatus::decl(&config),
         workflow_engine::runs::inspection::view::Notice::decl(&config),
         workflow_engine::runs::inspection::view::InspectionPage::decl(&config),
         workflow_engine::runs::inspection::view::LogEntry::decl(&config),

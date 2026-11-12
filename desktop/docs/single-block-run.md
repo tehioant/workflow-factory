@@ -1,6 +1,6 @@
-# Single-block source checkpoint (#29; not qualified for live execution)
+# Desktop execution and bounded FIFO source checkpoint (#29–#34; not live-qualified)
 
-The main window uses generated transport and locally scoped Tauri commands for immutable admission, retained status and scoped stop. Admission binds request identity, exact saved definition/configuration revisions, literal inputs/prompts and the inspected immutable image ID in one SQLite transaction. A duplicate request reads its original outcome without re-resolving mutable configuration. One active/held record excludes new execution. Native startup locks this data directory before database access, withholds interrupted runs and quarantines acquiring/leased sessions. It never resumes or deletes name-matched resources.
+The main window uses generated transport and locally scoped Tauri commands for immutable admission, retained status and scoped stop. Admission binds request identity, exact saved definition/configuration revisions, literal inputs/prompts and the inspected immutable image ID in one SQLite transaction. A duplicate request reads its original outcome without re-resolving mutable configuration. Global capacities default to two occupied and sixteen waiting runs (validated ranges 1–8 / 0–64). Cleanup/persistence holds consume occupied capacity; capacity reductions below existing counts are rejected. Native startup locks this data directory before database access, withholds interrupted runs and quarantines acquiring/leased sessions. It never resumes or deletes name-matched resources.
 
 The worker consumes the captured snapshot, a transactionally reserved app session, native secret storage and real structured Docker operations. Durable ownership intents precede resource creation and returned IDs are recorded before later effects. The real adapter creates private internal IPv4 and separate egress networks, a restricted provider-only helper and an unprivileged bounded/read-only work container. It inspects ownership/configuration afresh, stages cache on private tmpfs through a separate stdin pipe, and feeds only the prompt to Codex. The container-local keeper retains tmpfs after the child exits. Writer-group confirmation precedes export. Current rotated cache must pass schema checks, native secure-store write/readback and positively owned cleanup before release; failures quarantine rather than reuse the seed. Bounded JSONL admits only structured successful final text and redacts staged/rotated token values. Raw stderr and transcripts are never retained.
 
@@ -15,6 +15,33 @@ Linux requires `/usr/bin/zenity` for a host-owned native question on each acquis
 Unclaimed Admitted stop requires no resource intents transactionally before releasing only the reservation/active marker. Running/uncertain records stay held. Pending setup ownership is installed before fallible login start; cancellation remains operable on failure and retryable after partial deletion. Explicit quarantined retirement requires positive owned resource/recorded-ID absence and deletion/readback absence of the exact old secure item. Errors retain quarantine. Only fresh provider authorization under a new slot may follow; no old grant is read/copied/reused. This is narrow explicit recovery, not general automatic reconciliation.
 
 No real keyring, Docker, login, model, container or native dialog was exercised. Fake-boundary checks establish source contracts, not live provider or platform qualification. Pinned keeper/CLI/Docker findings must be settled before source is declared complete. Full native close/Quit UX remains later scope.
+
+## Bounded concurrent FIFO (#34)
+
+Schema 4 adds queue/settings companion tables without changing the six-column
+run record. Migration preserves captures and held session ownership, and removes
+only the old single-active index. Every accepted request already owns its immutable
+snapshot and monotonic FIFO sequence. Waiting admission does not lease credentials;
+full-queue rejection and reservation are transactional. Clean durable completion
+validates the exact slot/generation receipt and reserves the oldest waiting request
+once. Cache persistence/cleanup uncertainty retains the occupied slot.
+
+The existing captured executor serves both isolation modes. At most eight native
+worker permits are held through actual worker return; the database's configured
+occupied limit remains authoritative. Release alone cannot reuse a live worker
+permit, and worker return alone cannot release durable ownership. Reserved requests
+require a new native confirmation bound to request/run, captured revisions/image,
+and exact session owner/generation. No blanket approval or automatic work retry.
+Declined confirmation retains a visible authorization-required reservation for
+explicit Authorize or Stop. Waiting credentials never cause FIFO-head bypass.
+
+The global queue projection is bounded and read-only, separate from selected-run
+output-storage retries and immutable history. Queue settings/errors, credential
+wait, authorization requirements and ownership holds are visible. Selection keeps
+RunPanel and inspection bound to the selected run/workflow, not canvas edits.
+Unclaimed queued Stop only dequeues that request. Startup withholds waiting records
+without claiming external cleanup or automatically resuming them. Full cancellation,
+shutdown and interrupted-resource recovery remain #35–#37, not this slice.
 
 ## Workflow agent isolation
 

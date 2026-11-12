@@ -51,7 +51,95 @@ fn c10_one_prepared_available_session_is_exclusively_leased() {
             Ok((r.get(0)?, r.get(1)?))
         })
         .unwrap();
-    assert_eq!(row, ("leased".into(), lease.owner));
+    assert_eq!(row, ("leased".into(), lease.owner.clone()));
+    assert!(s
+        .lease_session("00000000-0000-0000-0000-000000000004")
+        .is_err());
+    c.execute("INSERT INTO managed_sessions VALUES('00000000-0000-0000-0000-000000000002','available',11,NULL)",[]).unwrap();
+    let independent = s
+        .lease_session("00000000-0000-0000-0000-000000000004")
+        .unwrap();
+    assert_ne!(lease.slot, independent.slot);
+    assert_ne!(lease.owner, independent.owner);
+    assert_eq!(independent.generation, 11);
+    let acquisition = s.begin_acquisition().unwrap();
+    assert!(s.begin_acquisition().is_err());
+    assert_ne!(acquisition.slot, lease.slot);
+    struct Memory(std::collections::BTreeMap<String, Vec<u8>>);
+    impl workflow_engine::sessions::SecureStore for Memory {
+        fn read(&mut self, slot: &str) -> Result<Vec<u8>, Error> {
+            self.0.get(slot).cloned().ok_or_else(|| Error::Storage {
+                message: "Prepared missing secure item".into(),
+            })
+        }
+        fn write(&mut self, slot: &str, bytes: &[u8]) -> Result<(), Error> {
+            self.0.insert(slot.into(), bytes.to_vec());
+            Ok(())
+        }
+    }
+    for duplicate in ["none", "owner", "refresh"] {
+        let d = tempfile::tempdir().unwrap();
+        let store = workflow_engine::Store::open(d.path()).unwrap();
+        let c = rusqlite::Connection::open(d.path().join("definitions.sqlite3")).unwrap();
+        let previous = "00000000-0000-0000-0000-000000000001";
+        let fresh = workflow_engine::sessions::Lease {
+            slot: "00000000-0000-0000-0000-000000000002".into(),
+            owner: "00000000-0000-0000-0000-000000000002".into(),
+            generation: 1,
+        };
+        c.execute(
+            "INSERT INTO managed_sessions VALUES(?1,'available',7,NULL)",
+            [previous],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO managed_sessions VALUES(?1,'acquiring',1,?1)",
+            [&fresh.slot],
+        )
+        .unwrap();
+        let retained = serde_json::json!({"auth_mode":"chatgpt","tokens":{"login_owner_id":"first-owner","access_token":"synthetic-access","refresh_token":"first-refresh","id_token":"a.b.c","account_id":"same-account","oauth_provenance":{"issuer":"https://auth.openai.com","client_id":"synthetic-client"}}});
+        let mut cache = retained.clone();
+        cache["tokens"]["login_owner_id"] = serde_json::json!(if duplicate == "owner" {
+            "first-owner"
+        } else {
+            "fresh-owner"
+        });
+        cache["tokens"]["refresh_token"] = serde_json::json!(if duplicate == "refresh" {
+            "first-refresh"
+        } else {
+            "fresh-refresh"
+        });
+        let mut secure = Memory(std::collections::BTreeMap::from([(
+            previous.into(),
+            serde_json::to_vec(&retained).unwrap(),
+        )]));
+        let mut cleaned = false;
+        let result = store.finish_acquisition(
+            &fresh,
+            &serde_json::to_vec(&cache).unwrap(),
+            &mut secure,
+            || {
+                cleaned = true;
+                Ok(())
+            },
+        );
+        assert_eq!(result.is_ok(), duplicate == "none");
+        assert_eq!(cleaned, duplicate == "none");
+        assert_eq!(secure.0.contains_key(&fresh.slot), duplicate == "none");
+        assert_eq!(
+            c.query_row(
+                "SELECT state FROM managed_sessions WHERE id=?1",
+                [&fresh.slot],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            if duplicate == "none" {
+                "available"
+            } else {
+                "quarantined"
+            }
+        );
+    }
 }
 
 use serde_json::{json, Value};

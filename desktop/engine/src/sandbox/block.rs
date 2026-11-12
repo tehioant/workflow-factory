@@ -1,7 +1,7 @@
 use super::*;
 const OPTIONS: &str = "rw,exec,nosuid,nodev,size=256m,uid=1000,gid=1000,mode=700";
 fn workspace_name(owner: &str) -> String {
-    format!("wf-workspace-{owner}")
+    resource_names(owner)[2].clone()
 }
 impl<P: Pipe> Sandbox<P> {
     pub(super) fn create_workspace(
