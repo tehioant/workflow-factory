@@ -58,6 +58,8 @@ fn c14_inspection_accepts_inert_static_endpoints_but_requires_applied_ids_after_
         applied: bool,
         cancel_after_inspect: Option<Cancel>,
         executions: usize,
+        guest_allowed: bool,
+        guest_observations: usize,
     }
     impl Pipe for Inspect {
         fn call(
@@ -67,6 +69,31 @@ fn c14_inspection_accepts_inert_static_endpoints_but_requires_applied_ids_after_
             _: usize,
             _: &Cancel,
         ) -> Result<(i32, Vec<u8>, Vec<u8>), Error> {
+            if args.get(0..4)
+                == Some(
+                    &[
+                        "exec".into(),
+                        self.r.container.clone(),
+                        "node".into(),
+                        "-e".into(),
+                    ][..],
+                )
+            {
+                assert_eq!(args.len(), 5);
+                assert_eq!(args[4], "const fs=require('node:fs');process.stdout.write(JSON.stringify({swaps:fs.readFileSync('/proc/swaps','utf8'),core:fs.readFileSync('/proc/sys/kernel/core_pattern','utf8')}))");
+                assert!(input.is_empty());
+                self.guest_observations += 1;
+                let swaps = if self.guest_allowed {
+                    "Filename\tType\tSize\tUsed\tPriority\n"
+                } else {
+                    "Filename\tType\tSize\tUsed\tPriority\n/swap file 1 0 -2\n"
+                };
+                return Ok((
+                    0,
+                    serde_json::to_vec(&json!({"swaps": swaps, "core": "core\n"})).unwrap(),
+                    vec![],
+                ));
+            }
             if args[0] == "exec" {
                 assert_eq!(
                     args,
@@ -121,6 +148,8 @@ fn c14_inspection_accepts_inert_static_endpoints_but_requires_applied_ids_after_
             r: r.clone(),
             applied: false,
             cancel_after_inspect: None,
+            guest_allowed: true,
+            guest_observations: 0,
             executions: 0
         }
     }
@@ -131,6 +160,8 @@ fn c14_inspection_accepts_inert_static_endpoints_but_requires_applied_ids_after_
             r: r.clone(),
             applied: false,
             cancel_after_inspect: None,
+            guest_allowed: true,
+            guest_observations: 0,
             executions: 0
         }
     }
@@ -141,18 +172,25 @@ fn c14_inspection_accepts_inert_static_endpoints_but_requires_applied_ids_after_
             r: r.clone(),
             applied: true,
             cancel_after_inspect: None,
+            guest_allowed: true,
+            guest_observations: 0,
             executions: 0
         }
     }
     .inspect_work(&r)
     .is_ok());
-    for interrupted in [false, true] {
+    for (interrupted, guest_allowed) in [(false, true), (true, true)]
+        .into_iter()
+        .chain(cfg!(target_os = "macos").then_some((false, false)))
+    {
         let cancel = Cancel::default();
         let mut sandbox = Sandbox {
             pipe: Inspect {
                 r: r.clone(),
                 applied: true,
                 cancel_after_inspect: interrupted.then(|| cancel.clone()),
+                guest_allowed,
+                guest_observations: 0,
                 executions: 0,
             },
         };
@@ -161,9 +199,16 @@ fn c14_inspection_accepts_inert_static_endpoints_but_requires_applied_ids_after_
             sandbox
                 .execute(&r, "literal $HOME; not shell", &config, &cancel)
                 .is_ok(),
-            !interrupted
+            !interrupted && guest_allowed
         );
-        assert_eq!(sandbox.pipe.executions, usize::from(!interrupted));
+        assert_eq!(
+            sandbox.pipe.executions,
+            usize::from(!interrupted && guest_allowed)
+        );
+        assert_eq!(
+            sandbox.pipe.guest_observations,
+            usize::from(cfg!(target_os = "macos") && !interrupted)
+        );
     }
 }
 #[test]
