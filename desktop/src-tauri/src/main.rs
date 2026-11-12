@@ -677,7 +677,7 @@ async fn authorize_run(
 async fn queue_status(
     state: tauri::State<'_, Database>,
 ) -> Result<workflow_engine::runs::queue::QueueStatus, Error> {
-    history_database(&state, |s| s.queue_status()).await
+    history_database(&state, |s| run_host::live_queue(&s)).await
 }
 #[tauri::command]
 async fn queue_settings(
@@ -765,7 +765,10 @@ async fn run_status(
     state: tauri::State<'_, Database>,
     id: Option<String>,
 ) -> Result<Option<workflow_engine::runs::RunStatus>, Error> {
-    history_database(&state, move |reader| reader.run_status(id.as_deref())).await
+    history_database(&state, move |reader| {
+        run_host::live_status(&reader, id.as_deref())
+    })
+    .await
 }
 #[tauri::command]
 async fn retry_run_cleanup(

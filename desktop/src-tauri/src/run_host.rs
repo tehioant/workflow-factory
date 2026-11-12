@@ -2,7 +2,43 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use workflow_engine::runs::Admission;
-type FinalClaim = Arc<Mutex<Option<workflow_engine::runs::settlement::FinalSettlement>>>;
+struct Claim {
+    finality: Mutex<Option<workflow_engine::runs::settlement::FinalSettlement>>,
+    // 0: no failure; 1: cleanup unconfirmed; 2: positive cleanup receipt.
+    persistence_failure: std::sync::atomic::AtomicU8,
+}
+impl std::ops::Deref for Claim {
+    type Target = Mutex<Option<workflow_engine::runs::settlement::FinalSettlement>>;
+    fn deref(&self) -> &Self::Target {
+        &self.finality
+    }
+}
+type FinalClaim = Arc<Claim>;
+const PERSISTENCE_HOLD: &str = "Final persistence failed; chosen result retained in volatile app memory only. Keep the app open and use Retry retained output storage; no execution retry.";
+fn persist_final(
+    store: &workflow_engine::Store,
+    id: &str,
+    claim: &Claim,
+    chosen: &workflow_engine::runs::settlement::FinalSettlement,
+) -> Result<(), workflow_engine::Error> {
+    let result = retry_selected_outputs(id, |id, block, text| match block {
+        Some(block) => store.retain_block_output(id, block, text),
+        None => store.retain_run_output(id, text),
+    })
+    .and_then(|()| store.settle_run(chosen));
+    if result.is_err() {
+        claim.persistence_failure.store(
+            if chosen.receipt.is_some() { 2 } else { 1 },
+            std::sync::atomic::Ordering::Release,
+        );
+        let _ = store.hold_final_persistence(chosen, PERSISTENCE_HOLD);
+    } else {
+        claim
+            .persistence_failure
+            .store(0, std::sync::atomic::Ordering::Release);
+    }
+    result
+}
 fn final_claims() -> &'static Mutex<BTreeMap<String, FinalClaim>> {
     static CLAIMS: OnceLock<Mutex<BTreeMap<String, FinalClaim>>> = OnceLock::new();
     CLAIMS.get_or_init(Mutex::default)
@@ -15,7 +51,10 @@ fn final_claim(id: &str) -> Result<FinalClaim, workflow_engine::Error> {
     if claims.len() >= 8 {
         return Err(output_hold());
     }
-    let claim = Arc::new(Mutex::new(None));
+    let claim = Arc::new(Claim {
+        finality: Mutex::new(None),
+        persistence_failure: std::sync::atomic::AtomicU8::new(0),
+    });
     claims.insert(id.into(), claim.clone());
     Ok(claim)
 }
@@ -63,11 +102,7 @@ pub fn retry_cleanup(
             .insert(selected.into(), context);
         chosen.receipt = Some(result?);
     }
-    retry_selected_outputs(selected, |id, block, text| match block {
-        Some(block) => store.retain_block_output(id, block, text),
-        None => store.retain_run_output(id, text),
-    })?;
-    store.settle_run(chosen)?;
+    persist_final(store, selected, &claim, chosen)?;
     *finality = None;
     recoveries()
         .lock()
@@ -120,6 +155,67 @@ impl PendingOutput {
         persisted
     }
 }
+/// Ordinary live-status observer: read-only, with no store bootstrap or recovery.
+pub fn live_status(
+    reader: &workflow_engine::runs::history::HistoryReader,
+    id: Option<&str>,
+) -> Result<Option<workflow_engine::runs::RunStatus>, workflow_engine::Error> {
+    let mut status = reader.run_status(id)?;
+    if let Some(status) = status.as_mut() {
+        overlay_pending(
+            &status.id,
+            &mut status.state,
+            &mut status.diagnostic,
+            &mut status.cleanup_pending,
+        )?;
+    }
+    Ok(status)
+}
+fn overlay_pending(
+    id: &str,
+    state: &mut workflow_engine::runs::RunState,
+    diagnostic: &mut String,
+    cleanup: &mut bool,
+) -> Result<(), workflow_engine::Error> {
+    use workflow_engine::runs::RunState;
+    // Never lock the per-run finality: secure-store/Docker work may hold it.
+    let pending = final_claims()
+        .lock()
+        .map_err(|_| output_hold())?
+        .get(id)
+        .map_or(0, |claim| {
+            claim
+                .persistence_failure
+                .load(std::sync::atomic::Ordering::Acquire)
+        });
+    if pending != 0
+        && !matches!(
+            state,
+            RunState::Succeeded | RunState::Failed | RunState::Stopped | RunState::Blocked
+        )
+    {
+        if *state != RunState::Cancelling {
+            *state = RunState::Held;
+        }
+        *diagnostic = PERSISTENCE_HOLD.into();
+        *cleanup = pending == 1;
+    }
+    Ok(())
+}
+pub fn live_queue(
+    reader: &workflow_engine::runs::history::HistoryReader,
+) -> Result<workflow_engine::runs::queue::QueueStatus, workflow_engine::Error> {
+    let mut queue = reader.queue_status()?;
+    for entry in &mut queue.entries {
+        overlay_pending(
+            &entry.id,
+            &mut entry.state,
+            &mut entry.diagnostic,
+            &mut entry.cleanup_pending,
+        )?;
+    }
+    Ok(queue)
+}
 pub fn retry_outputs(
     store: &workflow_engine::Store,
     selected: &str,
@@ -136,12 +232,8 @@ pub fn retry_outputs(
         });
     };
     let mut finality = claim.lock().map_err(|_| output_hold())?;
-    retry_selected_outputs(selected, |id, block, text| match block {
-        Some(block) => store.retain_block_output(id, block, text).map(|_| ()),
-        None => store.retain_run_output(id, text).map(|_| ()),
-    })?;
     if let Some(receipt) = finality.as_ref() {
-        store.settle_run(receipt)?;
+        persist_final(store, selected, &claim, receipt)?;
         *finality = None;
         recoveries()
             .lock()
@@ -151,6 +243,11 @@ pub fn retry_outputs(
             .lock()
             .map_err(|_| output_hold())?
             .remove(selected);
+    } else {
+        retry_selected_outputs(selected, |id, block, text| match block {
+            Some(block) => store.retain_block_output(id, block, text),
+            None => store.retain_run_output(id, text),
+        })?;
     }
     Ok(())
 }
@@ -453,11 +550,7 @@ pub fn execute(
         )?;
         finality.as_mut().unwrap().receipt = Some(receipt);
         // Replay pending text first. This grants storage authority only, never execution.
-        retry_selected_outputs(&id, |id, block, text| match block {
-            Some(block) => store.retain_block_output(id, block, text),
-            None => store.retain_run_output(id, text),
-        })?;
-        store.settle_run(finality.as_ref().unwrap())?;
+        persist_final(&store, &id, &claim, finality.as_ref().unwrap())?;
         *finality = None;
         final_claims()
             .lock()
@@ -674,21 +767,34 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let store = workflow_engine::Store::open(&root).unwrap();
         let db = rusqlite::Connection::open(root.join("definitions.sqlite3")).unwrap();
-        let status = serde_json::json!({"id":"native-selected","requestId":"prepared","state":"running","finalResponse":null,"diagnostic":"","cleanupPending":false,"blocks":[{"blockId":"a","state":"running","resolvedPrompt":"prepared literal","finalResponse":null}]});
+        let status = serde_json::json!({"id":"00000000-0000-4000-8000-000000000035","requestId":"prepared","state":"running","finalResponse":null,"diagnostic":"","cleanupPending":false,"blocks":[{"blockId":"a","state":"running","resolvedPrompt":"prepared literal","finalResponse":null}]});
+        let request = serde_json::json!({"requestId":"00000000-0000-4000-8000-000000000037","definitionId":"00000000-0000-4000-8000-000000000036","expectedRevision":1,"expectedConfigurationRevision":1,"supplied":{}});
+        let definition: workflow_engine::Definition = serde_json::from_value(serde_json::json!({"schemaVersion":1,"id":"00000000-0000-4000-8000-000000000036","name":"Prepared","blocks":[{"id":"a","name":"A","prompt":"prepared literal","position":{"x":0,"y":0},"configurationId":"00000000-0000-4000-8000-000000000038"}]})).unwrap();
+        let configuration: workflow_engine::SavedConfiguration = serde_json::from_value(serde_json::json!({"revision":1,"config":{"id":"00000000-0000-4000-8000-000000000038","name":"Prepared","model":"codex","reasoning":"high"}})).unwrap();
+        let inputs = workflow_engine::resolve_inputs(&definition, Default::default()).unwrap();
+        let segments = workflow_engine::prompts::compile(&definition, "a", &inputs.values).unwrap();
+        let snapshot = serde_json::json!({"definition":{"revision":1,"definition":definition},"configuration":configuration,"inputs":inputs,"imageId":"prepared-image","plans":[{"block_id":"a","segments":segments,"configuration":configuration}]});
+        let mut status = status;
+        status["requestId"] = request["requestId"].clone();
         db.execute(
-            "INSERT INTO runs VALUES('native-selected','prepared','{}','{}',?1,1)",
-            [status.to_string()],
+            "INSERT INTO runs VALUES('00000000-0000-4000-8000-000000000035',?1,?2,?3,?4,1)",
+            rusqlite::params![
+                request["requestId"].as_str().unwrap(),
+                request.to_string(),
+                snapshot.to_string(),
+                status.to_string()
+            ],
         )
         .unwrap();
         db.execute(
-            "INSERT INTO managed_sessions VALUES('native-slot','leased',7,'native-selected')",
+            "INSERT INTO managed_sessions VALUES('native-slot','leased',7,'00000000-0000-4000-8000-000000000035')",
             [],
         )
         .unwrap();
-        db.execute("INSERT INTO run_queue(run_id,phase,slot,generation) VALUES('native-selected','occupied','native-slot',7)",[]).unwrap();
+        db.execute("INSERT INTO run_queue(run_id,phase,slot,generation) VALUES('00000000-0000-4000-8000-000000000035','occupied','native-slot',7)",[]).unwrap();
         let lease = workflow_engine::sessions::Lease {
             slot: "native-slot".into(),
-            owner: "native-selected".into(),
+            owner: "00000000-0000-4000-8000-000000000035".into(),
             generation: 7,
         };
         let cache=br#"{"auth_mode":"chatgpt","tokens":{"login_owner_id":"synthetic","access_token":"synthetic-a","refresh_token":"synthetic-r","id_token":"a.b.c","account_id":"synthetic-account","oauth_provenance":{"issuer":"https://auth.openai.com","client_id":"synthetic-client"}}}"#.to_vec();
@@ -710,12 +816,13 @@ mod tests {
             .finish_owned_session_receipt(&lease, &cache, &mut secure, true, || Ok(()))
             .unwrap();
         assert_eq!(secure.1, 2, "previous cache plus exact writeback readback");
-        super::retain_output("native-selected/a", text.into()).unwrap();
+        let saved_receipt = receipt.clone();
+        super::retain_output("00000000-0000-4000-8000-000000000035/a", text.into()).unwrap();
         super::retain_output("native-sibling/a", "sibling untouched".into()).unwrap();
-        let claim = super::final_claim("native-selected").unwrap();
+        let claim = super::final_claim("00000000-0000-4000-8000-000000000035").unwrap();
         {
             let _held = claim.lock().unwrap();
-            assert!(super::retry_cleanup(&store, "native-selected").is_err());
+            assert!(super::retry_cleanup(&store, "00000000-0000-4000-8000-000000000035").is_err());
         }
         assert!(super::retry_cleanup(&store, "native-missing-context").is_err());
         *claim.lock().unwrap() = Some(workflow_engine::runs::settlement::FinalSettlement {
@@ -726,37 +833,158 @@ mod tests {
             receipt: Some(receipt),
         });
         db.execute_batch("CREATE TRIGGER deny_final BEFORE UPDATE ON runs WHEN NEW.active=0 BEGIN SELECT RAISE(FAIL,'synthetic final database failure'); END;").unwrap();
-        assert!(super::retry_outputs(&store, "native-selected").is_err());
+        db.execute_batch("CREATE TRIGGER deny_hold BEFORE UPDATE ON runs WHEN json_extract(NEW.status,'$.state')='held' BEGIN SELECT RAISE(FAIL,'synthetic hold failure'); END;").unwrap();
+        assert!(super::retry_outputs(&store, "00000000-0000-4000-8000-000000000035").is_err());
         assert!(claim.lock().unwrap().as_ref().unwrap().receipt.is_some());
         assert_eq!(
             store
-                .run_status("native-selected")
+                .run_status("00000000-0000-4000-8000-000000000035")
                 .unwrap()
                 .final_response
                 .as_deref(),
             Some(text)
         );
-        db.execute_batch("DROP TRIGGER deny_final").unwrap();
-        super::retry_cleanup(&store, "native-selected").unwrap();
+        let reader = workflow_engine::runs::history::HistoryReader::open(&root).unwrap();
+        let observed = super::live_status(&reader, Some("00000000-0000-4000-8000-000000000035"))
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            store.run_status("native-selected").unwrap().state,
+            observed.state,
+            workflow_engine::runs::RunState::Held,
+            "SPEC-35-01 ordinary production live observer must disclose final persistence failure"
+        );
+        assert!(
+            !observed.cleanup_pending,
+            "positive receipt must not become uncertain cleanup"
+        );
+        assert!(observed.diagnostic.contains("volatile"));
+        assert!(observed.diagnostic.contains("Keep the app open"));
+        assert_eq!(observed.request_id, request["requestId"].as_str().unwrap());
+        let raw = || {
+            db.query_row(
+                "SELECT status,active FROM runs WHERE id='00000000-0000-4000-8000-000000000035'",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)),
+            )
+            .unwrap()
+        };
+        let before = raw();
+        assert_eq!(
+            store.run_status(&observed.id).unwrap().state,
+            workflow_engine::runs::RunState::Running
+        );
+        let claims_before = super::final_claims().lock().unwrap().len();
+        // Polls cannot erase failure or wait behind finality/native work.
+        let chosen = claim.lock().unwrap();
+        let chosen_bytes = serde_json::json!({"text":chosen.as_ref().unwrap().text,"diagnostic":chosen.as_ref().unwrap().diagnostic,"success":chosen.as_ref().unwrap().success}).to_string();
+        for _ in 0..3 {
+            assert_eq!(
+                super::live_status(&reader, None).unwrap().unwrap().state,
+                workflow_engine::runs::RunState::Held
+            );
+            let queue = super::live_queue(&reader).unwrap();
+            let entry = queue.entries.iter().find(|e| e.id == observed.id).unwrap();
+            assert_eq!(entry.state, workflow_engine::runs::RunState::Held);
+            assert!(!entry.cleanup_pending);
+            assert_eq!(entry.diagnostic, observed.diagnostic);
+            assert_eq!(queue.occupied, 1);
+        }
+        assert_eq!(before, raw(), "ordinary observations write nothing");
+        assert_eq!(claims_before, super::final_claims().lock().unwrap().len());
+        drop(chosen);
+        db.execute_batch("DROP TRIGGER deny_hold").unwrap();
+        assert!(super::retry_outputs(&store, &observed.id).is_err());
+        assert_eq!(
+            store.run_status(&observed.id).unwrap().state,
+            workflow_engine::runs::RunState::Held,
+            "best-effort durable hold"
+        );
+        let after = claim.lock().unwrap();
+        assert_eq!(chosen_bytes, serde_json::json!({"text":after.as_ref().unwrap().text,"diagnostic":after.as_ref().unwrap().diagnostic,"success":after.as_ref().unwrap().success}).to_string());
+        drop(after);
+        db.execute(
+            "UPDATE runs SET status=json_set(status,'$.state','cancelling') WHERE id=?1",
+            [&observed.id],
+        )
+        .unwrap();
+        assert_eq!(
+            super::live_status(&reader, Some(&observed.id))
+                .unwrap()
+                .unwrap()
+                .state,
+            workflow_engine::runs::RunState::Cancelling
+        );
+        db.execute(
+            "UPDATE runs SET status=json_set(status,'$.state','held') WHERE id=?1",
+            [&observed.id],
+        )
+        .unwrap();
+        db.execute_batch("DROP TRIGGER deny_final").unwrap();
+        super::retry_outputs(&store, &observed.id).unwrap();
+        assert_eq!(
+            claim
+                .persistence_failure
+                .load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+        assert_eq!(
+            super::live_status(&reader, Some(&observed.id))
+                .unwrap()
+                .unwrap()
+                .diagnostic,
+            "Prepared completed outcome"
+        );
+        assert_eq!(
+            store
+                .run_status("00000000-0000-4000-8000-000000000035")
+                .unwrap()
+                .state,
             workflow_engine::runs::RunState::Succeeded
         );
         assert!(!super::final_claims()
             .lock()
             .unwrap()
-            .contains_key("native-selected"));
+            .contains_key("00000000-0000-4000-8000-000000000035"));
+        // Exact lost-ack replay retains the durable winner and clears only its own hold.
+        let replay = super::final_claim(&observed.id).unwrap();
+        *replay.lock().unwrap() = Some(workflow_engine::runs::settlement::FinalSettlement {
+            lease: workflow_engine::sessions::Lease {
+                slot: "native-slot".into(),
+                owner: observed.id.clone(),
+                generation: 7,
+            },
+            text: Some(text.into()),
+            diagnostic: "Prepared completed outcome".into(),
+            success: true,
+            receipt: None,
+        });
+        // Use the positive receipt retained before successful replay, not reconstructed proof.
+        replay.lock().unwrap().as_mut().unwrap().receipt = Some(saved_receipt);
+        replay
+            .persistence_failure
+            .store(2, std::sync::atomic::Ordering::Release);
+        assert_eq!(
+            super::live_status(&reader, None).unwrap().unwrap().state,
+            workflow_engine::runs::RunState::Succeeded
+        );
+        super::retry_outputs(&store, &observed.id).unwrap();
+        assert_eq!(
+            replay
+                .persistence_failure
+                .load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
         assert!(super::outputs()
             .lock()
             .unwrap()
             .contains_key("native-sibling/a"));
         super::outputs().lock().unwrap().remove("native-sibling/a");
         // Text alone cannot manufacture the positive cleanup receipt.
-        let claim = super::final_claim("native-selected").unwrap();
+        let claim = super::final_claim("00000000-0000-4000-8000-000000000035").unwrap();
         *claim.lock().unwrap() = Some(workflow_engine::runs::settlement::FinalSettlement {
             lease: workflow_engine::sessions::Lease {
                 slot: "native-slot".into(),
-                owner: "native-selected".into(),
+                owner: "00000000-0000-4000-8000-000000000035".into(),
                 generation: 7,
             },
             text: Some(text.into()),
@@ -764,11 +992,29 @@ mod tests {
             success: false,
             receipt: None,
         });
-        assert!(super::retry_outputs(&store, "native-selected").is_err());
+        assert!(super::retry_outputs(&store, "00000000-0000-4000-8000-000000000035").is_err());
+        assert_eq!(
+            super::live_status(&reader, None).unwrap().unwrap().state,
+            workflow_engine::runs::RunState::Succeeded,
+            "durable terminal winner cannot be downgraded"
+        );
+        assert_ne!(
+            claim
+                .persistence_failure
+                .load(std::sync::atomic::Ordering::Acquire),
+            0,
+            "failed non-exact replay must not clear hold"
+        );
         super::final_claims()
             .lock()
             .unwrap()
-            .remove("native-selected");
+            .remove("00000000-0000-4000-8000-000000000035");
+        db.execute("UPDATE runs SET snapshot='{}'", []).unwrap();
+        assert!(
+            super::live_status(&reader, None).is_err(),
+            "history failure is not an empty status"
+        );
+        drop(reader);
         drop(db);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();

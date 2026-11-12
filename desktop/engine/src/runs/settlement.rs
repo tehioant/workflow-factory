@@ -11,6 +11,42 @@ pub struct FinalSettlement {
     pub receipt: Option<CompletionReceipt>,
 }
 impl Store {
+    /// Best-effort disclosure only: never releases capacity or changes chosen finality.
+    pub fn hold_final_persistence(
+        &self,
+        finality: &FinalSettlement,
+        diagnostic: &str,
+    ) -> Result<(), Error> {
+        let mut c = rusqlite::Connection::open(&self.path).map_err(storage)?;
+        let tx = c
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let body: String = tx.query_row("SELECT r.status FROM runs r JOIN run_queue q ON q.run_id=r.id WHERE r.id=?1 AND r.active=1 AND q.phase='occupied' AND q.slot=?2 AND q.generation=?3", params![finality.lease.owner, finality.lease.slot, finality.lease.generation], |r|r.get(0)).map_err(storage)?;
+        let mut status: RunStatus = serde_json::from_str(&body).map_err(storage)?;
+        if status.id != finality.lease.owner
+            || matches!(
+                status.state,
+                RunState::Succeeded | RunState::Failed | RunState::Stopped | RunState::Blocked
+            )
+        {
+            return Err(validation("Terminal result is immutable."));
+        }
+        if status.state != RunState::Cancelling {
+            status.state = RunState::Held;
+        }
+        status.diagnostic = diagnostic.into();
+        status.cleanup_pending = finality.receipt.is_none();
+        tx.execute(
+            "UPDATE runs SET status=?1 WHERE id=?2 AND active=1",
+            params![
+                serde_json::to_string(&status).map_err(storage)?,
+                finality.lease.owner
+            ],
+        )
+        .map_err(storage)?;
+        tx.commit().map_err(storage)
+    }
+
     pub fn settle_run(&self, finality: &FinalSettlement) -> Result<(), Error> {
         let lease = &finality.lease;
         let receipt = finality.receipt.as_ref().ok_or_else(|| {

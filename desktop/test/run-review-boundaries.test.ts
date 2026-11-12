@@ -126,6 +126,13 @@ test('d12_selected_cancel_control', async()=>{
   button('Retry owned cleanup').click();flushSync();flushSync(()=>component.select(selected));const old=finish;button('Retry owned cleanup').click();flushSync();old({...sibling,cleanupPending:false});await Promise.resolve();await Promise.resolve();flushSync();assert.equal(statuses.length,before);assert.ok(button('Stop this run').disabled);
   reject(Error('Current cleanup failure'));await Promise.resolve();await Promise.resolve();flushSync();assert.ok(target.textContent.includes('Current cleanup failure'));
   button('Retry owned cleanup').click();flushSync();finish({...selected,id:'wrong'});await Promise.resolve();await Promise.resolve();flushSync();assert.ok(target.textContent.includes('response identity changed'));
+  const persistenceHold={...selected,state:'held',cleanupPending:false,diagnostic:'Final persistence failed; chosen result retained in volatile app memory only. Keep the app open and use Retry retained output storage; no execution retry.'};
+  flushSync(()=>component.select(persistenceHold));commands.runStatus=async()=>persistenceHold;
+  await tick();flushSync();assert.ok(target.textContent.includes('volatile app memory'));assert.ok(target.textContent.includes('Keep the app open'));assert.equal(button('Retry owned cleanup'),undefined);
+  commands.retryRunOutput=async(id:string)=>{assert.equal(id,selected.id);return {...selected,state:'succeeded',cleanupPending:false,diagnostic:'Prepared completed outcome'};};
+  await tick();flushSync();assert.ok(target.textContent.includes('Final persistence failed'),'successful observation preserves pending disclosure');
+  button('Retry retained output storage').click();await Promise.resolve();await Promise.resolve();flushSync();assert.equal(statuses.at(-1).state,'succeeded');assert.equal(statuses.at(-1).diagnostic,'Prepared completed outcome');
+  flushSync(()=>component.select(selected));before=statuses.length;
   button('Retry owned cleanup').click();flushSync();await unmount(component);component=null;finish({...selected,state:'stopped'});await Promise.resolve();await Promise.resolve();assert.equal(statuses.length,before);
  } finally {globalThis.setTimeout=realSet;globalThis.clearTimeout=realClear;if(component)await unmount(component);target.remove();window.happyDOM.abort();}
 });
