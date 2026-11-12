@@ -82,7 +82,17 @@ impl Prepared {
             tmpfs["/run/wf-codex"] = json!("rw,noexec,nosuid,nodev,uid=1000,mode=700");
         }
         let mount = json!({"Type":"volume","Name":r.workspace,"Driver":"local","Destination":if self.scenario=="mount"{"/other"}else{"/workspace"},"RW":true});
-        let declared = json!({"Type":"volume","Source":r.workspace,"Target":"/workspace","ReadOnly":false,"VolumeOptions":{"NoCopy":true}});
+        let mut declared = json!({"Type":"volume","Source":r.workspace,"Target":"/workspace","VolumeOptions":{"NoCopy":true}});
+        match self.scenario {
+            "explicit-false" => declared["ReadOnly"] = json!(false),
+            "readonly" => declared["ReadOnly"] = json!(true),
+            "readonly-null" => declared["ReadOnly"] = Value::Null,
+            "readonly-string" => declared["ReadOnly"] = json!("false"),
+            "readonly-number" => declared["ReadOnly"] = json!(0),
+            "readonly-array" => declared["ReadOnly"] = json!([]),
+            "readonly-object" => declared["ReadOnly"] = json!({}),
+            _ => {}
+        }
         let memory = if helper { 134217728u64 } else { 536870912 };
         json!({"Id":id,"Image":r.image,"State":{"Running":id!=next||self.started,"StartedAt":if self.scenario=="restart"&&self.started{"changed-epoch"}else{"prepared-start-epoch"}},"RestartCount":0,"Config":{"Labels":label,"User":"1000:1000","Entrypoint":["node"],"Cmd":["/opt/workflow-factory/keeper.mjs"]},"HostConfig":{"ReadonlyRootfs":true,"Privileged":false,"Init":true,"Ulimits":[{"Name":"core","Soft":0,"Hard":0}],"Memory":memory,"MemorySwap":memory,"PidsLimit":if helper{32}else{128},"NanoCpus":1000000000u64,"LogConfig":{"Type":"none"},"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges"],"Tmpfs":tmpfs,"Mounts":if helper{json!([])}else{json!([declared])}},"Mounts":if helper {if self.scenario=="helper" {json!([mount])}else{json!([])}}else{json!([mount])},"NetworkSettings":{"Networks":if helper{json!({private:{"NetworkID":r.network},outer:{"NetworkID":r.outer}})}else{json!({private:{"NetworkID":r.network}})}}})
     }
@@ -195,6 +205,13 @@ impl Pipe for Prepared {
 fn f1_prepared_environment_switch_checkpoints_same_lease_before_verified_handoff() {
     for scenario in [
         "success",
+        "explicit-false",
+        "readonly",
+        "readonly-null",
+        "readonly-string",
+        "readonly-number",
+        "readonly-array",
+        "readonly-object",
         "per-run",
         "write",
         "readback",
@@ -303,7 +320,7 @@ fn f1_prepared_environment_switch_checkpoints_same_lease_before_verified_handoff
                 }
             },
         );
-        let success = matches!(scenario, "success" | "per-run");
+        let success = matches!(scenario, "success" | "explicit-false" | "per-run");
         assert_eq!(result.is_ok(), success, "{scenario}: {:?}", events.borrow());
         assert_eq!(
             events
@@ -311,7 +328,7 @@ fn f1_prepared_environment_switch_checkpoints_same_lease_before_verified_handoff
                 .iter()
                 .filter(|s| s.as_str() == "stage")
                 .count(),
-            usize::from(scenario == "success"),
+            usize::from(matches!(scenario, "success" | "explicit-false")),
             "{scenario}"
         );
         if let Ok(next) = result {
@@ -349,6 +366,174 @@ fn f1_prepared_environment_switch_checkpoints_same_lease_before_verified_handoff
         );
         if scenario == "per-run" {
             assert!(events.borrow().is_empty());
+        }
+    }
+}
+
+// Prepared cleanup only: external pipe and durable-receipt boundary are fakes.
+#[test]
+fn f3_prepared_final_cleanup_survives_stop_and_holds_uncertainty() {
+    struct Cleanup {
+        r: Resources,
+        scenario: &'static str,
+        removed: Vec<String>,
+        absent: Vec<String>,
+    }
+    impl Pipe for Cleanup {
+        fn call(
+            &mut self,
+            a: &[String],
+            input: &[u8],
+            limit: usize,
+            cancel: &Cancel,
+        ) -> Result<(i32, Vec<u8>, Vec<u8>), Error> {
+            cancel.check()?;
+            assert!(input.is_empty());
+            assert_eq!(limit, 131072);
+            let r = &self.r;
+            let out = if a.get(1).map(String::as_str) == Some("inspect") {
+                let id = &a[2];
+                let owner = if self.scenario == "owner" {
+                    "another-run"
+                } else {
+                    OWNER
+                };
+                let labels = json!({"org.workflow-factory.owner":owner});
+                let row = match a[0].as_str() {
+                    "container" => {
+                        assert!([&r.container, &r.helper].contains(&id));
+                        json!({"Id":id,"Config":{"Labels":labels},"Mounts":[],"HostConfig":{"Mounts":[],"Tmpfs":{"/tmp":"prepared"}}})
+                    }
+                    "volume" => {
+                        assert_eq!(Some(id), r.workspace.as_ref());
+                        json!({"Name":id,"Driver":"local","Scope":"local","Labels":labels,"Options":{"type":"tmpfs","device":"tmpfs","o":"rw,exec,nosuid,nodev,size=256m,uid=1000,gid=1000,mode=700"}})
+                    }
+                    "network" => {
+                        assert!([&r.network, &r.outer].contains(&id));
+                        json!({"Id":id,"Labels":labels,"Containers":{}})
+                    }
+                    _ => panic!("unexpected inspection {a:?}"),
+                };
+                serde_json::to_vec(&json!([row])).unwrap()
+            } else if a.get(1).map(String::as_str) == Some("ls") {
+                assert!(matches!(a[0].as_str(), "container" | "volume" | "network"));
+                if self.scenario == "absence" {
+                    return Err(fail());
+                }
+                if self.scenario == "present" {
+                    b"still-present".to_vec()
+                } else {
+                    self.absent.push(a.join(" "));
+                    vec![]
+                }
+            } else {
+                let id = a.last().unwrap();
+                match a[0].as_str() {
+                    "rm" => {
+                        assert_eq!(&a[..2], ["rm", "-f"]);
+                        assert!([&r.container, &r.helper].contains(&id));
+                    }
+                    "volume" => {
+                        assert_eq!(&a[..2], ["volume", "rm"]);
+                        assert_eq!(Some(id), r.workspace.as_ref());
+                    }
+                    "network" => {
+                        assert_eq!(&a[..2], ["network", "rm"]);
+                        assert!([&r.network, &r.outer].contains(&id));
+                    }
+                    _ => panic!("unexpected mutation {a:?}"),
+                }
+                self.removed.push(id.clone());
+                vec![]
+            };
+            Ok((0, out, vec![]))
+        }
+    }
+    for scenario in [
+        "success", "owner", "absence", "present", "intent", "receipt",
+    ] {
+        let execution = Cancel::default();
+        execution.request();
+        let r = Resources {
+            owner: OWNER.into(),
+            image: format!("sha256:{}", "f".repeat(64)),
+            network: "a".repeat(64),
+            outer: "b".repeat(64),
+            helper: "c".repeat(64),
+            container: "d".repeat(64),
+            workspace: Some(format!("wf-workspace-{OWNER}")),
+            peer: None,
+            started_at: Some("prepared-start-epoch".into()),
+            retired: None,
+        };
+        let mut sandbox = Sandbox {
+            pipe: Cleanup {
+                r: r.clone(),
+                scenario,
+                removed: vec![],
+                absent: vec![],
+            },
+        };
+        let mut receipts = vec![];
+        let result = sandbox.cleanup_block_resources(&r, |kind, id| {
+            if (scenario == "intent" && id.is_none()) || (scenario == "receipt" && id.is_some()) {
+                return Err(fail());
+            }
+            receipts.push((kind.to_string(), id.map(str::to_string)));
+            Ok(())
+        });
+        assert!(execution.check().is_err());
+        assert_eq!(result.is_ok(), scenario == "success", "{scenario}");
+        if scenario == "success" {
+            let targets = [
+                ("final-agent-remove", &r.container),
+                ("helper-remove", &r.helper),
+                ("workspace-remove", r.workspace.as_ref().unwrap()),
+                ("private-network-remove", &r.network),
+                ("egress-network-remove", &r.outer),
+            ];
+            assert_eq!(
+                sandbox.pipe.removed,
+                targets
+                    .iter()
+                    .map(|(_, id)| (*id).clone())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                receipts,
+                targets
+                    .iter()
+                    .flat_map(|(kind, id)| [
+                        (kind.to_string(), None),
+                        (kind.to_string(), Some((*id).clone()))
+                    ])
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(sandbox.pipe.absent.len(), 7);
+            for id in [&r.container, &r.helper, &r.network, &r.outer] {
+                assert!(sandbox
+                    .pipe
+                    .absent
+                    .iter()
+                    .any(|a| a.contains(&format!("id={id}"))))
+            }
+            assert!(sandbox
+                .pipe
+                .absent
+                .iter()
+                .any(|a| a.contains(&format!("name=^{}$", r.workspace.as_ref().unwrap()))));
+            assert!(sandbox
+                .pipe
+                .absent
+                .iter()
+                .any(|a| a.contains(&format!("label=org.workflow-factory.owner={OWNER}"))));
+        } else {
+            assert_eq!(
+                sandbox.pipe.removed.len(),
+                usize::from(matches!(scenario, "absence" | "present" | "receipt")),
+                "{scenario}"
+            );
+            assert!(!receipts.iter().any(|(_, id)| id.is_some()));
         }
     }
 }

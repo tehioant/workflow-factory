@@ -178,7 +178,7 @@ pub fn execute(
             &mut secure,
             || {
                 if resources.workspace.is_some() {
-                    sandbox.cleanup_block_resources(&resources, &cancel, |kind, resource| {
+                    sandbox.cleanup_block_resources(&resources, |kind, resource| {
                         store.resource_intent(&id, kind, resource)
                     })
                 } else {

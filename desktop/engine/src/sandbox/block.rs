@@ -161,7 +161,7 @@ impl<P: Pipe> Sandbox<P> {
             || declared[0]["Type"] != "volume"
             || declared[0]["Source"] != *name
             || declared[0]["Target"] != "/workspace"
-            || declared[0]["ReadOnly"] != false
+            || !matches!(declared[0].get("ReadOnly"), None | Some(Value::Bool(false)))
             || declared[0]["VolumeOptions"]["NoCopy"] != true
             || !h["Tmpfs"]["/workspace"].is_null()
         {
@@ -273,12 +273,14 @@ impl<P: Pipe> Sandbox<P> {
         self.stage(&next, &cache, cancel)?;
         Ok(next)
     }
+    /// Mandatory recovery after writer cessation and secure-cache write/readback.
+    /// Execution Stop cannot revoke cleanup; NativePipe bounds each operation.
     pub fn cleanup_block_resources(
         &mut self,
         r: &Resources,
-        cancel: &Cancel,
         mut receipt: impl FnMut(&str, Option<&str>) -> Result<(), Error>,
     ) -> Result<(), Error> {
+        let cancel = &Cancel::default();
         for (kind, id) in [
             ("final-agent-remove", &r.container),
             ("helper-remove", &r.helper),
