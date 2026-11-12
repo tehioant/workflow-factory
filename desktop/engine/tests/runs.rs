@@ -5,6 +5,110 @@ use workflow_engine::{
     Store,
 };
 const DEFINITION: &str = "00000000-0000-0000-0000-000000000001";
+#[test]
+fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() {
+    use workflow_engine::{runs::BlockResult, sandbox::Cancel, sessions::Lease};
+    for scenario in [
+        "success",
+        "failed",
+        "held",
+        "cancelled",
+        "duplicate",
+        "storage",
+    ] {
+        let (_dir, store, c) = prepared();
+        let mut s = status();
+        s.blocks = vec![BlockResult {
+            block_id: "a".into(),
+            state: if scenario == "failed" {
+                RunState::Failed
+            } else {
+                RunState::Succeeded
+            },
+            resolved_prompt: "A own".into(),
+            final_response: Some("A literal {{input.topic}} <img>".into()),
+        }];
+        if scenario == "held" {
+            s.state = RunState::Held;
+            s.cleanup_pending = true;
+        }
+        if scenario == "duplicate" {
+            s.blocks.push(BlockResult {
+                block_id: "b".into(),
+                state: RunState::Running,
+                resolved_prompt: "already reserved".into(),
+                final_response: None,
+            });
+        }
+        seed_run(&c, &s, true);
+        let config = serde_json::json!({"config":{"id":CONFIG,"name":"Captured","model":"captured-model","reasoning":"high"},"revision":2});
+        let snapshot = serde_json::json!({"definition":{"definition":{"schemaVersion":1,"id":DEFINITION,"name":"Captured","blocks":[],"connections":[],"inputs":[]},"revision":1},"configuration":config,"inputs":{"values":{},"prompts":{}},"imageId":"captured-image","plans":[{"block_id":"a","segments":[{"Literal":"A own"}],"configuration":config},{"block_id":"b","segments":[{"Literal":"B own $ 雪 / "},{"Output":"a"}],"configuration":config}]});
+        c.execute("UPDATE runs SET snapshot=?1", [snapshot.to_string()])
+            .unwrap();
+        c.execute("DELETE FROM configurations", []).unwrap();
+        c.execute(
+            "INSERT INTO managed_sessions VALUES('slot','leased',7,'owned')",
+            [],
+        )
+        .unwrap();
+        if scenario == "storage" {
+            c.execute_batch("CREATE TRIGGER refuse_transition BEFORE UPDATE ON runs BEGIN SELECT RAISE(FAIL,'storage failure'); END;").unwrap();
+        }
+        let lease = Lease {
+            slot: "slot".into(),
+            owner: "owned".into(),
+            generation: 7,
+        };
+        let resources = String::from("prepared-existing-run-workspace");
+        let cancel = Cancel::default();
+        if scenario == "cancelled" {
+            cancel.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        let mut calls = 0;
+        let result = store.execute_next_block(
+            "owned",
+            &lease,
+            &resources,
+            &cancel,
+            |same, plan, prompt| {
+                calls += 1;
+                assert!(std::ptr::eq(same, &resources));
+                assert_eq!(plan.block_id, "b");
+                assert_eq!(plan.configuration.config.model, "captured-model");
+                assert_eq!(prompt, "B own $ 雪 / A literal {{input.topic}} <img>");
+                Ok("B [REDACTED]".into())
+            },
+        );
+        assert_eq!(result.is_ok(), scenario == "success", "{scenario}");
+        assert_eq!(calls, usize::from(scenario == "success"));
+        let after = store.run_status("owned").unwrap();
+        assert_eq!(after.blocks[0].final_response, s.blocks[0].final_response);
+        if scenario == "success" {
+            assert_eq!(after.blocks.len(), 2);
+            assert_eq!(after.blocks[1].state, RunState::Succeeded);
+            assert_eq!(
+                after.blocks[1].final_response.as_deref(),
+                Some("B [REDACTED]")
+            );
+            assert_eq!(
+                after.blocks[1].resolved_prompt,
+                "B own $ 雪 / A literal {{input.topic}} <img>"
+            );
+        }
+        assert_eq!(
+            c.query_row("SELECT state FROM managed_sessions", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "leased"
+        );
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM run_resources", [], |r| r
+                .get::<_, u32>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
 const CONFIG: &str = "00000000-0000-0000-0000-000000000002";
 fn prepared() -> (tempfile::TempDir, Store, Connection) {
     let dir = tempfile::tempdir().unwrap();
@@ -28,6 +132,7 @@ fn request() -> StartRun {
         definition_id: DEFINITION.into(),
         expected_revision: 1,
         expected_configuration_revision: 2,
+        expected_configuration_revisions: Default::default(),
         supplied: std::collections::BTreeMap::from([("topic".into(), "literal $HOME".into())]),
     }
 }
@@ -45,6 +150,7 @@ fn status() -> RunStatus {
         final_response: Some("retained".into()),
         diagnostic: String::new(),
         cleanup_pending: false,
+        blocks: Vec::new(),
     }
 }
 fn seed_run(c: &Connection, s: &RunStatus, active: bool) {

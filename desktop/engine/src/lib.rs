@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod auth_file;
 pub mod output;
+pub mod prompts;
 pub mod runs;
 pub mod runtime;
 pub mod sandbox;
@@ -212,10 +213,16 @@ fn substitute(
         let end = tail
             .find("}}")
             .ok_or_else(|| validation("Unclosed input reference."))?;
-        let name = tail[..end]
-            .strip_prefix("input.")
-            .ok_or_else(|| validation("Only {{input.name}} references are supported."))?;
-        let value = lookup(name)?;
+        let token = &tail[..end];
+        let value = if let Some(name) = token.strip_prefix("input.") {
+            lookup(name)?
+        } else if token.starts_with("output.") && token.ends_with(".finalResponse") {
+            format!("{{{{{token}}}}}")
+        } else {
+            return Err(validation(
+                "Use {{input.name}} or {{output.blockId.finalResponse}}.",
+            ));
+        };
         if result
             .len()
             .saturating_add(value.len())
@@ -237,6 +244,14 @@ pub fn resolve_inputs(
     supplied: std::collections::BTreeMap<String, String>,
 ) -> Result<PreparedInputs, Error> {
     validate_graph(d)?;
+    let declared = d
+        .inputs
+        .iter()
+        .map(|i| (i.name.clone(), String::new()))
+        .collect();
+    for block in &d.blocks {
+        prompts::compile(d, &block.id, &declared)?;
+    }
     if supplied.len() > 100
         || supplied
             .iter()
@@ -376,6 +391,12 @@ fn validate_definition(d: &Definition) -> Result<(), Error> {
     }
     validate_graph(d)?;
     for b in &d.blocks {
+        let declared = d
+            .inputs
+            .iter()
+            .map(|i| (i.name.clone(), String::new()))
+            .collect();
+        prompts::compile(d, &b.id, &declared)?;
         if let Some(id) = &b.configuration_id {
             if id.len() != 36 || uuid::Uuid::parse_str(id).is_err() {
                 return Err(validation("Invalid configuration identity."));

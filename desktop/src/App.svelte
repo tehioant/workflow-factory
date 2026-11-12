@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import RunPanel from './lib/RunPanel.svelte';
+  import OutputReferencePicker from './lib/OutputReferencePicker.svelte';
   import type { RunStatus, StartRun } from './lib/transport.ts';
   import AuthReadinessPanel from './lib/AuthReadiness.svelte';
   import { invoke } from '@tauri-apps/api/core';
@@ -50,10 +51,11 @@
         }
         if(!editor.working)return;
         const saved=await commands.load(editor.working.id);
-        if(saved.definition.blocks.length!==1)throw new Error('This version runs exactly one saved AI block.');
+        if(!saved.definition.blocks.length)throw new Error('Add and save an AI block.');
         const config=configurations.find(c=>c.config.id===saved.definition.blocks[0].configurationId);
         if(!config)throw new Error('Select and save an available Codex configuration.');
-        pendingStart={requestId:crypto.randomUUID(),definitionId:saved.definition.id,expectedRevision:saved.revision,expectedConfigurationRevision:config.revision,supplied:inputs};
+        const revisions=Object.fromEntries(saved.definition.blocks.map(block=>{const captured=configurations.find(c=>c.config.id===block.configurationId);if(!captured)throw new Error('Select and save an available configuration for every block.');return [captured.config.id,captured.revision];}));
+        pendingStart={requestId:crypto.randomUUID(),definitionId:saved.definition.id,expectedRevision:saved.revision,expectedConfigurationRevision:config.revision,expectedConfigurationRevisions:revisions,supplied:inputs};
       }
       if(!pendingStart)return;
       run=await commands.startRun($state.snapshot(pendingStart));pendingStart=null;dirtyStart=false;
@@ -146,6 +148,7 @@
        {#if block}
         <label for="block-name">Block name</label><input id="block-name" disabled={busy} value={block.name} oninput={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{name:e.currentTarget.value}})} />
         <label for="prompt">Own prompt</label><textarea bind:this={promptField} id="prompt" rows="12" disabled={busy} value={block.prompt} oninput={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{prompt:e.currentTarget.value}})}></textarea>
+        <OutputReferencePicker definition={editor.working} blockId={selected} field={promptField} disabled={busy} onprompt={(prompt)=>{editor=editGraph(editor,{type:'update',id:selected,patch:{prompt}});}}/>
         <label for="block-config">Codex configuration</label><select id="block-config" disabled={busy} value={block.configurationId??''} onchange={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{configurationId:e.currentTarget.value||null}})}><option value="">Not configured</option>{#each configurations as saved}<option value={saved.config.id}>{saved.config.name} · {saved.config.model} / {saved.config.reasoning}</option>{/each}</select>
         {#if block.configurationId&&!configurations.some(c=>c.config.id===block?.configurationId)}<p role="alert">Missing configuration. Select an existing one or clear this reference.</p>{/if}
         <label for="input-reference">Insert named input</label><select id="input-reference" disabled={busy} bind:value={inputChoice}><option value="">Choose input</option>{#each editor.working.inputs as input}<option value={input.name}>{input.name}</option>{/each}</select>
@@ -159,7 +162,7 @@
       <section class="editor"><h2>Your workflows, saved locally.</h2><p>Create a workflow or open one from the sidebar.</p></section>
     {/if}
     <section class="notice" aria-label="Start run">
-      <button disabled={busy||!runReady||!editor.working||pendingStart!==null} onclick={()=>{if(editor.dirty)dirtyStart=true;else void begin('saved');}}>Start one saved block</button>
+      <button disabled={busy||!runReady||!editor.working||pendingStart!==null} onclick={()=>{if(editor.dirty)dirtyStart=true;else void begin('saved');}}>Start saved workflow</button>
       <button disabled={busy} onclick={()=>{void commands.openSessionSignIn().catch(error=>{runError=errorMessage(error);});}}>Open native managed sign-in</button>
       <p>Trusted private workloads only. Native secure staging, managed login and containment must be qualified before execution.</p>
       {#if dirtyStart}

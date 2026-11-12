@@ -39,3 +39,41 @@ fn resolves_literal_values_once_without_changing_definition() {
     assert_eq!(prepared.prompts["a"], "Hello $1 {{input.note}} / Default");
     assert_eq!(d, original);
 }
+
+#[test]
+fn p1_original_prompt_resolves_only_predecessor_final_response_literally() {
+    use workflow_engine::prompts::{compile, resolve, Segment};
+    let literal = "$ {{input.note}} {{output.b.finalResponse}} 雪";
+    let segments = vec![
+        Segment::Literal("Own ".into()),
+        Segment::Literal(literal.into()),
+        Segment::Output("a".into()),
+    ];
+    assert_eq!(
+        resolve(&segments, &BTreeMap::from([("a".into(), literal.into())])).unwrap(),
+        format!("Own {literal}{literal}")
+    );
+    let mut d = definition();
+    d.blocks.push(
+        serde_json::from_value(
+            serde_json::json!({"id":"b","name":"B","prompt":"","position":{"x":0,"y":0}}),
+        )
+        .unwrap(),
+    );
+    d.connections.push(workflow_engine::GraphConnection {
+        source: "a".into(),
+        target: "b".into(),
+    });
+    for (token, accepted) in [
+        ("{{output.a.finalResponse}}", true),
+        ("{{output.b.finalResponse}}", false),
+        ("{{output.missing.finalResponse}}", false),
+        ("{{output.a.transcript}}", false),
+    ] {
+        d.blocks[1].prompt = token.into();
+        let original = d.clone();
+        let result = compile(&d, "b", &BTreeMap::new());
+        assert_eq!(result.is_ok(), accepted, "{token}");
+        assert_eq!(d, original);
+    }
+}

@@ -9,6 +9,7 @@ fn outputs() -> &'static Mutex<BTreeMap<String, String>> {
 fn output_hold() -> workflow_engine::Error {
     workflow_engine::Error::Storage { message: "Completed redacted output retained in app memory; storage failed. Ownership remains held. Keep the app open and Recheck status to retry storage; no execution retry.".into() }
 }
+#[cfg(test)]
 fn retain_output(
     id: &str,
     text: String,
@@ -22,7 +23,10 @@ fn retain_output(
 }
 pub fn retry_outputs(store: &workflow_engine::Store) -> Result<(), workflow_engine::Error> {
     let mut pending = outputs().lock().map_err(|_| output_hold())?;
-    pending.retain(|id, text| store.retain_run_output(id, text).is_err());
+    pending.retain(|key, text| match key.split_once('/') {
+        Some((id, block)) => store.retain_block_output(id, block, text).is_err(),
+        None => store.retain_run_output(key, text).is_err(),
+    });
     if pending.is_empty() {
         Ok(())
     } else {
@@ -58,55 +62,93 @@ pub fn execute(
         cancel.check()?;
         sandbox.stage(&resources, &seed, &cancel)?;
         cancel.check()?;
-        let execution = sandbox.execute(
-            &resources,
-            &snapshot.inputs.prompts[&snapshot.definition.definition.blocks[0].id],
-            &snapshot.configuration.config,
-            &cancel,
-        );
-        // Even on Codex error, export its CURRENT cache before stopping the keeper.
-        if execution.is_err() {
-            sandbox.stop_writers(&resources)?;
+        if snapshot.plans.is_empty() {
+            return Err(workflow_engine::Error::Validation {
+                message: "Legacy interrupted run cannot resume automatically.".into(),
+            });
         }
-        let mut exported = None;
-        for _ in 0..10 {
-            match sandbox.export(&resources) {
-                Ok(cache) => {
-                    exported = Some(cache);
-                    break;
-                }
-                Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
-            }
-        }
-        let rotated = exported.ok_or_else(|| workflow_engine::Error::Validation {
-            message: "Credential writers/export unconfirmed; keeper and session remain held."
-                .into(),
-        })?;
+        let mut latest_cache = seed.clone();
+        let mut cache_ready = false;
         let mut secrets = Vec::new();
-        for bytes in [&seed, &rotated] {
-            let v: serde_json::Value =
-                serde_json::from_slice(bytes).map_err(|_| workflow_engine::Error::Validation {
-                    message: "Managed cache invalid; session quarantined.".into(),
-                })?;
-            for key in ["access_token", "refresh_token", "id_token"] {
-                if let Some(token) = v["tokens"][key].as_str() {
-                    secrets.push(token.to_string());
+        let final_result = loop {
+            let mut key = String::new();
+            let step = store.execute_next_block(
+                &id,
+                &lease,
+                &resources,
+                &cancel,
+                |resources, plan, prompt| {
+                    cache_ready = false;
+                    key = format!("{id}/{}", plan.block_id);
+                    native_prerequisites()
+                        .map_err(|message| workflow_engine::Error::Validation { message })?;
+                    cancel.check()?;
+                    let execution =
+                        sandbox.execute(resources, prompt, &plan.configuration.config, &cancel);
+                    // Even on Codex error, export its CURRENT cache before stopping the keeper.
+                    if execution.is_err() {
+                        sandbox.stop_writers(resources)?;
+                    }
+                    let mut exported = None;
+                    for _ in 0..10 {
+                        match sandbox.export(resources) {
+                            Ok(cache) => {
+                                exported = Some(cache);
+                                break;
+                            }
+                            Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+                        }
+                    }
+                    let rotated = exported.ok_or_else(|| workflow_engine::Error::Validation {
+                        message:
+                            "Credential writers/export unconfirmed; keeper and session remain held."
+                                .into(),
+                    })?;
+                    latest_cache = rotated.clone();
+                    for bytes in [&seed, &rotated] {
+                        let v: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| {
+                            workflow_engine::Error::Validation {
+                                message: "Managed cache invalid; session quarantined.".into(),
+                            }
+                        })?;
+                        for key in ["access_token", "refresh_token", "id_token"] {
+                            if let Some(token) = v["tokens"][key].as_str() {
+                                secrets.push(token.to_string());
+                            }
+                        }
+                    }
+                    let final_result = execution.and_then(|(code, output)| {
+                        workflow_engine::output::Decoder::decode(&output, code, &secrets)
+                    });
+                    cache_ready = true;
+                    if let Ok(text) = &final_result {
+                        outputs()
+                            .lock()
+                            .map_err(|_| output_hold())?
+                            .insert(key.clone(), text.clone());
+                    }
+                    final_result
+                },
+            );
+            match step {
+                Ok(true) => {
+                    outputs().lock().map_err(|_| output_hold())?.remove(&key);
+                }
+                Ok(false) => break Ok(store.run_status(&id)?.final_response.unwrap_or_default()),
+                Err(error @ workflow_engine::Error::Storage { .. }) => return Err(error),
+                Err(error) => {
+                    if !cache_ready {
+                        return Err(error);
+                    }
+                    break Err(error);
                 }
             }
-        }
-        let final_result = execution.and_then(|(code, output)| {
-            workflow_engine::output::Decoder::decode(&output, code, &secrets)
-        });
-        if let Ok(text) = &final_result {
-            retain_output(&id, text.clone(), |id, text| {
-                store.retain_run_output(id, text)
-            })?;
-        }
+        };
         store.finish_session(
             &lease.slot,
             &id,
             lease.generation,
-            &rotated,
+            &latest_cache,
             &mut secure,
             || sandbox.cleanup(&resources),
         )?;
