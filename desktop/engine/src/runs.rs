@@ -27,6 +27,7 @@ pub enum RunState {
     AuthorizationRequired,
     Admitted,
     Running,
+    Cancelling,
     Succeeded,
     Failed,
     Stopped,
@@ -98,7 +99,6 @@ impl Store {
             )
             .map_err(storage)?;
         let mut status: RunStatus = serde_json::from_str(&body).map_err(storage)?;
-        let snapshot: Snapshot = serde_json::from_str(&snapshot).map_err(storage)?;
         let owned: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM managed_sessions WHERE id=?1 AND owner=?2 AND generation=?3 AND state='leased')", params![lease.slot,id,lease.generation], |r| r.get(0)).map_err(storage)?;
         if status.id != id
             || lease.owner != id
@@ -114,6 +114,7 @@ impl Store {
                 "Run is stopped, held, or its predecessor is not durably successful.",
             ));
         }
+        let snapshot: Snapshot = serde_json::from_str(&snapshot).map_err(storage)?;
         let Some(plan) = snapshot.plans.get(status.blocks.len()) else {
             return Ok(false);
         };
@@ -338,8 +339,12 @@ impl Store {
             }
         }
         status.state = if !clean {
-            RunState::Held
-        } else if status.state == RunState::Held {
+            if status.state == RunState::Cancelling {
+                RunState::Cancelling
+            } else {
+                RunState::Held
+            }
+        } else if status.state == RunState::Cancelling {
             RunState::Stopped
         } else if success {
             RunState::Succeeded
@@ -572,6 +577,17 @@ impl Store {
             )
             .map_err(storage)?;
             queue::reserve(&tx)?;
+        } else if s.state == RunState::Running
+            && !s.blocks.is_empty()
+            && s.blocks
+                .iter()
+                .all(|b| b.state == RunState::Succeeded && b.final_response.is_some())
+            && {
+                let count: Option<u32> = tx.query_row("SELECT CASE WHEN length(CAST(snapshot AS BLOB))<=2097152 THEN CASE WHEN json_valid(snapshot) THEN json_array_length(snapshot,'$.plans') END END FROM runs WHERE id=?1", [id], |r| r.get(0)).map_err(storage)?;
+                count.map(|n| n as usize) == Some(s.blocks.len())
+            }
+        {
+            // The last durable result linearizes completion before a later Stop.
         } else if matches!(
             s.state,
             RunState::Admitted | RunState::AuthorizationRequired
@@ -601,9 +617,9 @@ impl Store {
             queue::reserve(&tx)?;
         } else if matches!(
             s.state,
-            RunState::Admitted | RunState::Running | RunState::Held
+            RunState::Admitted | RunState::Running | RunState::Held | RunState::Cancelling
         ) {
-            s.state = RunState::Held;
+            s.state = RunState::Cancelling;
             s.cleanup_pending = true;
             s.diagnostic="Stop requested. Ownership/secure-cache cleanup must be confirmed; session remains withheld.".into();
             tx.execute(

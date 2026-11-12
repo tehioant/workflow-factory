@@ -206,6 +206,9 @@ pub fn execute(
             match step {
                 Ok(true) => {
                     completed += 1;
+                    if completed == snapshot.plans.len() {
+                        break Ok(store.run_status(&id)?.final_response.unwrap_or_default());
+                    }
                 }
                 Ok(false) => break Ok(store.run_status(&id)?.final_response.unwrap_or_default()),
                 Err(error @ workflow_engine::Error::Storage { .. }) => return Err(error),

@@ -731,6 +731,109 @@ fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() 
     }
 }
 const CONFIG: &str = "00000000-0000-0000-0000-000000000002";
+#[test]
+fn d12_scoped_cancel_transition() {
+    use workflow_engine::{runs::BlockResult, sandbox::Cancel, sessions::Lease};
+    for mode in ["perRun", "perBlock"] {
+        for complete in [false, true] {
+            let (_dir, store, c) = prepared();
+            let mut selected = status();
+            selected.blocks = vec![BlockResult {
+                block_id: "a".into(),
+                state: RunState::Succeeded,
+                resolved_prompt: "Own prompt".into(),
+                final_response: Some("Completed A".into()),
+            }];
+            selected.final_response = Some("Completed A".into());
+            seed_run(&c, &selected, true);
+            c.execute("UPDATE runs SET snapshot=?1", [serde_json::json!({"definition":{"definition":{"isolation":mode}},"plans":if complete {serde_json::json!([{}])}else{serde_json::json!([{},{}])}}).to_string()]).unwrap();
+            let mut sibling = status();
+            sibling.id = "sibling".into();
+            sibling.request_id = "sibling-request".into();
+            seed_run(&c, &sibling, true);
+            let before: String = c
+                .query_row("SELECT status FROM runs WHERE id='sibling'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            let stopped = store.stop_run("owned").unwrap();
+            assert_eq!(
+                stopped.state,
+                if complete {
+                    RunState::Running
+                } else {
+                    RunState::Cancelling
+                }
+            );
+            assert_eq!(stopped.final_response.as_deref(), Some("Completed A"));
+            assert_eq!(store.stop_run("owned").unwrap().state, stopped.state);
+            assert_eq!(
+                c.query_row("SELECT status FROM runs WHERE id='sibling'", [], |r| r
+                    .get::<_, String>(
+                    0
+                ))
+                .unwrap(),
+                before
+            );
+            if !complete {
+                // Guard must reject before any external invocation, even with a fresh token.
+                let lease = Lease {
+                    slot: "slot".into(),
+                    owner: "owned".into(),
+                    generation: 7,
+                };
+                c.execute(
+                    "INSERT INTO managed_sessions VALUES('slot','leased',7,'owned')",
+                    [],
+                )
+                .unwrap();
+                let refused = store.execute_next_block(
+                    "owned",
+                    &lease,
+                    &(),
+                    &Cancel::default(),
+                    |_, _, _| panic!("successor forbidden"),
+                );
+                assert!(
+                    matches!(refused, Err(workflow_engine::Error::Validation{message}) if message.contains("Run is stopped, held"))
+                );
+            }
+        }
+        for (state, clean, expected) in [
+            (RunState::Held, true, RunState::Failed),
+            (RunState::Cancelling, true, RunState::Stopped),
+            (RunState::Cancelling, false, RunState::Cancelling),
+        ] {
+            let (_dir, store, c) = prepared();
+            let mut selected = status();
+            selected.state = state;
+            seed_run(&c, &selected, true);
+            c.execute(
+                "INSERT INTO managed_sessions VALUES('slot',?1,?2,?3)",
+                params![
+                    if clean { "available" } else { "quarantined" },
+                    if clean { 8 } else { 7 },
+                    if clean { None } else { Some("owned") }
+                ],
+            )
+            .unwrap();
+            c.execute("INSERT INTO run_queue(run_id,phase,slot,generation) VALUES('owned','occupied','slot',7)",[]).unwrap();
+            store
+                .finish_run("owned", None, "Prepared receipt", clean, false)
+                .unwrap();
+            let result = store.run_status("owned").unwrap();
+            assert_eq!(result.state, expected);
+            assert_eq!(result.cleanup_pending, !clean);
+            assert_eq!(result.final_response.as_deref(), Some("retained"));
+            if clean {
+                assert!(store
+                    .finish_run("owned", Some("late overwrite".into()), "late", true, true)
+                    .is_err());
+                assert_eq!(store.stop_run("owned").unwrap().state, expected);
+            }
+        }
+    }
+}
 fn prepared() -> (tempfile::TempDir, Store, Connection) {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
@@ -1160,8 +1263,11 @@ fn c08_scoped_stop_keeps_output_and_ownership_hold() {
     let (_dir, store, c) = prepared();
     seed_run(&c, &status(), true);
     let s = store.stop_run("owned").unwrap();
-    assert_eq!(store.run_status("owned").unwrap().state, RunState::Held);
-    assert_eq!(s.state, RunState::Held);
+    assert_eq!(
+        store.run_status("owned").unwrap().state,
+        RunState::Cancelling
+    );
+    assert_eq!(s.state, RunState::Cancelling);
     assert!(s.cleanup_pending);
     assert_eq!(s.final_response.as_deref(), Some("retained"));
     assert_eq!(
@@ -1201,7 +1307,7 @@ fn c12_unclaimed_stop_releases_only_reservation_without_any_resource_intent() {
             if safe {
                 RunState::Stopped
             } else {
-                RunState::Held
+                RunState::Cancelling
             }
         );
         assert_eq!(stopped.cleanup_pending, !safe);

@@ -92,6 +92,38 @@ test('held and long-running panels remain refreshable and reject stale or unmoun
  }finally{globalThis.setTimeout=realSet;globalThis.clearTimeout=realClear;if(component)await unmount(component);await rm(directory,{recursive:true,force:true});window.happyDOM.abort();}
 });
 
+test('d12_selected_cancel_control', async()=>{
+ const window=new Window();
+ for(const key of ['document','Node','Element','HTMLElement','Text','Comment','Event','MouseEvent','HTMLMediaElement'])Object.defineProperty(globalThis,key,{configurable:true,value:(window as any)[key]});
+ Object.defineProperty(globalThis,'window',{configurable:true,value:window});Object.defineProperty(globalThis,'navigator',{configurable:true,value:window.navigator});
+ const {mount,unmount,flushSync}=await import(new URL('../node_modules/svelte/src/index-client.js',import.meta.url).href);
+ const panel='data:text/javascript;base64,'+Buffer.from(await compileComponent(new URL('../src/lib/RunPanel.svelte',import.meta.url))).toString('base64');
+ const harness=compile(`<script>import Panel from 'selected-panel';let {commands,initial,onstatus}=$props();let run=$state(initial);export function select(value){run=value;}</script><Panel {commands} {run} {onstatus}/>`,{filename:'selected-cancel-harness.svelte',generate:'client'}).js.code;
+ const harnessCode=harness.replace(/(from |import )(['"])([^'"]+)\2/g,(_a,p,_q,s)=>p+JSON.stringify(s==='selected-panel'?panel:s==='svelte'?new URL('../node_modules/svelte/src/index-client.js',import.meta.url).href:import.meta.resolve(s)));
+ const Component=(await import('data:text/javascript;base64,'+Buffer.from(harnessCode).toString('base64'))).default;
+ const target=window.document.createElement('main');window.document.body.append(target);
+ const realSet=globalThis.setTimeout,realClear=globalThis.clearTimeout;let tick:any;let component:any;
+ const selected:any={id:'selected',requestId:'request',state:'running',cleanupPending:false,finalResponse:'Completed A',diagnostic:'',blocks:[]};
+ const sibling={...selected,id:'sibling'};const statuses:any[]=[];const calls:string[]=[];
+ let finish:any,reject:any;
+ const commands:any={inspectWorkflow:async()=>{throw Error('not captured');},stopRun:(id:string)=>{calls.push(id);return new Promise((resolve,no)=>{finish=resolve;reject=no;});},runStatus:async(id:string)=>{calls.push('read:'+id);return {...selected,id};},retryRunOutput:async()=>{throw Error('storage not selected');}};
+ try {
+  globalThis.setTimeout=((fn:any)=>{tick=fn;return 1;}) as any;globalThis.clearTimeout=(()=>{}) as any;
+  const props:any={commands,initial:selected,onstatus:(s:any)=>statuses.push(s)};
+  flushSync(()=>{component=mount(Component,{target,props});});
+  const button=(text:string)=>Array.from(target.querySelectorAll('button')).find(b=>b.textContent.includes(text))!;
+  button('Stop this run').click();flushSync();assert.deepEqual(calls,['selected']);assert.ok(button('Recheck').disabled);
+  await tick();assert.deepEqual(calls,['selected']);
+  reject(Error('Selected stop storage failed; ownership held'));await Promise.resolve();await Promise.resolve();flushSync();assert.ok(target.textContent.includes('Selected stop storage failed'));assert.ok(!button('Stop this run').disabled);
+  await tick();flushSync();assert.ok(target.textContent.includes('Selected stop storage failed'),'read-only poll must not erase Stop error');
+  button('Stop this run').click();flushSync();finish({...selected,state:'cancelling',cleanupPending:true});await Promise.resolve();await Promise.resolve();flushSync();assert.equal(statuses.at(-1).state,'cancelling');assert.equal(statuses.at(-1).id,'selected');
+  button('Stop this run').click();flushSync();flushSync(()=>component.select(sibling));
+  const before=statuses.length;finish({...selected,state:'stopped'});await Promise.resolve();await Promise.resolve();flushSync();assert.equal(statuses.length,before);assert.ok(target.textContent.includes('sibling'));
+  button('Stop this run').click();flushSync();assert.equal(calls.at(-1),'sibling');finish({...selected,state:'stopped'});await Promise.resolve();await Promise.resolve();flushSync();assert.equal(statuses.length,before);assert.ok(target.textContent.includes('response identity changed'));
+  button('Stop this run').click();flushSync();await unmount(component);component=null;finish({...sibling,state:'stopped'});await Promise.resolve();await Promise.resolve();assert.equal(statuses.length,before);
+ } finally {globalThis.setTimeout=realSet;globalThis.clearTimeout=realClear;if(component)await unmount(component);target.remove();window.happyDOM.abort();}
+});
+
 test('f2 mounted workflow isolation selection changes only the working copy', async()=>{
  const window=new Window();
  for(const key of ['document','Node','Element','HTMLElement','Text','Comment','Event','MouseEvent','HTMLMediaElement'])Object.defineProperty(globalThis,key,{configurable:true,value:(window as any)[key]});
