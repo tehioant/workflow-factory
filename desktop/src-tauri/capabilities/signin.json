@@ -1,0 +1,1 @@
+{"identifier":"signin","description":"Dedicated native managed-session acquisition only; no definition or run access.","local":true,"windows":["signin"],"permissions":["managed-signin"]}

@@ -1,6 +1,10 @@
 pub mod auth;
 pub mod auth_file;
+pub mod output;
+pub mod runs;
 pub mod runtime;
+pub mod sandbox;
+pub mod sessions;
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -341,7 +345,7 @@ pub fn credential_readiness(availability: auth::CredentialAvailability) -> AuthR
         A::Inaccessible => "The fixed Codex source could not be read. Review local access using Codex's own setup; no fallback was attempted.",
         A::Unsafe => "Source safety checks failed (type, ownership, permissions, links, size or concurrent modification). No repair, copying or fallback was attempted.",
     };
-    AuthReadiness { execution_enabled:false, credential_source:if availability==A::NotInspected {CredentialSourceKind::NotInspected} else {CredentialSourceKind::CodexFile}, credential_availability:availability, status:ContainerAuthSupport::UnsupportedConcurrentAuth, guidance:format!("{setup} Execution blocked: container authentication/staging and managed-cache refresh/write-back are not implemented in this app. The documented serialized app-owned cache route requires trusted-private workloads, secure native storage/staging and platform verification in #29. No login, refresh, host-auth write, paid API-key fallback or model call is performed.") }
+    AuthReadiness { execution_enabled:false, credential_source:if availability==A::NotInspected {CredentialSourceKind::NotInspected} else {CredentialSourceKind::CodexFile}, credential_availability:availability, status:ContainerAuthSupport::UnsupportedConcurrentAuth, guidance:format!("{setup} Execution blocked: this host-file inspector does not authorize the separate app-owned managed-session route. That gated source route still requires trusted-private workload authorization and native secure-store, staging, paging/dump and provider-containment qualification in #29. No login, refresh, host-auth write, paid API-key fallback or model call is performed.") }
 }
 fn validate_configuration(c: &CodexConfiguration) -> Result<(), Error> {
     if c.id.len() != 36
@@ -456,7 +460,7 @@ impl Store {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(storage)?;
         let tables: u32 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |r| r.get(0)).map_err(storage)?;
-        if version > 2 || (version == 0 && tables != 0) {
+        if version > 3 || (version == 0 && tables != 0) {
             let backup = directory.join(format!("backup-{}.sqlite3", uuid::Uuid::new_v4()));
             let mut options = std::fs::OpenOptions::new();
             options.write(true).create_new(true);
@@ -485,6 +489,10 @@ impl Store {
             tx.execute_batch("CREATE TABLE configurations (id TEXT PRIMARY KEY NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL); PRAGMA user_version=2;").map_err(storage)?;
             tx.commit().map_err(storage)?;
         }
+        if version <= 2 {
+            connection.execute_batch("BEGIN IMMEDIATE; CREATE TABLE runs(id TEXT PRIMARY KEY,request_id TEXT UNIQUE NOT NULL,request TEXT NOT NULL,snapshot TEXT NOT NULL,status TEXT NOT NULL,active INTEGER NOT NULL); CREATE UNIQUE INDEX one_active_run ON runs(active) WHERE active=1; CREATE TABLE managed_sessions(id TEXT PRIMARY KEY,state TEXT NOT NULL,generation INTEGER NOT NULL,owner TEXT); PRAGMA user_version=3; COMMIT;").map_err(storage)?;
+        }
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS run_resources(run_id TEXT NOT NULL,kind TEXT NOT NULL,resource_id TEXT,PRIMARY KEY(run_id,kind));").map_err(storage)?;
         Ok(Self { path })
     }
 

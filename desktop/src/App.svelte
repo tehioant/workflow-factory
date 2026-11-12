@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import RunPanel from './lib/RunPanel.svelte';
+  import type { RunStatus, StartRun } from './lib/transport.ts';
   import AuthReadinessPanel from './lib/AuthReadiness.svelte';
   import { invoke } from '@tauri-apps/api/core';
   import Button from './lib/ui/button.svelte';
@@ -28,6 +30,36 @@
   let listError = $state('');
   let confirmDiscard = $state(false);
   let pendingId = $state<string | null>(null);
+  let supplied=$state<Record<string,string>>({});
+  let run=$state<RunStatus|null>(null);
+  let runReady=$state(false);
+  let runError=$state('');
+  let dirtyStart=$state(false);
+  let pendingStart=$state<StartRun|null>(null);
+  onMount(()=>{let alive=true;void commands.runStatus().then(value=>{if(alive){run=value;runReady=true;}}).catch(error=>{if(alive)runError=errorMessage(error);});return()=>{alive=false;};});
+  async function begin(mode:'save'|'saved'|'retry'){
+    if(busy||!runReady||(mode!=='retry'&&(!editor.working||pendingStart!==null)))return;
+    const inputs=$state.snapshot(supplied);
+    busy=true;runError='';
+    try{
+      if(mode!=='retry'){
+        if(mode==='save'){
+          editor=await saveEditor($state.snapshot(editor),commands);
+          if(editor.dirty){runError=editor.error;return;}
+          await refresh();
+        }
+        if(!editor.working)return;
+        const saved=await commands.load(editor.working.id);
+        if(saved.definition.blocks.length!==1)throw new Error('This version runs exactly one saved AI block.');
+        const config=configurations.find(c=>c.config.id===saved.definition.blocks[0].configurationId);
+        if(!config)throw new Error('Select and save an available Codex configuration.');
+        pendingStart={requestId:crypto.randomUUID(),definitionId:saved.definition.id,expectedRevision:saved.revision,expectedConfigurationRevision:config.revision,supplied:inputs};
+      }
+      if(!pendingStart)return;
+      run=await commands.startRun($state.snapshot(pendingStart));pendingStart=null;dirtyStart=false;
+    }catch(error){runError=errorMessage(error);}
+    finally{busy=false;}
+  }
 
   async function refresh() {
     try { definitions = await commands.list(); listError = ''; }
@@ -96,7 +128,7 @@
          <button disabled={busy} onclick={()=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:editor.working.inputs.filter((_,n)=>n!==i)},dirty:true};}}>Remove input {i+1}</button>
         {/each}
         <Button disabled={busy} onclick={()=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:[...editor.working.inputs,{name:`input_${editor.working.inputs.length+1}`,required:true,default:null}]},dirty:true};}}>Add text input</Button>
-        <InputForm definition={editor.working} {commands}/>
+        <InputForm definition={editor.working} {commands} onvalues={(values)=>{supplied=values;}}/>
 
 
         <label for="block-select">Select block</label><select id="block-select" disabled={busy} bind:value={selected}><option value="">Choose a block</option>{#each editor.working.blocks as b}<option value={b.id}>{b.name}</option>{/each}</select>
@@ -126,6 +158,20 @@
     {:else}
       <section class="editor"><h2>Your workflows, saved locally.</h2><p>Create a workflow or open one from the sidebar.</p></section>
     {/if}
+    <section class="notice" aria-label="Start run">
+      <button disabled={busy||!runReady||!editor.working||pendingStart!==null} onclick={()=>{if(editor.dirty)dirtyStart=true;else void begin('saved');}}>Start one saved block</button>
+      <button disabled={busy} onclick={()=>{void commands.openSessionSignIn().catch(error=>{runError=errorMessage(error);});}}>Open native managed sign-in</button>
+      <p>Trusted private workloads only. Native secure staging, managed login and containment must be qualified before execution.</p>
+      {#if dirtyStart}
+      <h2>Unsaved changes</h2><p>Save and start, explicitly use the last saved revision without discarding edits, or stay.</p>
+      <button disabled={busy||pendingStart!==null} onclick={()=>begin('save')}>Save and start</button>
+      <button disabled={busy||pendingStart!==null||!editor.revision} onclick={()=>begin('saved')}>Start last saved revision</button>
+      <button disabled={busy||pendingStart!==null} onclick={()=>{dirtyStart=false;}}>Stay</button>
+      {/if}
+      {#if pendingStart}<p>Admission outcome may be unknown. Retry the same immutable request, not a new start.</p><button disabled={busy} onclick={()=>begin('retry')}>Retry same request</button>{/if}
+      {#if runError}<p role="alert">{runError}</p>{/if}
+    </section>
+    {#key run?.id}<RunPanel {commands} {run} onstatus={(value)=>{run=value;}}/>{/key}
     <RuntimeSettings {commands}/>
     <AuthReadinessPanel {commands}/>
     {#if configError}<p role="alert">{configError}</p>{/if}

@@ -49,10 +49,10 @@ memory-forensics/secure-zeroization guarantee.
 
 ## Container authentication and concurrent refresh blocker
 
-There is **no implemented execution/staging route in this app** yet. Every availability result,
+There is a gated source execution/staging adapter and a separate app-owned native sign-in surface. No native platform is qualified yet. Every host-file availability result,
 including `available`, preserves `unsupportedConcurrentAuth` and
 `executionEnabled: false`. Host material availability is not successful
-in-container authentication. There is no execution command; Run stays disabled.
+in-container authentication. `start_run` records an immutable single-block snapshot or explicit blocked outcome; it does not derive managed-session authority from this host-file inspection. The current native qualification gate withholds login and execution.
 
 Copied per-run refresh grants can race with each other and the ordinary host
 CLI; moving a copied grant to a different store does not create an independent
