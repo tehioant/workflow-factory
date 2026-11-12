@@ -17,6 +17,8 @@ fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() 
         "storage",
         "result-storage",
         "execution-failed",
+        "recovery-won",
+        "recovery-conflict",
     ] {
         let (_dir, store, c) = prepared();
         let mut s = status();
@@ -86,15 +88,36 @@ fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() 
                         message: "Prepared immediate adapter failure".into(),
                     });
                 }
+                if matches!(scenario, "recovery-won" | "recovery-conflict") {
+                    store
+                        .retain_block_output(
+                            "owned",
+                            "b",
+                            if scenario == "recovery-won" {
+                                "B [REDACTED]"
+                            } else {
+                                "Other immutable response"
+                            },
+                        )
+                        .unwrap();
+                }
                 Ok("B [REDACTED]".into())
             },
         );
-        assert_eq!(result.is_ok(), scenario == "success", "{scenario}");
+        assert_eq!(
+            result.is_ok(),
+            matches!(scenario, "success" | "recovery-won"),
+            "{scenario}"
+        );
         assert_eq!(
             calls,
             usize::from(matches!(
                 scenario,
-                "success" | "result-storage" | "execution-failed"
+                "success"
+                    | "result-storage"
+                    | "execution-failed"
+                    | "recovery-won"
+                    | "recovery-conflict"
             ))
         );
         let after = store.run_status("owned").unwrap();
@@ -107,7 +130,7 @@ fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() 
             assert_eq!(after.blocks[1].state, RunState::Running);
             assert_eq!(after.blocks[1].final_response, None);
         }
-        if scenario == "success" {
+        if matches!(scenario, "success" | "recovery-won") {
             assert_eq!(after.blocks.len(), 2);
             assert_eq!(after.blocks[1].state, RunState::Succeeded);
             assert_eq!(
@@ -117,6 +140,17 @@ fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() 
             assert_eq!(
                 after.blocks[1].resolved_prompt,
                 "B own $ 雪 / A literal {{input.topic}} <img>"
+            );
+        }
+        if scenario == "recovery-conflict" {
+            assert_eq!(after.blocks[1].state, RunState::Succeeded);
+            assert_eq!(
+                after.blocks[1].final_response.as_deref(),
+                Some("Other immutable response")
+            );
+            assert_eq!(
+                after.final_response.as_deref(),
+                Some("Other immutable response")
             );
         }
         assert_eq!(

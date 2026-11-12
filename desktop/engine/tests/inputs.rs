@@ -76,4 +76,10 @@ fn p1_original_prompt_resolves_only_predecessor_final_response_literally() {
         assert_eq!(result.is_ok(), accepted, "{token}");
         assert_eq!(d, original);
     }
+    d.blocks[1].prompt = "Own {{input.topic}} / {{output.a.finalResponse}}".into();
+    let compiled = compile(&d, "b", &BTreeMap::from([("topic".into(), literal.into())])).unwrap();
+    assert_eq!(
+        resolve(&compiled, &BTreeMap::from([("a".into(), literal.into())])).unwrap(),
+        format!("Own {literal} / {literal}")
+    );
 }

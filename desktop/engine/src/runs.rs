@@ -173,6 +173,12 @@ impl Store {
             .iter_mut()
             .find(|b| b.block_id == block)
             .ok_or_else(|| storage("block identity"))?;
+        if result.state == RunState::Succeeded
+            && text.is_some()
+            && result.final_response.as_deref() == text
+        {
+            return Ok(());
+        }
         if result.state != RunState::Running {
             return Err(validation("Block result is immutable; no execution retry."));
         }
