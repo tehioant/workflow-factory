@@ -52,3 +52,29 @@ Generated command permissions and transport declarations are part of this seam.
 Local raw argv/exit/log and byte/mode evidence is retained by the delivery owner
 under `d09-build`, not represented as live/native UI qualification. Native runtime,
 login, container-removal and platform UI qualification are deliberately separate.
+
+## Interrupted recovery checkpoint (#37)
+
+The explicit selected **Retry owned cleanup** action can reconstruct the existing
+cleanup context from private, bounded `run_recovery` metadata. The worker records
+the exact lease and validated resource epoch before staging, in both isolation
+modes. Recovery uses acknowledged IDs and the existing resource journal; it does
+not consult current definitions, discover by label, resume execution or reset
+shutdown freeze. A surviving keeper still requires positive writer stop, current
+cache export, secure write/readback and exact owned removal. Failed sessions stay
+quarantined. Durable block results are retained; lost volatile output is labelled
+unavailable, never synthesized.
+
+The chosen settlement and actual completed cleanup receipt are retained for
+selected storage-only replay through the existing settlement validator. That
+replay performs no Docker, secure-store, confirmation or successor operations.
+History/status reads remain on the checked read-only reader.
+
+This is a partial source checkpoint, not full #37 completion. Acknowledged partial
+creation without a complete resource context remains held. A death after cache
+write/removal but before the completion receipt is durably saved remains held:
+no cache digest/export provenance is yet durable for reconstructing that window.
+Per-block handoff invalidates the old durable context before effects; interrupted
+overlap/retirement must still be correlated explicitly rather than selecting an
+agent by ordinal. Missing keeper/checkpoint authority never authorizes seed-cache
+fallback. Mounted selected interrupted-action coverage is still outstanding.

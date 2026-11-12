@@ -21,11 +21,15 @@ fn persist_final(
     claim: &Claim,
     chosen: &workflow_engine::runs::settlement::FinalSettlement,
 ) -> Result<(), workflow_engine::Error> {
-    let result = retry_selected_outputs(id, |id, block, text| match block {
-        Some(block) => store.retain_block_output(id, block, text),
-        None => store.retain_run_output(id, text),
-    })
-    .and_then(|()| store.settle_run(chosen));
+    let result = store
+        .retain_final_settlement(chosen)
+        .and_then(|()| {
+            retry_selected_outputs(id, |id, block, text| match block {
+                Some(block) => store.retain_block_output(id, block, text),
+                None => store.retain_run_output(id, text),
+            })
+        })
+        .and_then(|()| store.settle_run(chosen));
     if result.is_err() {
         claim.persistence_failure.store(
             if chosen.receipt.is_some() { 2 } else { 1 },
@@ -70,22 +74,50 @@ pub fn retry_cleanup(
     store: &workflow_engine::Store,
     selected: &str,
 ) -> Result<(), workflow_engine::Error> {
-    let claim = final_claims()
+    let existing = final_claims()
         .lock()
         .map_err(|_| cleanup_hold())?
         .get(selected)
-        .cloned()
-        .ok_or_else(cleanup_hold)?;
+        .cloned();
+    if existing.is_none() && store.retained_final_settlement(selected)?.is_none() {
+        store.interrupted_recovery(selected)?;
+    }
+    let claim = match existing {
+        Some(claim) => claim,
+        None => final_claim(selected)?,
+    };
     let mut finality = claim.try_lock().map_err(|_| workflow_engine::Error::Busy {
         message: "Selected final settlement or cleanup retry is active.".into(),
     })?;
+    if finality.is_none() {
+        if let Some(chosen) = store.retained_final_settlement(selected)? {
+            *finality = Some(chosen);
+        } else {
+            let (lease, _) = store.interrupted_recovery(selected)?;
+            let status = store.run_status(selected)?;
+            *finality = Some(workflow_engine::runs::settlement::FinalSettlement {
+                lease,
+                text: status.final_response.or_else(|| status.blocks.iter().rev().find_map(|b| b.final_response.clone())),
+                diagnostic: "Interrupted execution reconciled; durable completed results retained. Uncommitted volatile output is unavailable. Session quarantined; no execution resumed.".into(),
+                success: false,
+                receipt: None,
+            });
+        }
+    }
     let chosen = finality.as_mut().ok_or_else(cleanup_hold)?;
     if chosen.receipt.is_none() {
         let mut context = recoveries()
             .lock()
             .map_err(|_| cleanup_hold())?
             .remove(selected)
-            .ok_or_else(cleanup_hold)?;
+            .map(Ok)
+            .unwrap_or_else(|| {
+                store
+                    .interrupted_recovery(selected)
+                    .map(|(lease, resources)| {
+                        workflow_engine::sandbox::CleanupContext::new(resources, lease)
+                    })
+            })?;
         let result = workflow_engine::sandbox::Sandbox {
             pipe: workflow_engine::sandbox::NativePipe,
         }
@@ -226,10 +258,18 @@ pub fn retry_outputs(
         .get(selected)
         .cloned();
     let Some(claim) = claim else {
-        return retry_selected_outputs(selected, |id, block, text| match block {
+        retry_selected_outputs(selected, |id, block, text| match block {
             Some(block) => store.retain_block_output(id, block, text),
             None => store.retain_run_output(id, text),
-        });
+        })?;
+        if let Some(chosen) = store.retained_final_settlement(selected)? {
+            return store.settle_run(&chosen);
+        }
+        let status = store.run_status(selected)?;
+        if status.cleanup_pending || status.state == workflow_engine::runs::RunState::Held {
+            return Err(cleanup_hold());
+        }
+        return Ok(());
     };
     let mut finality = claim.lock().map_err(|_| output_hold())?;
     if let Some(receipt) = finality.as_ref() {
@@ -329,6 +369,7 @@ pub fn execute(
     let result = (|| {
         native_prerequisites().map_err(|message| workflow_engine::Error::Validation { message })?;
         cancel.check()?;
+        store.retain_recovery_resources(&lease, None)?;
         let mut resources = sandbox.create_for_mode(
             &id,
             &snapshot.image_id,
@@ -339,6 +380,7 @@ pub fn execute(
                 store.resource_intent(&id, kind, resource)
             },
         )?;
+        store.retain_recovery_resources(&lease, Some(&resources))?;
         recovery = Some(workflow_engine::sandbox::CleanupContext::new(
             resources.clone(),
             lease.clone(),
@@ -361,6 +403,7 @@ pub fn execute(
         let mut storage_interrupted = false;
         let final_result = loop {
             if completed > 0 && completed < snapshot.plans.len() {
+                store.retain_recovery_resources(&lease, None)?;
                 resources = sandbox.switch_block_environment(
                     &resources,
                     completed,
@@ -372,6 +415,7 @@ pub fn execute(
                             .map_err(|message| workflow_engine::Error::Validation { message })
                     },
                 )?;
+                store.retain_recovery_resources(&lease, Some(&resources))?;
                 recovery = Some(workflow_engine::sandbox::CleanupContext::new(
                     resources.clone(),
                     lease.clone(),
@@ -541,6 +585,8 @@ pub fn execute(
             success,
             receipt: None,
         });
+        // Failure to journal the choice must not prevent mandatory credential cleanup.
+        let _ = store.retain_final_settlement(finality.as_ref().unwrap());
         let receipt = sandbox.finish_cleanup(
             &store,
             &lease,
@@ -947,6 +993,14 @@ mod tests {
                 .diagnostic,
             "Prepared completed outcome"
         );
+        let retained = store
+            .retained_final_settlement(&observed.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.text.as_deref(), Some(text));
+        assert!(retained.receipt.is_some());
+        // No volatile final claim: exact durable storage replay needs no native adapter.
+        super::retry_outputs(&store, &observed.id).unwrap();
         assert_eq!(
             store
                 .run_status("00000000-0000-4000-8000-000000000035")

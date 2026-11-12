@@ -212,7 +212,7 @@ fn image(id: &str) -> bool {
     id.strip_prefix("sha256:").is_some_and(opaque)
 }
 pub type LoginObservation = (Option<i32>, Option<String>, Option<String>);
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Resources {
     pub owner: String,
     pub image: String,
@@ -434,9 +434,7 @@ impl<P: Pipe> Sandbox<P> {
             receipt("agent-start-0", None)?;
         }
         self.work_success(&strings(&["start", &r.container]), &[], 131072, cancel)?;
-        if r.workspace.is_some() {
-            r.started_at = Some(self.live_epoch(&r)?);
-        }
+        r.started_at = Some(self.live_epoch(&r)?);
         self.inspect_work(&r)?;
         if r.workspace.is_some() {
             cancel.check()?;

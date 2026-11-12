@@ -194,6 +194,149 @@ impl SecureStore for Secure {
         Ok(())
     }
 }
+#[test]
+fn d14_create_produces_validated_epoch_before_staging_in_both_modes() {
+    struct Create(Prepared, bool);
+    impl Pipe for Create {
+        fn call(
+            &mut self,
+            args: &[String],
+            input: &[u8],
+            limit: usize,
+            cancel: &Cancel,
+        ) -> Result<(i32, Vec<u8>, Vec<u8>), Error> {
+            assert!(input.is_empty());
+            assert_eq!(limit, 131072);
+            let a: Vec<_> = args.iter().map(String::as_str).collect();
+            let r = &self.0.r;
+            let out = match a.as_slice() {
+                ["volume", "ls", "--filter", filter, "--format", "{{.Name}}"] => {
+                    assert!(
+                        *filter == format!("name=^{}$", r.workspace.as_ref().unwrap())
+                            || *filter == format!("label=org.workflow-factory.owner={OWNER}")
+                    );
+                    vec![]
+                }
+                ["volume", "create", rest @ ..] => {
+                    assert_eq!(rest.last().copied(), r.workspace.as_deref());
+                    r.workspace.as_ref().unwrap().as_bytes().to_vec()
+                }
+                ["network", "create", rest @ ..] => {
+                    assert!(rest.contains(&format!("org.workflow-factory.owner={OWNER}").as_str()));
+                    if rest.contains(&"--internal") {
+                        r.network.as_bytes().to_vec()
+                    } else {
+                        r.outer.as_bytes().to_vec()
+                    }
+                }
+                ["create", rest @ ..] => {
+                    assert!(rest.windows(2).any(|w| w
+                        == [
+                            "--label",
+                            format!("org.workflow-factory.owner={OWNER}").as_str()
+                        ]));
+                    assert!(rest.contains(&r.image.as_str()));
+                    if rest.contains(&"/opt/workflow-factory/egress.mjs") {
+                        r.helper.as_bytes().to_vec()
+                    } else {
+                        assert!(rest.contains(&"/opt/workflow-factory/keeper.mjs"));
+                        r.container.as_bytes().to_vec()
+                    }
+                }
+                ["network", "connect", "--alias", "wf-egress", network, helper] => {
+                    assert_eq!(*network, r.network);
+                    assert_eq!(*helper, r.helper);
+                    vec![]
+                }
+                ["start", id] => {
+                    assert!([r.helper.as_str(), r.container.as_str()].contains(id));
+                    vec![]
+                }
+                [kind, "inspect", id] => {
+                    let mut row = self.0.inspection(kind, id);
+                    if self.1 && *id == r.container {
+                        row["State"]["StartedAt"] = json!("");
+                    }
+                    serde_json::to_vec(&vec![row]).unwrap()
+                }
+                _ => panic!("Unexpected create boundary {args:?}"),
+            };
+            cancel.check()?;
+            Ok((0, out, vec![]))
+        }
+    }
+    for block in [false, true] {
+        for missing in [false, true] {
+            let r = Resources {
+                owner: OWNER.into(),
+                image: format!("sha256:{}", "f".repeat(64)),
+                network: "a".repeat(64),
+                outer: "b".repeat(64),
+                helper: "c".repeat(64),
+                container: "d".repeat(64),
+                workspace: block.then(|| format!("wf-workspace-{OWNER}")),
+                peer: None,
+                started_at: None,
+                retired: None,
+            };
+            let present = [
+                r.container.clone(),
+                r.helper.clone(),
+                r.network.clone(),
+                r.outer.clone(),
+            ]
+            .into_iter()
+            .collect();
+            let mut sandbox = Sandbox {
+                pipe: Create(
+                    Prepared {
+                        r: r.clone(),
+                        present,
+                        scenario: "success",
+                        events: Rc::default(),
+                    },
+                    missing,
+                ),
+            };
+            let mut records = std::collections::BTreeMap::new();
+            let result = sandbox.create_for_mode(
+                OWNER,
+                &r.image,
+                if block {
+                    workflow_engine::IsolationMode::PerBlock
+                } else {
+                    workflow_engine::IsolationMode::PerRun
+                },
+                &Cancel::default(),
+                |kind, id| {
+                    if let Some(id) = id {
+                        assert_eq!(
+                            records.insert(kind.to_string(), Some(id.to_string())),
+                            Some(None)
+                        );
+                    } else {
+                        assert!(records.insert(kind.to_string(), None).is_none());
+                    }
+                    Ok(())
+                },
+            );
+            assert_eq!(result.is_ok(), !missing);
+            if let Ok(actual) = result {
+                assert_eq!(actual.started_at.as_deref(), Some("prepared-start-epoch"));
+                assert_eq!(actual.container, r.container);
+                assert_eq!(actual.workspace, r.workspace);
+            }
+            assert_eq!(
+                records.get(if block {
+                    "work-container-0"
+                } else {
+                    "work-container"
+                }),
+                Some(&Some(r.container))
+            );
+        }
+    }
+}
 pub fn check() {
     for block in [false, true] {
         for scenario in [
@@ -300,6 +443,21 @@ pub fn check() {
                     events: events.clone(),
                 },
             };
+            store
+                .retain_recovery_resources(&lease, Some(&r))
+                .unwrap_or_else(|e| {
+                    assert_eq!(scenario, "stale");
+                    let _ = e;
+                });
+            if scenario != "stale" {
+                let (retained_lease, retained) = store.interrupted_recovery(OWNER).unwrap();
+                assert_eq!(retained_lease.generation, 7);
+                assert_eq!(retained.container, r.container);
+                assert_eq!(retained.started_at, r.started_at);
+                assert_eq!(retained.workspace, r.workspace);
+            } else {
+                assert!(store.interrupted_recovery(OWNER).is_err());
+            }
             let mut context = CleanupContext::new(
                 if scenario == "epoch" {
                     Resources {
@@ -307,7 +465,10 @@ pub fn check() {
                         ..r.clone()
                     }
                 } else {
-                    r.clone()
+                    store
+                        .interrupted_recovery(OWNER)
+                        .map(|(_, r)| r)
+                        .unwrap_or_else(|_| r.clone())
                 },
                 lease.clone(),
             );

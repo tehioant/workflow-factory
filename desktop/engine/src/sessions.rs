@@ -49,14 +49,14 @@ pub fn valid_slot(id: &str) -> Result<(), Error> {
         Ok(())
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Lease {
     pub slot: String,
     pub owner: String,
     pub generation: u32,
 }
 /// Positive current-cache readback and resource removal; never accepted from IPC.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CompletionReceipt {
     pub(crate) lease: Lease,
     pub(crate) reusable: bool,
