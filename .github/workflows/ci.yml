@@ -47,10 +47,18 @@ jobs:
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            desktop/target
-          key: desktop-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-debug0-noincremental-${{ hashFiles('desktop/Cargo.lock') }}
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            desktop/target/.rustc_info.json
+            desktop/target/debug/.fingerprint
+            desktop/target/debug/build
+            desktop/target/debug/deps/*.rlib
+            desktop/target/debug/deps/*.rmeta
+            desktop/target/debug/deps/*.dylib
+            desktop/target/debug/deps/*.so
+            desktop/target/debug/deps/*.d
+          key: desktop-deps-v2-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-debug0-noincremental-${{ hashFiles('desktop/Cargo.lock') }}
       - name: Linux native build libraries
         if: runner.os == 'Linux'
         run: |
