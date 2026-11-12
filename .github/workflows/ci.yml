@@ -59,6 +59,8 @@ jobs:
             desktop/target/debug/deps/*.so
             desktop/target/debug/deps/*.d
           key: desktop-deps-v2-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-debug0-noincremental-${{ hashFiles('desktop/Cargo.lock') }}
+          restore-keys: |
+            desktop-deps-v2-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-debug0-noincremental-
       - name: Linux native build libraries
         if: runner.os == 'Linux'
         run: |
