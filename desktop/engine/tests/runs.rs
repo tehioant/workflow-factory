@@ -558,6 +558,70 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
         .map(Result::unwrap)
         .collect();
     assert_eq!(before, after);
+    // Corrupt stored identities never suppress healthy rows or become cursors.
+    for bad_id in [
+        "corrupt-id".to_string(),
+        "z".repeat(36),
+        format!("{CONFIG}{}", "x".repeat(2 * 1024 * 1024)),
+    ] {
+        c.execute(
+            "INSERT INTO runs VALUES(?1,?2,'{}',?3,'{}',0)",
+            params![
+                bad_id,
+                format!("bad-{}", bad_id.len()),
+                snapshot.to_string()
+            ],
+        )
+        .unwrap();
+        let mut cursor = None;
+        let mut seen = Vec::new();
+        loop {
+            let page = store
+                .list_run_history(DEFINITION, cursor.as_deref(), 1)
+                .unwrap();
+            assert!(page.unavailable_records);
+            assert!(!page.unknown_scope_records);
+            seen.extend(page.entries.iter().map(|entry| entry.id.clone()));
+            assert!(seen.len() <= 4, "pagination did not advance");
+            match page.next_cursor {
+                Some(next) => {
+                    assert_ne!(cursor.as_ref(), Some(&next));
+                    cursor = Some(next);
+                }
+                None => break,
+            }
+        }
+        assert_eq!(seen.len(), 4);
+        assert_eq!(
+            seen.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            4
+        );
+        assert!(store
+            .list_run_history(DEFINITION, Some(&bad_id), 1)
+            .is_err());
+        assert!(store.run_detail(DEFINITION, &bad_id).is_err());
+        c.execute("DELETE FROM runs WHERE id=?1", [bad_id]).unwrap();
+    }
+    // Unscopable oversized/malformed snapshots produce a global, not workflow-attributed warning.
+    for raw in [
+        "{".to_string(),
+        format!("{}{}", snapshot, " ".repeat(2 * 1024 * 1024)),
+        serde_json::json!({"definition":{"definition":{"id":CONFIG}},"padding":"x".repeat(2 * 1024 * 1024)}).to_string(),
+    ] {
+        c.execute(
+            "INSERT INTO runs VALUES(?1,'unscopable','{}',?2,'{}',0)",
+            params![CONFIG, raw],
+        )
+        .unwrap();
+        let page = store.list_run_history(DEFINITION, None, 1).unwrap();
+        assert!(page.unknown_scope_records);
+        assert!(!page.unavailable_records);
+        assert_eq!(page.entries.len(), 1);
+        assert!(!page.entries[0].unavailable);
+        assert!(store.list_run_history(DEFINITION, Some(CONFIG), 1).is_err());
+        assert!(store.run_detail(DEFINITION, CONFIG).is_err());
+        c.execute("DELETE FROM runs WHERE id=?1", [CONFIG]).unwrap();
+    }
     // Same captured projection invariant, now with explicit multiblock evidence and refusals.
     let mut multi = snapshot.clone();
     multi["definition"]["definition"]["blocks"][0]["prompt"] = serde_json::json!("A own");

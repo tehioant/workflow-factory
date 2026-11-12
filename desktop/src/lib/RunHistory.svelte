@@ -45,6 +45,8 @@
     <button disabled={listBusy||cursor===null} onclick={()=>navigate(null)}>Newest page</button>
     <button disabled={listBusy||!page?.nextCursor} onclick={()=>navigate(page!.nextCursor)}>Older runs</button>
     {#if listError}<p role="alert">{listError}</p>{/if}
+    {#if page?.unavailableRecords}<p role="status">Some retained records for this workflow have unsafe identities and are unavailable. Healthy runs remain listed.</p>{/if}
+    {#if page?.unknownScopeRecords}<p role="status">Some retained records cannot be scoped safely (oversized or malformed capture). They may belong to other workflows and are not listed.</p>{/if}
     {#if listBusy}<p role="status">Loading retained runs…</p>{/if}
     <ul>{#each page?.entries??[] as entry (entry.id)}
       <li><button aria-pressed={selected===entry.id} onclick={()=>selectRun(entry.id)}>Run {entry.id} · {entry.state??'unavailable'}</button><p>{entry.inputSummary||'No captured input values'}</p>{#if entry.unavailable}<p>Captured details unavailable</p>{/if}</li>

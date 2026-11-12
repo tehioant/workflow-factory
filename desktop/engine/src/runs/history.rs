@@ -7,7 +7,9 @@ use ts_rs::TS;
 
 const MAX_ROW: usize = 2 * 1024 * 1024;
 const SCOPE: &str =
-    "CASE WHEN json_valid(snapshot) THEN json_extract(snapshot,'$.definition.definition.id') END";
+    "CASE WHEN length(CAST(snapshot AS BLOB))<=2097152 THEN CASE WHEN json_valid(snapshot) THEN json_extract(snapshot,'$.definition.definition.id') END END";
+// Return the exact stored ID or NULL, never a truncated or normalized identity.
+const SAFE_ID: &str = "CASE WHEN length(CAST(id AS BLOB))=36 THEN CASE WHEN substr(id,9,1)='-' AND substr(id,14,1)='-' AND substr(id,19,1)='-' AND substr(id,24,1)='-' AND length(replace(id,'-',''))=32 AND id NOT GLOB '*[^0-9a-fA-F-]*' THEN id END END";
 
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +26,8 @@ pub struct HistoryPage {
     pub cursor: Option<String>,
     pub entries: Vec<HistoryEntry>,
     pub next_cursor: Option<String>,
+    pub unavailable_records: bool,
+    pub unknown_scope_records: bool,
 }
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -269,7 +273,9 @@ impl Store {
         let tx = c.transaction().map_err(storage)?;
         let boundary: Option<i64> = if let Some(id) = cursor {
             identity(id)?;
-            let sql = format!("SELECT rowid FROM runs WHERE id=?1 AND {SCOPE}=?2");
+            let sql = format!(
+                "SELECT rowid FROM runs WHERE id=?1 AND {SAFE_ID} IS NOT NULL AND {SCOPE}=?2"
+            );
             Some(
                 tx.query_row(&sql, params![id, workflow], |r| r.get(0))
                     .optional()
@@ -279,7 +285,11 @@ impl Store {
         } else {
             None
         };
-        let sql = format!("SELECT substr(id,1,37) FROM runs WHERE {SCOPE}=?1 AND (?2 IS NULL OR rowid<?2) ORDER BY rowid DESC LIMIT ?3");
+        let warnings = format!("SELECT EXISTS(SELECT 1 FROM runs WHERE {SCOPE}=?1 AND {SAFE_ID} IS NULL), EXISTS(SELECT 1 FROM runs WHERE {SCOPE} IS NULL)");
+        let (unavailable_records, unknown_scope_records) = tx
+            .query_row(&warnings, [workflow], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(storage)?;
+        let sql = format!("SELECT {SAFE_ID} FROM runs WHERE {SCOPE}=?1 AND {SAFE_ID} IS NOT NULL AND (?2 IS NULL OR rowid<?2) ORDER BY rowid DESC LIMIT ?3");
         let mut query = tx.prepare(&sql).map_err(storage)?;
         let ids = query
             .query_map(params![workflow, boundary, limit + 1], |r| {
@@ -329,6 +339,8 @@ impl Store {
             cursor: cursor.map(str::to_string),
             entries,
             next_cursor,
+            unavailable_records,
+            unknown_scope_records,
         })
     }
 }

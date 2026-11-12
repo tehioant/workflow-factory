@@ -2,7 +2,7 @@
 export type SignInStatus = { state: string, url: string | null, code: string | null, message: string, };
 export type StartRun = { requestId: string, definitionId: string, expectedRevision: number, expectedConfigurationRevision: number, expectedConfigurationRevisions?: { [key in string]: number }, supplied: { [key in string]: string }, };
 export type HistoryEntry = { id: string, state: RunState | null, inputSummary: string, unavailable: boolean, };
-export type HistoryPage = { definitionId: string, cursor: string | null, entries: Array<HistoryEntry>, nextCursor: string | null, };
+export type HistoryPage = { definitionId: string, cursor: string | null, entries: Array<HistoryEntry>, nextCursor: string | null, unavailableRecords: boolean, unknownScopeRecords: boolean, };
 export type CapturedBlock = { blockId: string, configuration: SavedConfiguration | null, result: BlockResult | null, };
 export type RunDetail = { id: string, definitionId: string, definition: SavedDefinition, inputs: PreparedInputs, imageId: string, state: RunState, cleanupPending: boolean, diagnostic: string, finalResponse: string | null, legacy: boolean, legacyConfiguration: SavedConfiguration | null, blocks: Array<CapturedBlock>, };
 export type RunState = "admitted" | "running" | "succeeded" | "failed" | "stopped" | "blocked" | "held";

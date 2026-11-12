@@ -14,6 +14,13 @@ retained row order, not an invented execution date.
 - The list accepts 1–50 entries (UI: 20), reads one extra ID for pagination,
   and returns at most 240 UTF-8 bytes of input summary per entry.
 - Run-ID cursors must exist under the requested captured workflow identity.
+- Every scope expression uses lazy SQL CASE to cap snapshot bytes before any
+  JSON function, including list scans, cursor checks and warning diagnostics.
+  Unsafe stored IDs are never copied, truncated or normalized into entries or
+  cursors. A typed page warning marks unavailable scoped identities; healthy
+  valid-ID rows retain their keyset order and remain accessible across pages.
+  A separate warning marks unscopable malformed/oversized captures anywhere in
+  the retained store: it does not claim they belong to the selected workflow.
 - Detailed stored request + snapshot + status JSON is capped at 2 MiB **before**
   Rust materialization. Request IDs and list IDs are bounded in SQL too. Input
   expansion is bounded before historical preparation/validation.

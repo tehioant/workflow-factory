@@ -115,11 +115,12 @@ test('fhistory mounted selected capture rejects stale identities and renders onl
   const pending:any[]=[];
   const commands=createCommands(((command:string,args:any)=>new Promise((resolve,reject)=>pending.push({command,args,resolve,reject}))) as any);
   const settle=async()=>{await Promise.resolve();await Promise.resolve();flushSync();};
-  const page=(cursor:string|null=null)=>({definitionId:'workflow',cursor,entries:['a','b'].map(id=>({id,state:'held',inputSummary:'雪 <img src=x>',unavailable:false})),nextCursor:cursor?null:'b'});
+  const page=(cursor:string|null=null)=>({definitionId:'workflow',cursor,entries:['a','b'].map(id=>({id,state:'held',inputSummary:'雪 <img src=x>',unavailable:false})),nextCursor:cursor?null:'b',unavailableRecords:true,unknownScopeRecords:true});
   const capture=(id:string)=>({id,definitionId:'workflow',definition:{revision:8,definition:{id:'workflow',name:'Captured <img src=x>',isolation:'perBlock',blocks:[{id:'first',name:'Captured first',prompt:'Own <script>bad</script>'}],connections:[],inputs:[]}},inputs:{values:{topic:'Captured input'},prompts:{first:'Prepared <img>'}},imageId:'retained-image',state:'held',cleanupPending:true,diagnostic:'held <script>',finalResponse:'Durable <img onerror=bad>',legacy:false,legacyConfiguration:null,blocks:[{blockId:'first',configuration:{revision:4,config:{name:'Settings <img>',model:'captured-model',reasoning:'high'}},result:{state:'succeeded',resolvedPrompt:'Actual <script>',finalResponse:'Predecessor durable'}},{blockId:'successor',configuration:null,result:null}]});
   const click=(text:string)=>{const button=Array.from(target.querySelectorAll('button')).find(b=>b.textContent.includes(text));assert.ok(button,text);button.click();flushSync();};
   flushSync(()=>{component=mount(Component,{target,props:{commands,definitionId:'workflow'}});});
   assert.deepEqual(pending[0].args,{definitionId:'workflow',cursor:null,limit:20});assert.equal(pending[0].command,'list_run_history');pending[0].resolve(page());await settle();
+  assert.ok(target.textContent.includes('unsafe identities'));assert.ok(target.textContent.includes('may belong to other workflows'));
   click('Run a');assert.equal(pending[1].command,'run_detail');assert.deepEqual(pending[1].args,{definitionId:'workflow',id:'a'});
   click('Run b');pending[1].resolve(capture('a'));await settle();assert.ok(target.textContent.includes('Loading captured details'));assert.ok(!target.textContent.includes('captured-model'));
   pending[2].resolve(capture('b'));await settle();
