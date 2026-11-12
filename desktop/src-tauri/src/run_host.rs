@@ -121,6 +121,8 @@ fn retry_cleanup_with<P: workflow_engine::sandbox::Pipe>(
     }
     let chosen = finality.as_mut().ok_or_else(cleanup_hold)?;
     if chosen.receipt.is_none() {
+        // Best effort only: journal refusal must not block mandatory cache cleanup.
+        let _ = store.retain_final_settlement(chosen);
         if let Some(receipt) = sandbox.finish_unstaged_cleanup(store, &chosen.lease)? {
             chosen.receipt = Some(receipt);
         } else {
@@ -814,22 +816,32 @@ mod tests {
                 match a.as_slice() {
                     ["container", "ls", "-a", "--no-trunc", "--filter", f, "--format", "{{.ID}}"]
                     | ["network", "ls", "--no-trunc", "--filter", f, "--format", "{{.ID}}"] => {
-                        assert!(f.strip_prefix("id=").is_some_and(|s| s.len() == 64))
+                        let id = f.strip_prefix("id=").unwrap();
+                        assert!([
+                            "a".repeat(64),
+                            "b".repeat(64),
+                            "c".repeat(64),
+                            "d".repeat(64)
+                        ]
+                        .iter()
+                        .any(|known| known == id));
                     }
                     _ => panic!("unexpected native recovery process {a:?}"),
                 };
                 Ok((0, vec![], vec![]))
             }
         }
-        struct Secure(Vec<u8>);
+        struct Secure(Vec<u8>, usize, usize);
         impl SecureStore for Secure {
             fn read(&mut self, slot: &str) -> Result<Vec<u8>, workflow_engine::Error> {
                 assert_eq!(slot, "selected-slot");
+                self.1 += 1;
                 Ok(self.0.clone())
             }
             fn write(&mut self, slot: &str, b: &[u8]) -> Result<(), workflow_engine::Error> {
                 assert_eq!(slot, "selected-slot");
                 assert_eq!(b, self.0);
+                self.2 += 1;
                 Ok(())
             }
         }
@@ -899,7 +911,7 @@ mod tests {
         )
         .unwrap();
         let mut sandbox = Sandbox { pipe: Absent };
-        let mut secure = Secure(cache);
+        let mut secure = Secure(cache, 0, 0);
         super::retry_cleanup_with(&store, id, &mut sandbox, &mut secure).unwrap();
         assert_eq!(
             c.query_row("SELECT active FROM runs WHERE id=?1", [id], |r| r
@@ -944,6 +956,128 @@ mod tests {
             &mut ForbiddenSecure,
         )
         .unwrap();
+        // Independent prepared publication windows: no execute/admit/stage precursor.
+        for retain_memory in [true, false] {
+            c.execute(
+                "UPDATE runs SET status=?2,active=1 WHERE id=?1",
+                rusqlite::params![id, status.to_string()],
+            )
+            .unwrap();
+            c.execute("UPDATE managed_sessions SET state='quarantined',owner=?1,generation=7 WHERE id='selected-slot'", [id]).unwrap();
+            c.execute(
+                "UPDATE run_queue SET phase='occupied' WHERE run_id=?1",
+                [id],
+            )
+            .unwrap();
+            c.execute("DELETE FROM run_resources WHERE run_id=?1 AND kind NOT IN ('work-container','egress-helper','private-network','egress-network')", [id]).unwrap();
+            c.execute(
+                "UPDATE run_recovery SET resources=?2,finality=NULL WHERE run_id=?1",
+                rusqlite::params![id, metadata.to_string()],
+            )
+            .unwrap();
+            let chosen = workflow_engine::runs::settlement::FinalSettlement {
+                lease: lease.clone(),
+                text: Some("durable output".into()),
+                diagnostic: "chosen same-process success".into(),
+                success: true,
+                receipt: None,
+            };
+            c.execute_batch("CREATE TRIGGER refuse_choice BEFORE UPDATE OF finality ON run_recovery BEGIN SELECT RAISE(FAIL,'synthetic chosen journal refusal'); END;").unwrap();
+            assert!(store.retain_final_settlement(&chosen).is_err());
+            let writes = secure.2;
+            let reads = secure.1;
+            let result = sandbox.finish_cleanup(
+                &store,
+                &lease,
+                &mut workflow_engine::sandbox::CleanupContext::new(r.clone(), lease.clone()),
+                &mut secure,
+                true,
+            );
+            assert!(
+                secure.2 > writes && secure.1 >= reads + 3,
+                "mandatory current-cache write/readback must run"
+            );
+            let removals: i64 = c.query_row("SELECT count(*) FROM run_resources WHERE run_id=?1 AND kind IN ('final-agent-remove','helper-remove','private-network-remove','egress-network-remove') AND resource_id IS NOT NULL", [id], |row| row.get(0)).unwrap();
+            assert_eq!(
+                removals, 4,
+                "positive exact-ID cleanup receipts must survive journal refusal"
+            );
+            assert!(
+                result.is_err(),
+                "missing durable chosen finality must forbid reusable publication after cleanup"
+            );
+            assert!(store.retained_final_settlement(id).unwrap().is_none());
+            let held: (String, String, u32) = c
+                .query_row(
+                    "SELECT state,owner,generation FROM managed_sessions WHERE id='selected-slot'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(held, ("quarantined".into(), id.into(), 7));
+            assert_eq!(
+                c.query_row("SELECT phase FROM run_queue WHERE run_id=?1", [id], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+                "occupied"
+            );
+            assert_eq!(
+                c.query_row(
+                    "SELECT resources FROM run_recovery WHERE run_id=?1",
+                    [id],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+                metadata.to_string()
+            );
+            c.execute_batch("DROP TRIGGER refuse_choice;").unwrap();
+            if retain_memory {
+                *super::final_claim(id).unwrap().lock().unwrap() = Some(chosen.clone());
+            }
+            super::retry_cleanup_with(&store, id, &mut sandbox, &mut secure).unwrap();
+            let settled = store.retained_final_settlement(id).unwrap().unwrap();
+            assert_eq!(settled.success, retain_memory);
+            assert_eq!(settled.text.as_deref(), Some("durable output"));
+            assert!(settled.receipt.is_some());
+            if retain_memory {
+                assert_eq!(settled.diagnostic, chosen.diagnostic);
+            } else {
+                assert!(settled
+                    .diagnostic
+                    .contains("Uncommitted volatile output is unavailable"));
+            }
+            let disposition: (String, u32) = c
+                .query_row(
+                    "SELECT state,generation FROM managed_sessions WHERE id='selected-slot'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                disposition,
+                if retain_memory {
+                    ("available".into(), 8)
+                } else {
+                    ("quarantined".into(), 7)
+                }
+            );
+            assert_eq!(
+                c.query_row("SELECT phase FROM run_queue WHERE run_id=?1", [id], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+                "settled"
+            );
+            super::retry_cleanup_with(
+                &store,
+                id,
+                &mut Sandbox { pipe: Forbidden },
+                &mut ForbiddenSecure,
+            )
+            .unwrap();
+            super::retry_outputs(&store, id).unwrap();
+        }
         let partial = "00000000-0000-4000-8000-000000000138";
         c.execute("INSERT INTO runs VALUES(?1,'partial','{}','{}',?2,1)",rusqlite::params![partial,serde_json::json!({"id":partial,"requestId":"partial","state":"held","cleanupPending":true,"diagnostic":"partial","finalResponse":null,"blocks":[]}).to_string()]).unwrap();
         c.execute(
@@ -1088,6 +1222,15 @@ mod tests {
             }
         }
         let mut secure = Secure(cache.clone(), 0);
+        store
+            .retain_final_settlement(&workflow_engine::runs::settlement::FinalSettlement {
+                lease: lease.clone(),
+                text: Some(text.into()),
+                diagnostic: "Prepared completed outcome".into(),
+                success: true,
+                receipt: None,
+            })
+            .unwrap();
         let receipt = store
             .finish_owned_session_receipt(&lease, &cache, &mut secure, true, || Ok(()))
             .unwrap();
