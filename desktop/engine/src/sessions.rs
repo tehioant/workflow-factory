@@ -1,5 +1,5 @@
 //! App-owned serialized managed-cache metadata. Secrets never enter SQLite or DTOs.
-use crate::{params, storage, validation, Error, Store, TransactionBehavior};
+use crate::{params, storage, validation, Error, OptionalExtension, Store, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 pub const CACHE_LIMIT: usize = 65536;
@@ -26,6 +26,12 @@ pub struct ManagedSessionStatus {
 pub trait SecureStore {
     fn read(&mut self, slot: &str) -> Result<Vec<u8>, Error>;
     fn write(&mut self, slot: &str, cache: &[u8]) -> Result<(), Error>;
+    /// Success means the exact item is positively absent, including after deletion.
+    fn retire(&mut self, _slot: &str) -> Result<(), Error> {
+        Err(validation(
+            "Secure-store retirement unavailable; slot remains quarantined.",
+        ))
+    }
 }
 pub fn validate_cache(cache: &[u8]) -> Result<(), Error> {
     if cache.len() > CACHE_LIMIT {
@@ -73,6 +79,67 @@ pub struct SignInStatus {
     pub message: String,
 }
 impl Store {
+    pub fn retire_quarantined(
+        &self,
+        secure: &mut impl SecureStore,
+        cleanup: impl FnOnce(&str, &[(String, Option<String>)]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let mut c = rusqlite::Connection::open(&self.path).map_err(storage)?;
+        let tx = c
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let (slot, owner): (String, String) = tx
+            .query_row(
+                "SELECT id,owner FROM managed_sessions WHERE state='quarantined'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(storage)?;
+        let records = {
+            let mut q = tx
+                .prepare("SELECT kind,resource_id FROM run_resources WHERE run_id=?1")
+                .map_err(storage)?;
+            let rows = q
+                .query_map([&owner], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(storage)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(storage)?
+        };
+        // Explicit irreversible retirement, not writeback or reuse. On any error
+        // the quarantined metadata remains and the same operation can be retried.
+        cleanup(&owner, &records)?;
+        secure.retire(&slot)?;
+        tx.execute("DELETE FROM run_resources WHERE run_id=?1", [&owner])
+            .map_err(storage)?;
+        let body: Option<String> = tx
+            .query_row("SELECT status FROM runs WHERE id=?1", [&owner], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(storage)?;
+        if let Some(body) = body {
+            let mut s: crate::runs::RunStatus = serde_json::from_str(&body).map_err(storage)?;
+            s.state = crate::runs::RunState::Stopped;
+            s.cleanup_pending = false;
+            s.diagnostic = "Explicit retirement: owned resources and old secure item confirmed absent. Fresh authorization required.".into();
+            tx.execute(
+                "UPDATE runs SET active=0,status=?1 WHERE id=?2",
+                params![serde_json::to_string(&s).map_err(storage)?, owner],
+            )
+            .map_err(storage)?;
+        }
+        tx.execute(
+            "DELETE FROM managed_sessions WHERE id=?1 AND state='quarantined'",
+            [&slot],
+        )
+        .map_err(storage)?;
+        tx.commit().map_err(storage)
+    }
+    /// Metadata only, for the native per-operation scope display. No credential read.
+    pub fn available_session_scope(&self) -> Result<String, Error> {
+        let c = rusqlite::Connection::open(&self.path).map_err(storage)?;
+        let (slot,generation):(String,u32)=c.query_row("SELECT id,generation FROM managed_sessions WHERE state='available' ORDER BY id LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|_|validation("No app-owned managed session is available."))?;
+        Ok(format!("Session: {slot} generation {generation}"))
+    }
     pub fn begin_acquisition(&self) -> Result<Lease, Error> {
         let mut c = rusqlite::Connection::open(&self.path).map_err(storage)?;
         let tx = c

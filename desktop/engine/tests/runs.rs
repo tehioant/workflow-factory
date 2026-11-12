@@ -81,6 +81,7 @@ fn c02_duplicate_request_reads_original_without_current_configuration() {
     let s = status();
     seed_run(&c, &s, true);
     c.execute("DELETE FROM configurations", []).unwrap();
+    assert_eq!(store.recorded_run(&request()).unwrap().unwrap().id, s.id);
     assert_eq!(store.admit_run(request(), observation()).unwrap().id, s.id);
     assert_eq!(
         c.query_row("SELECT COUNT(*) FROM runs", [], |r| r.get::<_, u32>(0))
@@ -178,4 +179,105 @@ fn c08_scoped_stop_keeps_output_and_ownership_hold() {
             .unwrap(),
         1
     );
+}
+
+#[test]
+fn c12_unclaimed_stop_releases_only_reservation_without_any_resource_intent() {
+    for (state, intent, safe) in [
+        (RunState::Admitted, false, true),
+        (RunState::Admitted, true, false),
+        (RunState::Running, false, false),
+        (RunState::Held, false, false),
+    ] {
+        let (_dir, store, c) = prepared();
+        let mut s = status();
+        s.state = state;
+        seed_run(&c, &s, true);
+        c.execute(
+            "INSERT INTO managed_sessions VALUES('slot','leased',7,'owned')",
+            [],
+        )
+        .unwrap();
+        if intent {
+            c.execute(
+                "INSERT INTO run_resources VALUES('owned','work-container',NULL)",
+                [],
+            )
+            .unwrap();
+        }
+        let stopped = store.stop_run("owned").unwrap();
+        assert_eq!(
+            stopped.state,
+            if safe {
+                RunState::Stopped
+            } else {
+                RunState::Held
+            }
+        );
+        assert_eq!(stopped.cleanup_pending, !safe);
+        let (active, session): (bool, String) = c
+            .query_row(
+                "SELECT active,(SELECT state FROM managed_sessions) FROM runs",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(active, !safe);
+        assert_eq!(session, if safe { "available" } else { "leased" });
+        assert!(store.claim_run("owned").unwrap().is_none());
+    }
+}
+#[test]
+fn c13_quarantine_retirement_requires_positive_resource_and_secure_item_absence() {
+    struct RetireStore(bool);
+    impl SecureStore for RetireStore {
+        fn read(&mut self, _: &str) -> Result<Vec<u8>, workflow_engine::Error> {
+            panic!("old grant must never be read")
+        }
+        fn write(&mut self, _: &str, _: &[u8]) -> Result<(), workflow_engine::Error> {
+            panic!("old grant must never be copied")
+        }
+        fn retire(&mut self, _: &str) -> Result<(), workflow_engine::Error> {
+            self.0 = true;
+            Ok(())
+        }
+    }
+    for absent in [false, true] {
+        let (_dir, store, c) = prepared();
+        c.execute(
+            "INSERT INTO managed_sessions VALUES(?1,'quarantined',7,?1)",
+            [DEFINITION],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO run_resources VALUES(?1,'work-container',NULL)",
+            [DEFINITION],
+        )
+        .unwrap();
+        let mut secure = RetireStore(false);
+        let result = store.retire_quarantined(&mut secure, |owner, records| {
+            assert_eq!(owner, DEFINITION);
+            assert_eq!(records, &[("work-container".into(), None)]);
+            if absent {
+                Ok(())
+            } else {
+                Err(workflow_engine::Error::Validation {
+                    message: "absence unconfirmed".into(),
+                })
+            }
+        });
+        assert_eq!(result.is_ok(), absent);
+        assert_eq!(secure.0, absent);
+        assert_eq!(
+            c.query_row("SELECT COUNT(*) FROM managed_sessions", [], |r| r
+                .get::<_, u32>(0))
+                .unwrap(),
+            if absent { 0 } else { 1 }
+        );
+        if absent {
+            let fresh = store.begin_acquisition().unwrap();
+            assert_ne!(fresh.slot, DEFINITION);
+            assert_eq!(fresh.owner, fresh.slot);
+        }
+    }
 }

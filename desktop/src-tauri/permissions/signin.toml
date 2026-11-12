@@ -1,4 +1,4 @@
 [[permission]]
 identifier = "managed-signin"
 description = "Secret device prompt is restricted to the dedicated local native sign-in window."
-commands.allow = ["begin_session_sign_in", "read_session_sign_in", "cancel_session_sign_in"]
+commands.allow = ["begin_session_sign_in", "read_session_sign_in", "cancel_session_sign_in", "retire_session_sign_in"]

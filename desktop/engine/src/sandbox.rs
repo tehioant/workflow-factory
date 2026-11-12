@@ -231,6 +231,7 @@ impl<P: Pipe> Sandbox<P> {
                 "--network",
                 network,
                 "--read-only",
+                "--init",
                 "--user",
                 "1000:1000",
                 "--cap-drop",
@@ -247,6 +248,8 @@ impl<P: Pipe> Sandbox<P> {
                 pids,
                 "--log-driver",
                 "none",
+                "--ulimit",
+                "core=0:0",
                 "--tmpfs",
                 "/tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=700",
             ])
@@ -265,7 +268,7 @@ impl<P: Pipe> Sandbox<P> {
             "--tmpfs",
             "/run/wf-codex:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000,mode=700",
             "--tmpfs",
-            "/workspace:rw,nosuid,nodev,size=256m,uid=1000,gid=1000,mode=700",
+            "/workspace:rw,exec,nosuid,nodev,size=256m,uid=1000,gid=1000,mode=700",
             "--env",
             "HOME=/run/wf-codex",
             "--env",
@@ -303,7 +306,7 @@ impl<P: Pipe> Sandbox<P> {
             &[],
             131072,
         )?;
-        self.inspect_work(&r)?;
+        self.inspect_phase(&r, false)?;
         self.success(&strings(&["start", &r.helper]), &[], 131072)?;
         self.success(&strings(&["start", &r.container]), &[], 131072)?;
         self.inspect_work(&r)?;
@@ -344,6 +347,9 @@ impl<P: Pipe> Sandbox<P> {
         Ok(row.clone())
     }
     pub fn inspect_work(&mut self, r: &Resources) -> Result<(), Error> {
+        self.inspect_phase(r, true)
+    }
+    pub fn inspect_phase(&mut self, r: &Resources, started: bool) -> Result<(), Error> {
         if !image(&r.image) {
             return Err(validation("Immutable runtime image required."));
         }
@@ -369,10 +375,14 @@ impl<P: Pipe> Sandbox<P> {
             || helper_config["MemorySwap"] != 134217728u64
             || helper_config["PidsLimit"] != 32
             || helper_networks.len() != 2
-            || !helper_networks
-                .values()
-                .any(|n| n["NetworkID"] == r.network)
-            || !helper_networks.values().any(|n| n["NetworkID"] == r.outer)
+            || (started
+                && (!helper_networks
+                    .values()
+                    .any(|n| n["NetworkID"] == r.network)
+                    || !helper_networks.values().any(|n| n["NetworkID"] == r.outer)))
+            || (!started
+                && (!helper_networks.contains_key(&format!("wf-private-{}", r.owner))
+                    || !helper_networks.contains_key(&format!("wf-outer-{}", r.owner))))
         {
             return Err(validation("Applied provider helper containment changed."));
         }
@@ -382,6 +392,7 @@ impl<P: Pipe> Sandbox<P> {
         ] {
             if network["Containers"].as_object().is_none_or(|containers| {
                 containers.keys().any(|id| !allowed.contains(&id.as_str()))
+                    || (started && containers.len() != allowed.len())
             }) {
                 return Err(validation("Unexpected network member; execution withheld."));
             }
@@ -401,10 +412,19 @@ impl<P: Pipe> Sandbox<P> {
             }
         }
         for host in [h, helper_config] {
+            if !host["Ulimits"].as_array().is_some_and(|a| {
+                a.iter()
+                    .any(|v| v["Name"] == "core" && v["Soft"] == 0 && v["Hard"] == 0)
+            }) {
+                return Err(validation("Container core dumps not disabled."));
+            }
             for field in ["Binds", "Devices", "DeviceRequests", "CapAdd"] {
                 if !host[field].is_null() && host[field].as_array().is_none_or(|a| !a.is_empty()) {
                     return Err(validation("Unexpected sandbox host access."));
                 }
+            }
+            if host["Init"] != true {
+                return Err(validation("Sandbox orphan reaper unavailable."));
             }
             if host["PublishAllPorts"] == true
                 || host["PortBindings"]
@@ -418,8 +438,28 @@ impl<P: Pipe> Sandbox<P> {
                 ));
             }
         }
-        let exactly_private =
-            networks.len() == 1 && networks.values().all(|n| n["NetworkID"] == r.network);
+        let exactly_private = networks.len() == 1
+            && if started {
+                networks.values().all(|n| n["NetworkID"] == r.network)
+            } else {
+                networks.contains_key(&format!("wf-private-{}", r.owner))
+            };
+        for (path, executable) in [
+            ("/workspace", true),
+            ("/run/wf-codex", false),
+            ("/tmp", false),
+        ] {
+            let options = h["Tmpfs"][path]
+                .as_str()
+                .unwrap_or("")
+                .split(',')
+                .collect::<Vec<_>>();
+            if executable && (!options.contains(&"exec") || options.contains(&"noexec"))
+                || !executable && !options.contains(&"noexec")
+            {
+                return Err(validation("Tmpfs execution policy changed."));
+            }
+        }
         if c["Image"] != r.image
             || c["Config"]["User"] != "1000:1000"
             || h["ReadonlyRootfs"] != true
@@ -449,6 +489,7 @@ impl<P: Pipe> Sandbox<P> {
     }
     pub fn start_login(&mut self, r: &Resources) -> Result<(), Error> {
         self.inspect_work(r)?;
+        self.check_no_swap(r)?;
         self.success(
             &strings(&[
                 "exec",
@@ -516,13 +557,17 @@ impl<P: Pipe> Sandbox<P> {
         )?;
         Ok(())
     }
-    pub fn stage(&mut self, r: &Resources, cache: &[u8]) -> Result<(), Error> {
-        crate::sessions::validate_cache(cache)?;
-        self.inspect_work(r)?;
+    fn check_no_swap(&mut self, r: &Resources) -> Result<(), Error> {
         let swap=self.success(&strings(&["exec",&r.container,"node","-e","process.stdout.write(require('node:fs').readFileSync('/sys/fs/cgroup/memory.swap.max','utf8'))"]),&[],1024)?;
         if swap != b"0\n" && swap != b"0" {
             return Err(validation("Applied container no-swap policy unavailable."));
         }
+        Ok(())
+    }
+    pub fn stage(&mut self, r: &Resources, cache: &[u8]) -> Result<(), Error> {
+        crate::sessions::validate_cache(cache)?;
+        self.inspect_work(r)?;
+        self.check_no_swap(r)?;
         self.success(
             &strings(&[
                 "exec",
@@ -579,6 +624,85 @@ impl<P: Pipe> Sandbox<P> {
         )?;
         crate::sessions::validate_cache(&cache)?;
         Ok(cache)
+    }
+    /// Dedicated explicit retirement only, with no worker allowed to remain active.
+    /// Failed inspect is never absence. Discover by owner label, verify exact IDs,
+    /// remove only positively owned objects, then require successful empty lists.
+    pub fn retire_owned(
+        &mut self,
+        owner: &str,
+        records: &[(String, Option<String>)],
+    ) -> Result<(), Error> {
+        crate::sessions::valid_slot(owner)?;
+        for kind in ["container", "network"] {
+            let mut args = strings(&[
+                kind,
+                "ls",
+                "--no-trunc",
+                "--filter",
+                &format!("label=org.workflow-factory.owner={owner}"),
+                "--format",
+                "{{.ID}}",
+            ]);
+            if kind == "container" {
+                args.push("-a".into());
+            }
+            let bytes = self.success(&args, &[], 131072)?;
+            let text = std::str::from_utf8(&bytes).map_err(crate::storage)?;
+            for id in text.split_whitespace() {
+                self.owned(kind, id, owner)?;
+                let rm = if kind == "container" {
+                    strings(&["rm", "-f", id])
+                } else {
+                    strings(&["network", "rm", id])
+                };
+                self.success(&rm, &[], 131072)?;
+            }
+            if self
+                .success(&args, &[], 131072)?
+                .iter()
+                .any(|b| !b.is_ascii_whitespace())
+            {
+                return Err(validation("Owned retirement absence unconfirmed."));
+            }
+            for (record_kind, id) in records {
+                let expected = if record_kind.ends_with("network") {
+                    "network"
+                } else {
+                    "container"
+                };
+                if expected != kind {
+                    continue;
+                }
+                if let Some(id) = id {
+                    if !opaque(id) {
+                        return Err(validation("Invalid recorded resource."));
+                    }
+                    let mut exact = strings(&[
+                        kind,
+                        "ls",
+                        "--no-trunc",
+                        "--filter",
+                        &format!("id={id}"),
+                        "--format",
+                        "{{.ID}}",
+                    ]);
+                    if kind == "container" {
+                        exact.push("-a".into());
+                    }
+                    if self
+                        .success(&exact, &[], 131072)?
+                        .iter()
+                        .any(|b| !b.is_ascii_whitespace())
+                    {
+                        return Err(validation(
+                            "Recorded resource remains; retirement withheld.",
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
     pub fn cleanup(&mut self, r: &Resources) -> Result<(), Error> {
         for id in [&r.container, &r.helper] {

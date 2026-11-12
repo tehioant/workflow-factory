@@ -141,11 +141,35 @@ async fn runtime_setup_plan() -> Result<workflow_engine::runtime::SetupPlan, Err
 }
 #[tauri::command]
 async fn start_run(
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     state: tauri::State<'_, Database>,
     request: workflow_engine::runs::StartRun,
 ) -> Result<workflow_engine::runs::RunStatus, Error> {
-    let status = database(&state, move |s| s.admit_run(request, run_host::admission())).await?;
+    if window.label() != "main" {
+        return Err(Error::Validation {
+            message: "Use the local main window.".into(),
+        });
+    }
+    let scope = format!(
+        "Data: {}\nRequest: {}\nDefinition: {} revision {}\nConfiguration revision: {}",
+        state.directory.display(),
+        request.request_id,
+        request.definition_id,
+        request.expected_revision,
+        request.expected_configuration_revision
+    );
+    let status = database(&state, move |s| {
+        if let Some(original) = s.recorded_run(&request)? {
+            return Ok(original);
+        }
+        let admission = run_host::admission();
+        if admission.blocker.is_none() {
+            run_host::confirm(&format!("{scope}\n{}", s.available_session_scope()?))?;
+        }
+        s.admit_run(request, admission)
+    })
+    .await?;
     if status.state == workflow_engine::runs::RunState::Admitted {
         let directory = state.directory.clone();
         let id = status.id.clone();
@@ -284,6 +308,33 @@ async fn cancel_session_sign_in(
             message: "Native sign-in cancellation unconfirmed; ownership remains held.".into(),
         })?
 }
+#[tauri::command]
+async fn retire_session_sign_in(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Database>,
+) -> Result<workflow_engine::sessions::SignInStatus, Error> {
+    signin_only(&window)?;
+    let directory = state.directory.clone();
+    let signin = app.state::<Arc<signin_host::SignIn>>().inner().clone();
+    let active = app.state::<Arc<ActiveRuns>>().inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Hold worker registration exclusion through the retirement transaction.
+        let runs = active.0.lock().map_err(|_| Error::Busy {
+            message: "Execution ownership unavailable.".into(),
+        })?;
+        if !runs.is_empty() {
+            return Err(Error::Busy {
+                message: "Wait for the active worker to stop before retirement.".into(),
+            });
+        }
+        signin_host::retire(&directory, &signin)
+    })
+    .await
+    .map_err(|_| Error::Busy {
+        message: "Retirement interrupted; ownership remains withheld.".into(),
+    })?
+}
 struct DataLock {
     _file: std::fs::File,
 }
@@ -354,7 +405,8 @@ fn main() {
             open_session_sign_in,
             begin_session_sign_in,
             read_session_sign_in,
-            cancel_session_sign_in
+            cancel_session_sign_in,
+            retire_session_sign_in
         ])
         .run(tauri::generate_context!())
         .expect("desktop host failed");

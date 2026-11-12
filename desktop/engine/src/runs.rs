@@ -55,13 +55,17 @@ impl Store {
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
-        let (body, snapshot): (String, String) = tx
+        let row: Option<(String, String)> = tx
             .query_row(
                 "SELECT status,snapshot FROM runs WHERE id=?1 AND active=1",
                 [id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
+            .optional()
             .map_err(storage)?;
+        let Some((body, snapshot)) = row else {
+            return Ok(None);
+        };
         let mut status: RunStatus = serde_json::from_str(&body).map_err(storage)?;
         if status.state != RunState::Admitted {
             return Ok(None);
@@ -147,6 +151,28 @@ impl Store {
         tx.commit().map_err(storage)
     }
 
+    /// Resolve a retry before native preflight/confirmation; never read a new
+    /// session or mutable configuration to report an existing request outcome.
+    pub fn recorded_run(&self, request: &StartRun) -> Result<Option<RunStatus>, Error> {
+        let c = rusqlite::Connection::open(&self.path).map_err(storage)?;
+        let row: Option<(String, String)> = c
+            .query_row(
+                "SELECT request,status FROM runs WHERE request_id=?1",
+                [&request.request_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(storage)?;
+        row.map(|(original, status)| {
+            if original != serde_json::to_string(request).map_err(storage)? {
+                return Err(validation(
+                    "Request identity already binds different inputs or revisions.",
+                ));
+            }
+            serde_json::from_str(&status).map_err(storage)
+        })
+        .transpose()
+    }
     pub fn admit_run(&self, request: StartRun, admission: Admission) -> Result<RunStatus, Error> {
         if request.request_id.len() != 36 || uuid::Uuid::parse_str(&request.request_id).is_err() {
             return Err(validation("Request identity must be a UUID."));
@@ -285,7 +311,31 @@ impl Store {
         if s.id != id {
             return Err(storage("run identity"));
         }
-        if matches!(
+        let intent: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM run_resources WHERE run_id=?1)",
+                [id],
+                |r| r.get(0),
+            )
+            .map_err(storage)?;
+        if s.state == RunState::Admitted && !intent {
+            // The same IMMEDIATE transaction excludes claim and intent races. Only
+            // this unclaimed reservation is safe to release; never a running lease.
+            let released = tx.execute("UPDATE managed_sessions SET state='available',owner=NULL WHERE owner=?1 AND state='leased'", [id]).map_err(storage)?;
+            if released != 1 {
+                return Err(storage("Unclaimed reservation ownership changed"));
+            }
+            s.state = RunState::Stopped;
+            s.cleanup_pending = false;
+            s.diagnostic =
+                "Stopped before worker claim; no resource intent exists. Reservation released."
+                    .into();
+            tx.execute(
+                "UPDATE runs SET status=?1,active=0 WHERE id=?2 AND active=1",
+                params![serde_json::to_string(&s).map_err(storage)?, id],
+            )
+            .map_err(storage)?;
+        } else if matches!(
             s.state,
             RunState::Admitted | RunState::Running | RunState::Held
         ) {

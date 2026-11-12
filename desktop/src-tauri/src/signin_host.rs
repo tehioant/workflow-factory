@@ -30,6 +30,10 @@ pub fn begin(directory: &std::path::Path, state: &SignIn) -> Result<SignInStatus
     if let Some(blocker) = admission.blocker {
         return Ok(status("blocked", &blocker));
     }
+    crate::run_host::confirm(&format!(
+        "Acquire one fresh app-owned session. Data: {}",
+        directory.display()
+    ))?;
     let store = Store::open(directory)?;
     let lease = store.begin_acquisition()?;
     let mut sandbox = Sandbox { pipe: NativePipe };
@@ -42,8 +46,15 @@ pub fn begin(directory: &std::path::Path, state: &SignIn) -> Result<SignInStatus
             return Err(error);
         }
     };
-    sandbox.start_login(&resources)?;
+    // Install ownership BEFORE the fallible start so the surface can cancel it.
     *pending = Some(Pending { resources, lease });
+    if sandbox
+        .start_login(&pending.as_ref().expect("installed").resources)
+        .is_err()
+    {
+        store.quarantine_session(&pending.as_ref().expect("installed").lease)?;
+        return Ok(status("cleanupRequired", "Login start failed. Cancel setup to remove owned resources; then explicitly retire the quarantined slot before a fresh sign-in."));
+    }
     Ok(status("pending","Complete the provider device sign-in yourself. Codes are transient in this dedicated native surface only."))
 }
 pub fn read(directory: &std::path::Path, state: &SignIn) -> Result<SignInStatus, Error> {
@@ -65,6 +76,23 @@ pub fn read(directory: &std::path::Path, state: &SignIn) -> Result<SignInStatus,
   Some(_)=>{let store=Store::open(directory)?;store.quarantine_session(&p.lease)?;sandbox.cleanup(&p.resources)?;*pending=None;Ok(status("failed","Provider sign-in failed. No usable session published. Raw login output withheld."))}
  }
 }
+pub fn retire(directory: &std::path::Path, state: &SignIn) -> Result<SignInStatus, Error> {
+    let pending = state.0.try_lock().map_err(|_| Error::Busy {
+        message: "Sign-in operation running.".into(),
+    })?;
+    if pending.is_some() {
+        return Err(Error::Busy {
+            message: "Cancel pending setup first.".into(),
+        });
+    }
+    crate::run_host::confirm(&format!("Permanently retire the quarantined session and its owned resources. Its old grant will NEVER be reused. Fresh provider authorization is required. Data: {}",directory.display()))?;
+    let store = Store::open(directory)?;
+    store.retire_quarantined(
+        &mut crate::sessions_host::NativeSecureStore,
+        |owner, records| Sandbox { pipe: NativePipe }.retire_owned(owner, records),
+    )?;
+    Ok(status("retired","Old secure item and owned resources confirmed absent. Begin a fresh authorization; no grant was cloned."))
+}
 pub fn cancel(directory: &std::path::Path, state: &SignIn) -> Result<SignInStatus, Error> {
     let mut pending = state.0.try_lock().map_err(|_| Error::Busy {
         message: "Sign-in operation running.".into(),
@@ -73,7 +101,15 @@ pub fn cancel(directory: &std::path::Path, state: &SignIn) -> Result<SignInStatu
         let store = Store::open(directory)?;
         store.quarantine_session(&p.lease)?;
         let mut sandbox = Sandbox { pipe: NativePipe };
-        sandbox.cleanup(&p.resources)?;
+        sandbox.retire_owned(
+            &p.lease.owner,
+            &[
+                ("work-container".into(), Some(p.resources.container.clone())),
+                ("egress-helper".into(), Some(p.resources.helper.clone())),
+                ("private-network".into(), Some(p.resources.network.clone())),
+                ("egress-network".into(), Some(p.resources.outer.clone())),
+            ],
+        )?;
     }
     *pending = None;
     Ok(status(

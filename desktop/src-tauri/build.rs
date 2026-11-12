@@ -19,6 +19,7 @@ fn main() {
             "begin_session_sign_in",
             "read_session_sign_in",
             "cancel_session_sign_in",
+            "retire_session_sign_in",
         ]),
     ))
     .expect("desktop build configuration");

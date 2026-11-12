@@ -14,6 +14,17 @@ fn entry(slot: &str) -> Result<keyring::Entry, Error> {
     keyring::Entry::new("org.workflow-factory.desktop.managed.v1", slot).map_err(|_| unavailable())
 }
 impl SecureStore for NativeSecureStore {
+    fn retire(&mut self, slot: &str) -> Result<(), Error> {
+        let item = entry(slot)?;
+        match item.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(_) => return Err(unavailable()),
+        }
+        match item.get_secret() {
+            Err(keyring::Error::NoEntry) => Ok(()),
+            _ => Err(unavailable()),
+        }
+    }
     fn read(&mut self, slot: &str) -> Result<Vec<u8>, Error> {
         let value = entry(slot)?.get_secret().map_err(|_| unavailable())?;
         if value.len() > CACHE_LIMIT {
