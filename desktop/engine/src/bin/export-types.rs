@@ -10,6 +10,10 @@ fn main() {
     let declarations = [
         workflow_engine::sessions::SignInStatus::decl(&config),
         workflow_engine::runs::StartRun::decl(&config),
+        workflow_engine::runs::history::HistoryEntry::decl(&config),
+        workflow_engine::runs::history::HistoryPage::decl(&config),
+        workflow_engine::runs::history::CapturedBlock::decl(&config),
+        workflow_engine::runs::history::RunDetail::decl(&config),
         workflow_engine::runs::RunState::decl(&config),
         workflow_engine::runs::BlockResult::decl(&config),
         workflow_engine::runs::RunStatus::decl(&config),

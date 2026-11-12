@@ -13,6 +13,8 @@ fn main() {
             "runtime_setup_plan",
             "start_run",
             "run_status",
+            "list_run_history",
+            "run_detail",
             "stop_run",
             "managed_session_status",
             "open_session_sign_in",

@@ -2,6 +2,8 @@ import type { Readiness, SetupPlan, SaveConfiguration, SavedConfiguration, AuthR
 export type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 export function createCommands(invoke: Invoke) {
   return {
+    listRunHistory: (definitionId:string,cursor:string|null=null,limit=20) => invoke<import('./transport.ts').HistoryPage>('list_run_history',{definitionId,cursor,limit}),
+    runDetail: (definitionId:string,id:string) => invoke<import('./transport.ts').RunDetail>('run_detail',{definitionId,id}),
     openSessionSignIn: () => invoke<void>('open_session_sign_in'),
     startRun: (request: import('./transport.ts').StartRun) => invoke<import('./transport.ts').RunStatus>('start_run', {request}),
     runStatus: (id: string | null = null) => invoke<import('./transport.ts').RunStatus | null>('run_status', {id}),

@@ -1,4 +1,5 @@
 //! Durable sequential admission. External effects never occur inside a transaction.
+pub mod history;
 use crate::{
     params, read_configuration, resolve_inputs, storage, stored_definition, validation, Error,
     OptionalExtension, Store, TransactionBehavior,
