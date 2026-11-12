@@ -1073,6 +1073,138 @@ impl SecureStore for FailingStore {
 }
 #[test]
 fn c05_writeback_failure_quarantines_and_never_destroys_tmpfs() {
+    use workflow_engine::sessions::Lease;
+    // Prepared final persistence boundary: no worker, Docker, preflight or keyring.
+    for (reusable, cleanup_ok) in [(true, true), (false, true), (false, false)] {
+        let (_dir, store, c) = prepared();
+        seed_run(&c, &status(), true);
+        let mut sibling = status();
+        sibling.id = "sibling".into();
+        sibling.request_id = "sibling-request".into();
+        seed_run(&c, &sibling, true);
+        let sibling_before = store.run_status("sibling").unwrap().diagnostic;
+        c.execute(
+            "INSERT INTO managed_sessions VALUES('slot','leased',7,'owned')",
+            [],
+        )
+        .unwrap();
+        c.execute("INSERT INTO run_queue(run_id,phase,slot,generation) VALUES('owned','occupied','slot',7)",[]).unwrap();
+        let lease = Lease {
+            slot: "slot".into(),
+            owner: "owned".into(),
+            generation: 7,
+        };
+        let cache = FailingStore(false).read("slot").unwrap();
+        let mut cleaned = false;
+        let receipt = store.finish_owned_session_receipt(
+            &lease,
+            &cache,
+            &mut FailingStore(false),
+            reusable,
+            || {
+                cleaned = true;
+                if cleanup_ok {
+                    Ok(())
+                } else {
+                    Err(workflow_engine::Error::Storage {
+                        message: "synthetic cleanup uncertainty".into(),
+                    })
+                }
+            },
+        );
+        assert!(cleaned);
+        assert_eq!(receipt.is_ok(), cleanup_ok);
+        let finality = workflow_engine::runs::settlement::FinalSettlement {
+            lease: lease.clone(),
+            text: Some("retained".into()),
+            diagnostic: "Prepared final outcome".into(),
+            success: reusable,
+            receipt: receipt.ok(),
+        };
+        if !reusable {
+            assert!(store
+                .finish_run("owned", None, "arbitrary clean bool", true, false)
+                .is_err());
+        }
+        if !cleanup_ok {
+            assert!(store.settle_run(&finality).is_err());
+            assert_eq!(
+                c.query_row(
+                    "SELECT phase FROM run_queue WHERE run_id='owned'",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+                "occupied"
+            );
+            continue;
+        }
+        // A committed cache/cleanup receipt survives a final status-write failure.
+        for drift in ["generation", "state", "owner"] {
+            let sql = match drift {
+                "generation" => "UPDATE managed_sessions SET generation=99 WHERE id='slot'",
+                "state" => "UPDATE managed_sessions SET state='acquiring' WHERE id='slot'",
+                _ => "UPDATE managed_sessions SET owner='sibling' WHERE id='slot'",
+            };
+            c.execute(sql, []).unwrap();
+            assert!(store.settle_run(&finality).is_err());
+            c.execute(
+                "UPDATE managed_sessions SET state=?1,owner=?2,generation=?3 WHERE id='slot'",
+                params![
+                    if reusable { "available" } else { "quarantined" },
+                    if reusable { None } else { Some("owned") },
+                    if reusable { 8 } else { 7 }
+                ],
+            )
+            .unwrap();
+        }
+        c.execute_batch("CREATE TRIGGER deny_final BEFORE UPDATE ON runs BEGIN SELECT RAISE(FAIL,'synthetic storage failure'); END;").unwrap();
+        assert!(store.settle_run(&finality).is_err());
+        c.execute_batch("DROP TRIGGER deny_final").unwrap();
+        for changed in ["slot", "generation", "run"] {
+            let mut stale = finality.clone();
+            match changed {
+                "slot" => stale.lease.slot = "other".into(),
+                "generation" => stale.lease.generation += 1,
+                _ => stale.lease.owner = "sibling".into(),
+            };
+            assert!(store.settle_run(&stale).is_err());
+        }
+        store.settle_run(&finality).unwrap();
+        let expected = if reusable {
+            RunState::Succeeded
+        } else {
+            RunState::Failed
+        };
+        assert_eq!(store.run_status("owned").unwrap().state, expected);
+        assert!(!store.run_status("owned").unwrap().cleanup_pending);
+        // Loss-of-ack exact repeat cannot issue any status/session/queue write.
+        c.execute_batch("CREATE TRIGGER no_run_write BEFORE UPDATE ON runs BEGIN SELECT RAISE(FAIL,'unexpected write'); END; CREATE TRIGGER no_session_write BEFORE UPDATE ON managed_sessions BEGIN SELECT RAISE(FAIL,'unexpected write'); END; CREATE TRIGGER no_queue_write BEFORE UPDATE ON run_queue BEGIN SELECT RAISE(FAIL,'unexpected write'); END;").unwrap();
+        store.settle_run(&finality).unwrap();
+        let mut conflict = finality.clone();
+        conflict.text = Some("late overwrite".into());
+        assert!(store.settle_run(&conflict).is_err());
+        conflict = finality.clone();
+        conflict.success = !conflict.success;
+        assert!(store.settle_run(&conflict).is_err());
+        assert_eq!(
+            store.run_status("sibling").unwrap().diagnostic,
+            sibling_before
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT state||':'||generation FROM managed_sessions WHERE id='slot'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            if reusable {
+                "available:8"
+            } else {
+                "quarantined:7"
+            }
+        );
+    }
     for write_fails in [true, false] {
         let (_dir, store, c) = prepared();
         seed_run(&c, &status(), true);

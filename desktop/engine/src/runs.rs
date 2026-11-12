@@ -2,6 +2,7 @@
 pub mod history;
 pub mod inspection;
 pub mod queue;
+pub mod settlement;
 use crate::{
     params, read_configuration, resolve_inputs, storage, stored_definition, validation, Error,
     OptionalExtension, Store, TransactionBehavior,

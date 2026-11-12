@@ -55,6 +55,12 @@ pub struct Lease {
     pub owner: String,
     pub generation: u32,
 }
+/// Positive current-cache readback and resource removal; never accepted from IPC.
+#[derive(Clone)]
+pub struct CompletionReceipt {
+    pub(crate) lease: Lease,
+    pub(crate) reusable: bool,
+}
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedSessionStatus {
@@ -360,6 +366,17 @@ impl Store {
         reusable: bool,
         cleanup: impl FnOnce() -> Result<(), Error>,
     ) -> Result<(), Error> {
+        self.finish_owned_session_receipt(lease, cache, secure, reusable, cleanup)
+            .map(|_| ())
+    }
+    pub fn finish_owned_session_receipt(
+        &self,
+        lease: &Lease,
+        cache: &[u8],
+        secure: &mut impl SecureStore,
+        reusable: bool,
+        cleanup: impl FnOnce() -> Result<(), Error>,
+    ) -> Result<CompletionReceipt, Error> {
         let (slot, owner, generation) =
             (lease.slot.as_str(), lease.owner.as_str(), lease.generation);
         let _publication = cache_publication_guard()?;
@@ -403,6 +420,13 @@ impl Store {
         drop(_publication);
         cleanup()?;
         if reusable && c.execute("UPDATE managed_sessions SET state='available',owner=NULL,generation=generation+1 WHERE id=?1 AND owner=?2 AND generation=?3 AND state='quarantined'",params![slot,owner,generation]).map_err(storage)?!=1{return Err(validation("Session completion ownership changed."));}
-        Ok(())
+        let matches:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM managed_sessions WHERE id=?1 AND ((?4 AND state='available' AND owner IS NULL AND generation=?3+1) OR (NOT ?4 AND state='quarantined' AND owner=?2 AND generation=?3)))",params![slot,owner,generation,reusable],|r|r.get(0)).map_err(storage)?;
+        if !matches {
+            return Err(validation("Session completion ownership changed."));
+        }
+        Ok(CompletionReceipt {
+            lease: lease.clone(),
+            reusable,
+        })
     }
 }

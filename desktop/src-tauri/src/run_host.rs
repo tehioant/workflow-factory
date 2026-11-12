@@ -1,7 +1,24 @@
 //! Native observations only. No IPC flag can establish platform qualification.
 use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use workflow_engine::runs::Admission;
+type FinalClaim = Arc<Mutex<Option<workflow_engine::runs::settlement::FinalSettlement>>>;
+fn final_claims() -> &'static Mutex<BTreeMap<String, FinalClaim>> {
+    static CLAIMS: OnceLock<Mutex<BTreeMap<String, FinalClaim>>> = OnceLock::new();
+    CLAIMS.get_or_init(Mutex::default)
+}
+fn final_claim(id: &str) -> Result<FinalClaim, workflow_engine::Error> {
+    let mut claims = final_claims().lock().map_err(|_| output_hold())?;
+    if let Some(claim) = claims.get(id) {
+        return Ok(claim.clone());
+    }
+    if claims.len() >= 8 {
+        return Err(output_hold());
+    }
+    let claim = Arc::new(Mutex::new(None));
+    claims.insert(id.into(), claim.clone());
+    Ok(claim)
+}
 fn outputs() -> &'static Mutex<BTreeMap<String, String>> {
     static OUTPUTS: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
     OUTPUTS.get_or_init(Mutex::default)
@@ -11,10 +28,25 @@ fn output_hold() -> workflow_engine::Error {
 }
 struct PendingOutput(String);
 fn retain_output(id: &str, text: String) -> Result<PendingOutput, workflow_engine::Error> {
-    outputs()
-        .lock()
-        .map_err(|_| output_hold())?
-        .insert(id.into(), text);
+    if text.len() > 262144 {
+        return Err(output_hold());
+    }
+    let mut pending = outputs().lock().map_err(|_| output_hold())?;
+    let run = id.split('/').next().unwrap_or(id);
+    if !pending.keys().any(|key| key.split('/').next() == Some(run))
+        && pending
+            .keys()
+            .map(|key| key.split('/').next())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            >= 8
+    {
+        return Err(output_hold());
+    }
+    if pending.get(id).is_some_and(|previous| previous != &text) {
+        return Err(output_hold());
+    }
+    pending.insert(id.into(), text);
     Ok(PendingOutput(id.into()))
 }
 impl PendingOutput {
@@ -32,28 +64,60 @@ pub fn retry_outputs(
     store: &workflow_engine::Store,
     selected: &str,
 ) -> Result<(), workflow_engine::Error> {
+    let claim = final_claims()
+        .lock()
+        .map_err(|_| output_hold())?
+        .get(selected)
+        .cloned();
+    let Some(claim) = claim else {
+        return retry_selected_outputs(selected, |id, block, text| match block {
+            Some(block) => store.retain_block_output(id, block, text),
+            None => store.retain_run_output(id, text),
+        });
+    };
+    let mut finality = claim.lock().map_err(|_| output_hold())?;
     retry_selected_outputs(selected, |id, block, text| match block {
         Some(block) => store.retain_block_output(id, block, text).map(|_| ()),
         None => store.retain_run_output(id, text).map(|_| ()),
-    })
+    })?;
+    if let Some(receipt) = finality.as_ref() {
+        store.settle_run(receipt)?;
+        *finality = None;
+        final_claims()
+            .lock()
+            .map_err(|_| output_hold())?
+            .remove(selected);
+    }
+    Ok(())
 }
 fn retry_selected_outputs(
     selected: &str,
     mut persist: impl FnMut(&str, Option<&str>, &str) -> Result<(), workflow_engine::Error>,
 ) -> Result<(), workflow_engine::Error> {
-    let mut pending = outputs().lock().map_err(|_| output_hold())?;
+    let pending: Vec<_> = outputs()
+        .lock()
+        .map_err(|_| output_hold())?
+        .iter()
+        .filter(|(key, _)| key.split('/').next() == Some(selected))
+        .map(|(key, text)| (key.clone(), text.clone()))
+        .collect();
     let mut failed = false;
-    pending.retain(|key, text| {
+    for (key, text) in pending {
         let (id, block) = key
             .split_once('/')
             .map_or((key.as_str(), None), |(id, block)| (id, Some(block)));
         if id != selected {
-            return true;
+            continue;
         }
-        let keep = persist(id, block, text).is_err();
+        let keep = persist(id, block, &text).is_err();
         failed |= keep;
-        keep
-    });
+        if !keep {
+            let mut outputs = outputs().lock().map_err(|_| output_hold())?;
+            if outputs.get(&key) == Some(&text) {
+                outputs.remove(&key);
+            }
+        }
+    }
     if !failed {
         Ok(())
     } else {
@@ -93,6 +157,9 @@ pub fn execute(
     let Ok(Some((snapshot, lease))) = store.claim_run(&id) else {
         return;
     };
+    let Ok(claim) = final_claim(&id) else {
+        return;
+    };
     let mut sandbox = Sandbox { pipe: NativePipe };
     let mut secure = crate::sessions_host::NativeSecureStore;
     let result = (|| {
@@ -118,6 +185,8 @@ pub fn execute(
         let mut secrets = Vec::new();
         let mut completed = 0;
         let mut capture_block = None;
+        let mut last_text = None;
+        let mut storage_interrupted = false;
         let final_result = loop {
             if completed > 0 && completed < snapshot.plans.len() {
                 resources = sandbox.switch_block_environment(
@@ -133,6 +202,7 @@ pub fn execute(
                 )?;
             }
             let mut pending_output = None;
+            let mut current_valid_output = false;
             let step = store.execute_next_block(
                 &id,
                 &lease,
@@ -194,6 +264,8 @@ pub fn execute(
                         publication.final_response.ok_or_else(||workflow_engine::Error::Validation{message:"Final response unavailable.".into()})
                     })().map_err(|_|workflow_engine::Error::Validation{message:"Diagnostic publication incomplete or unavailable; no uncommitted retained-byte claim. Mandatory credential recovery remains independent.".into()});
                     if let Ok(text) = &final_result {
+                        current_valid_output = true;
+                        last_text = Some(text.clone());
                         pending_output = Some(retain_output(&key, text.clone())?);
                     }
                     final_result
@@ -207,11 +279,20 @@ pub fn execute(
                 Ok(true) => {
                     completed += 1;
                     if completed == snapshot.plans.len() {
-                        break Ok(store.run_status(&id)?.final_response.unwrap_or_default());
+                        break Ok(last_text.clone().unwrap_or_default());
                     }
                 }
-                Ok(false) => break Ok(store.run_status(&id)?.final_response.unwrap_or_default()),
-                Err(error @ workflow_engine::Error::Storage { .. }) => return Err(error),
+                Ok(false) => break Ok(last_text.clone().unwrap_or_default()),
+                Err(error @ workflow_engine::Error::Storage { .. }) => {
+                    if !cache_ready {
+                        return Err(error);
+                    }
+                    storage_interrupted = true;
+                    if completed + 1 == snapshot.plans.len() && current_valid_output {
+                        break Ok(last_text.clone().unwrap());
+                    }
+                    break Err(error);
+                }
                 Err(error) => {
                     if !cache_ready {
                         return Err(error);
@@ -262,11 +343,33 @@ pub fn execute(
             )?;
             Ok(())
         });
-        store.finish_owned_session(
+        // The per-run claim serializes the producer with explicit storage replay.
+        // No global map lock is held across secure-store, cleanup or SQLite I/O.
+        let mut finality = claim.lock().map_err(|_| output_hold())?;
+        let success = final_result.is_ok();
+        let diagnostic = if success {
+            if artifact_result.is_ok() {
+                "Completed; immutable sanitized artifacts captured; cache persisted and resources removed."
+            } else {
+                "Completed; artifacts unavailable or incomplete; cache persisted and resources removed."
+            }
+        } else if storage_interrupted {
+            "Block output storage interrupted the pipeline; no successor executed. Current cache persisted and resources removed; session quarantined."
+        } else {
+            "Provider execution or output validation failed. Current cache persisted and resources removed; session quarantined. Explicit reauthentication required; no retry or failover."
+        };
+        *finality = Some(workflow_engine::runs::settlement::FinalSettlement {
+            lease: lease.clone(),
+            text: last_text.clone(),
+            diagnostic: diagnostic.into(),
+            success,
+            receipt: None,
+        });
+        let receipt = store.finish_owned_session_receipt(
             &lease,
             &latest_cache,
             &mut secure,
-            final_result.is_ok(),
+            success,
             || {
                 if resources.workspace.is_some() {
                     sandbox.cleanup_block_resources(&resources, |kind, resource| {
@@ -277,14 +380,27 @@ pub fn execute(
                 }
             },
         )?;
-        let artifact_message = if artifact_result.is_ok() {
-            "Completed; immutable sanitized artifacts captured; cache persisted and resources removed."
-        } else {
-            "Completed; artifacts unavailable or incomplete; cache persisted and resources removed."
-        };
-        match final_result {Ok(text)=>store.finish_run(&id,Some(text),artifact_message,true,true),Err(_)=>store.finish_run(&id,None,"Provider execution or output validation failed. Current cache persisted and resources removed; session quarantined. Explicit reauthentication required; no retry or failover.",false,false)}
+        finality.as_mut().unwrap().receipt = Some(receipt);
+        // Replay pending text first. This grants storage authority only, never execution.
+        retry_selected_outputs(&id, |id, block, text| match block {
+            Some(block) => store.retain_block_output(id, block, text),
+            None => store.retain_run_output(id, text),
+        })?;
+        store.settle_run(finality.as_ref().unwrap())?;
+        *finality = None;
+        final_claims()
+            .lock()
+            .map_err(|_| output_hold())?
+            .remove(&id);
+        Ok(())
     })();
     if result.is_err() {
+        if claim
+            .lock()
+            .is_ok_and(|finality| finality.as_ref().is_some_and(|f| f.receipt.is_some()))
+        {
+            return;
+        }
         let _ = store.quarantine_session(&lease);
         let _=store.finish_run(&id,None,"Execution or secure-cache cleanup failed. Ownership and session remain withheld. No automatic retry.",false,false);
     }
@@ -452,6 +568,105 @@ mod tests {
                 .is_err()
         );
         super::outputs().lock().unwrap().remove("unrelated/a");
+        // Prepared persistence boundary through the existing explicit-retry consumer.
+        // NativeSecureStore, Docker, confirmation and preflight are not constructed.
+        let root = std::env::temp_dir().join(format!("settlement-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = workflow_engine::Store::open(&root).unwrap();
+        let db = rusqlite::Connection::open(root.join("definitions.sqlite3")).unwrap();
+        let status = serde_json::json!({"id":"native-selected","requestId":"prepared","state":"running","finalResponse":null,"diagnostic":"","cleanupPending":false,"blocks":[{"blockId":"a","state":"running","resolvedPrompt":"prepared literal","finalResponse":null}]});
+        db.execute(
+            "INSERT INTO runs VALUES('native-selected','prepared','{}','{}',?1,1)",
+            [status.to_string()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO managed_sessions VALUES('native-slot','leased',7,'native-selected')",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO run_queue(run_id,phase,slot,generation) VALUES('native-selected','occupied','native-slot',7)",[]).unwrap();
+        let lease = workflow_engine::sessions::Lease {
+            slot: "native-slot".into(),
+            owner: "native-selected".into(),
+            generation: 7,
+        };
+        let cache=br#"{"auth_mode":"chatgpt","tokens":{"login_owner_id":"synthetic","access_token":"synthetic-a","refresh_token":"synthetic-r","id_token":"a.b.c","account_id":"synthetic-account","oauth_provenance":{"issuer":"https://auth.openai.com","client_id":"synthetic-client"}}}"#.to_vec();
+        struct Secure(Vec<u8>, usize);
+        impl workflow_engine::sessions::SecureStore for Secure {
+            fn read(&mut self, slot: &str) -> Result<Vec<u8>, workflow_engine::Error> {
+                assert_eq!(slot, "native-slot");
+                self.1 += 1;
+                Ok(self.0.clone())
+            }
+            fn write(&mut self, slot: &str, bytes: &[u8]) -> Result<(), workflow_engine::Error> {
+                assert_eq!(slot, "native-slot");
+                self.0 = bytes.to_vec();
+                Ok(())
+            }
+        }
+        let mut secure = Secure(cache.clone(), 0);
+        let receipt = store
+            .finish_owned_session_receipt(&lease, &cache, &mut secure, true, || Ok(()))
+            .unwrap();
+        assert_eq!(secure.1, 2, "previous cache plus exact writeback readback");
+        super::retain_output("native-selected/a", text.into()).unwrap();
+        super::retain_output("native-sibling/a", "sibling untouched".into()).unwrap();
+        let claim = super::final_claim("native-selected").unwrap();
+        *claim.lock().unwrap() = Some(workflow_engine::runs::settlement::FinalSettlement {
+            lease,
+            text: Some(text.into()),
+            diagnostic: "Prepared completed outcome".into(),
+            success: true,
+            receipt: Some(receipt),
+        });
+        db.execute_batch("CREATE TRIGGER deny_final BEFORE UPDATE ON runs WHEN NEW.active=0 BEGIN SELECT RAISE(FAIL,'synthetic final database failure'); END;").unwrap();
+        assert!(super::retry_outputs(&store, "native-selected").is_err());
+        assert!(claim.lock().unwrap().as_ref().unwrap().receipt.is_some());
+        assert_eq!(
+            store
+                .run_status("native-selected")
+                .unwrap()
+                .final_response
+                .as_deref(),
+            Some(text)
+        );
+        db.execute_batch("DROP TRIGGER deny_final").unwrap();
+        super::retry_outputs(&store, "native-selected").unwrap();
+        assert_eq!(
+            store.run_status("native-selected").unwrap().state,
+            workflow_engine::runs::RunState::Succeeded
+        );
+        assert!(!super::final_claims()
+            .lock()
+            .unwrap()
+            .contains_key("native-selected"));
+        assert!(super::outputs()
+            .lock()
+            .unwrap()
+            .contains_key("native-sibling/a"));
+        super::outputs().lock().unwrap().remove("native-sibling/a");
+        // Text alone cannot manufacture the positive cleanup receipt.
+        let claim = super::final_claim("native-selected").unwrap();
+        *claim.lock().unwrap() = Some(workflow_engine::runs::settlement::FinalSettlement {
+            lease: workflow_engine::sessions::Lease {
+                slot: "native-slot".into(),
+                owner: "native-selected".into(),
+                generation: 7,
+            },
+            text: Some(text.into()),
+            diagnostic: "uncertain".into(),
+            success: false,
+            receipt: None,
+        });
+        assert!(super::retry_outputs(&store, "native-selected").is_err());
+        super::final_claims()
+            .lock()
+            .unwrap()
+            .remove("native-selected");
+        drop(db);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn c11_native_security_policy_has_supported_positive_and_specific_refusals() {
