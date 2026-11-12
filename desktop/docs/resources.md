@@ -60,8 +60,108 @@ Retained external receipts under `final-fd111c2/`: `checks.json` (including actu
 release-build command/exit and unchanged-source fingerprints), `count.json`
 (**151/151**), `idle-observation/observation.json`, `native-window.png`, and
 `package-and-cleanup.json`. Later documentation-only corrections do not change
-these measured application bytes. Ubuntu 24.04 ABI/install acceptance, macOS,
-saved-canvas/log scenarios and native interaction are still unverified.
+these measured application bytes. At that historical checkpoint, Ubuntu 24.04
+ABI/install, macOS, saved-canvas/log scenarios and native interaction were unverified.
+
+## Current-feature release: actual available-host observations
+
+The unchanged release in `d15-build/artifact.json` was built from
+`6155a1b9659202e7314556586ca3019bd06fde7e` (tree identical to integrated baseline
+`ae0e5138b19f711796b92df50ae5f193271b22bb`). Observer/fixture preparation was pinned
+at `3772857e78344adeb16cfb526c4cff0f109e1cab`; later documentation does not relabel
+that release build. Executable: **18,804,416 bytes**, SHA-256
+`05501b66f3881ff7d7fcbcb8f4df1dfbf6e7ebf2a06542fc9c626a02a45e2117`.
+
+Two bounded private Xvfb/private D-Bus observations ran on Ubuntu **26.04.1 x86_64**,
+Intel Xeon E3-1231 v3 at 3.40 GHz, **8 logical CPUs**, **33,470,361,600 bytes RAM**.
+Each used fresh private HOME/XDG and the synthetic fixture below, startup polling
+30 seconds and a 60-second fixed sample phase. That whole phase includes controller
+interaction and is **not representative idle**. Conservative ready-only subsets
+exclude interaction, one second of settling and clock-bracket uncertainty:
+
+- Initial screen before first input: **10.2453 s**,
+  **87.85% of one core**,
+  peak summed RSS **589,459,456 bytes**.
+  This includes startup; it is not idle or a first-paint measurement.
+- Saved canvas after reopening: **17.2728 s**,
+  **42.44% of one core**,
+  peak summed RSS **637,759,488 bytes** (62 samples).
+- Retained-log view after scrolling: **48.7459 s**,
+  **13.31% of one core**,
+  peak summed RSS **661,819,392 bytes**
+  (173 samples).
+
+All include the Rust host and WebKit web/network helpers; RSS double-counts shared
+pages. Xvfb, private D-Bus/accessibility services and pre-existing services are not
+charged to the app. No daemon/VM, egress helper or agent workload was started.
+Both app logs contain DRI3/accelerated-rendering warnings. These headless, small
+synthetic views are not an accelerated-desktop benchmark or a "lightweight" claim.
+
+Actual native screenshots show the saved revision 1 two-block/one-edge canvas
+reopening, its directional connection, document scrolling and retained synthetic
+log text (entries 04–12 visible). A first click before window focus was a verified
+no-op; focusing only the private window then selecting the saved definition worked.
+Native next-page controls, prompt editing/save, pan/zoom, keyboard access and human
+responsiveness were **not** exercised. Current readers separately validate the
+40-entry journal as 32 + 8; that is projection evidence, not native pagination proof.
+
+External `d16-native/` retains `canvas-result.json`, `log-result.json`, screenshots,
+controller events, full raw samples/app logs in `canvas-observation/` and
+`log-observation/`, and `payload-footprint.json`. Each successful observer exited 0
+with no remaining owned identities. Independent checks found the private
+observation/app sessions empty and no same-user WebKit processes, including
+possible detached helpers. No workflow, runtime probe, auth or recovery was requested.
+The first, rejected attempt is preserved: its 125-byte activation-socket path
+failed before UI setup. An admitted 95-byte short path fixed the observation setup;
+no product/sandbox/ownership guard was changed and the failed attempt is not a pass.
+
+The current `.deb` is **5,584,754 bytes**, declared Installed-Size
+**18,429 KiB**. Its **6 regular payload files** total
+**18,810,041 apparent bytes** /
+**18,825,216 allocated bytes**; including directory/link
+metadata, the extracted tree uses **18,882,560 allocated bytes**.
+The existing shared WebKit/GTK packages declare 94,896/9,123 KiB respectively; these
+are pre-existing system costs, not incremental app costs. The product was **not
+installed**. Actual package-manager installed/marginal dependency footprint,
+Ubuntu 24.04 ABI/install and native macOS measurements remain **unverified**.
+
+## Prepared synthetic data and reproducible observation
+
+Opt-in `--prepared-fixture /absolute/private/synthetic-source` stages only with
+`--observe-idle`, into new `data/com.workflowfactory.desktop` before spawn.
+Metadata mode neither reads nor stages that fixture. No production-data discovery
+occurs. Source paths must be explicit absolute paths without `.`/`..` or symlink
+components. The root and payload directories/files must be owned/private; files
+must be regular and single-link. Originals remain read-only inputs.
+
+The <=16 KiB `synthetic-fixture.json` declares scenario
+`SYNTHETIC-neverexecuted-A-B`, a canonical run UUID, `generator_sha256`, and exactly
+two `files` entries with `bytes` and `sha256`: `definitions.sqlite3` (<=2 MiB) and
+`inspection/<run UUID>/journal` (<=1 MiB). No other paths are copied. Exclusive new
+destination directories use 0700/files 0600. The receipt binds manifest/generator,
+payload hashes/sizes/source modes and scenario. Copy refusal prevents spawn.
+A synthetic label/hash is **not universal proof of nonsensitivity**: review the
+offline generator/provenance and current read-only projections before launch
+admission. The helper is not a SQLite safety validator or arbitrary tree copier.
+
+External `d16-build/` retains the offline seed source, compile/generate/read argv,
+logs, manifest, original private fixture and separate copied projection. The seed
+contains a saved 2-block/1-edge A→B definition, multiline prompts, named synthetic
+input, nonsecret configuration/layout, terminal inactive synthetic capture/results
+and 40 small journal entries (32 + 8). Success-looking names/results/diagnostics say
+SYNTHETIC/neverexecuted; none is execution, cleanup or settlement evidence. No queue
+rows, managed sessions, resource/recovery records or credentials are prepared.
+Real saved-definition/configuration, history/detail/status and journal readers
+validate copied data; this preparation is separate from the native evidence above.
+
+For a separately admitted observation, append `--prepared-fixture` to the bounded
+command below. Reopen the saved definition/retained view manually and record actual
+content readiness and every input time. Accept the fixed idle aggregate only if
+content was ready before it and no interaction occurs within it. Otherwise retain
+raw samples and select a conservative fully ready, input-free subinterval, stating
+clock uncertainty and actual duration; reject the scenario if none exists.
+Never click Start, runtime readiness, sign-in, authorization, Stop or recovery.
+Independently cross-check WebKit helpers and all observation infrastructure cleanup.
 
 ## Candidate-bound receipts
 
@@ -76,6 +176,10 @@ still needs its real build receipt.
 
 All paths must be absolute. Output must be a **new** directory outside checkout;
 existing output is refused, never replaced. Parent directories can be created.
+Keep the complete `OUTPUT/data/com.workflowfactory.desktop/activation.sock` path
+within the host Unix-domain socket limit (below 108 encoded bytes on this Linux
+host). Prefer a short, owned private scratch root and archive regular evidence
+after cleanup; a deeply nested report directory can prevent application startup.
 Receipts include argv, timestamps, HEAD/tree, binary hash/bytes, actual OS/CPU/memory,
 optional package bytes/hash and `.deb` declared Installed-Size/Depends. Metadata
 mode works on native macOS as well, but does not measure WKWebView processes.
@@ -101,9 +205,10 @@ already installed. This tool intentionally performs no installation or mounting.
 
 ## Explicit bounded idle observation (Linux, manual opt-in)
 
-Use only an intentionally approved final candidate. No interaction/workflow is
-performed. Prepare a **private** Xvfb display and private D-Bus session explicitly,
-not the user's active desktop. For example, with Xvfb/xvfb-run/xauth installed,
+Use only an intentionally approved final candidate. The observer itself sends no
+UI input and never executes workflows. Prepare a **private** Xvfb display and
+private D-Bus session explicitly, not the user's active desktop. With
+Xvfb/xvfb-run/xauth installed,
 wrap the metadata command above with:
 
 ```sh
@@ -161,13 +266,16 @@ candidate-after fields before accepting a receipt. An error receipt is not a pas
   record its size/block/edge counts and saved revision. Manually reopen/render,
   pan/zoom, select/focus inspector and edit a prompt in the actual native webview.
   Record responsiveness/visible errors, process-tree idle cost and manual timing
-  method separately. Do not start a run or automate the UI. No such final-candidate
-  observation has been performed here.
-- **Bounded logs:** once durable run/log rendering contracts exist, use explicitly
+  method separately. Do not start a run or automate the UI. Reopen/render and
+  document scrolling were observed above; pan/zoom, inspector focus, prompt
+  editing/save and timed responsiveness remain unperformed.
+- **Bounded logs:** delivered read-only history/inspection contracts support explicitly
   prepared non-secret retained records, never a model call to generate data.
   Record row/byte counts, caps/truncation and page/cursor behavior; manually inspect
   scrolling and bounded retention while checking that canvas state is unaffected.
-  Feature/rendering absence is a completion gap, not a reason to invent evidence.
+  Native text rendering/scrolling were observed above; native page advance and
+  cap/truncation interaction remain unverified. Feature/rendering absence is a
+  completion gap, not a reason to invent evidence.
 - **Isolation variants (future, separately authorized):** hold the same definition,
   image ID, input sizes and workload constant; measure one-agent-per-run shared
   environment versus fresh-agent-per-block with shared run workspace/output only.
@@ -184,8 +292,8 @@ candidate-after fields before accepting a receipt. An error receipt is not a pas
   Desktop's VM. This Linux sampler declines rather than pretending `ps` ancestry
   is complete. Repeat on both Apple Silicon and Intel. Both remain unavailable.
 
-Both isolation procedures describe the specification, not delivered execution.
-Authentication feasibility, final saved-canvas/log scenarios, approved-host
-installation/native interaction, actual full installed/dependency footprint,
-first paint, live containment and workload measurements remain unverified. Existing
+Both isolation procedures remain unperformed methods, not measured execution.
+Authentication feasibility, remaining native editing/pan/zoom/pagination/usability,
+approved-host installation, actual full installed/dependency footprint, first paint,
+live containment and workload measurements remain unverified. Existing
 browser-app resource figures are historical and are not desktop measurements.
