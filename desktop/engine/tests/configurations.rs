@@ -23,8 +23,14 @@ fn refuses_deleting_configuration_used_by_latest_definition() {
 fn readiness_never_confuses_host_credentials_with_supported_concurrent_auth() {
     let status = workflow_engine::auth_readiness();
     assert!(!status.execution_enabled);
-    assert_eq!(status.credential_source, "notInspected");
-    assert_eq!(status.status, "unsupportedConcurrentAuth");
+    assert_eq!(
+        status.credential_source,
+        workflow_engine::CredentialSourceKind::NotInspected
+    );
+    assert_eq!(
+        status.status,
+        workflow_engine::ContainerAuthSupport::UnsupportedConcurrentAuth
+    );
     assert!(status.guidance.contains("refresh"));
 }
 #[test]

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import AuthReadinessPanel from './lib/AuthReadiness.svelte';
   import { invoke } from '@tauri-apps/api/core';
   import Button from './lib/ui/button.svelte';
   import Canvas from './lib/Canvas.svelte';
@@ -10,11 +11,10 @@
   import { editGraph } from './lib/editor.ts';
   import { createCommands } from './lib/commands.ts';
   import { emptyEditor, saveEditor, openEditor, errorMessage } from './lib/editor.ts';
-  import type { AuthReadiness, SavedConfiguration, SavedDefinition } from './lib/transport.ts';
+  import type { SavedConfiguration, SavedDefinition } from './lib/transport.ts';
   const commands = createCommands(invoke);
   let editor = $state(emptyEditor());
   let configurations = $state<SavedConfiguration[]>([]);
-  let readiness = $state<AuthReadiness|null>(null);
   let configError = $state('');
   async function refreshConfigurations(){configurations=await commands.listConfigurations();}
   let definitions = $state<SavedDefinition[]>([]);
@@ -33,7 +33,7 @@
     try { definitions = await commands.list(); listError = ''; }
     catch (error) { listError = errorMessage(error); }
   }
-  onMount(() => { busy = true; void (async()=>{await refresh();try{await refreshConfigurations();readiness=await commands.authReadiness();configError='';}catch(error){configError=errorMessage(error);}})().finally(() => { busy = false; }); });
+  onMount(() => { busy = true; void (async()=>{await refresh();try{await refreshConfigurations();configError='';}catch(error){configError=errorMessage(error);}})().finally(() => { busy = false; }); });
   async function navigate(id: string | null, discard = false) {
     if (editor.dirty && !discard) { pendingId = id; confirmDiscard = true; return; }
     confirmDiscard = false;
@@ -127,11 +127,7 @@
       <section class="editor"><h2>Your workflows, saved locally.</h2><p>Create a workflow or open one from the sidebar.</p></section>
     {/if}
     <RuntimeSettings {commands}/>
-    <section class="readiness" aria-label="Execution readiness">
-     <h2>Execution unavailable</h2><button disabled>Run workflow (blocked)</button>
-     <p>{readiness?.guidance??'Auth readiness not checked. No execution route is enabled.'}</p>
-     <p>Credential source: {readiness?.credentialSource??'notInspected'} · No container authentication or concurrent refresh verified.</p>
-     {#if configError}<p role="alert">{configError}</p>{/if}
-    </section>
+    <AuthReadinessPanel {commands}/>
+    {#if configError}<p role="alert">{configError}</p>{/if}
   </main>
 </div>
