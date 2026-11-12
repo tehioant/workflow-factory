@@ -1,4 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod inspection_commands;
+mod inspection_host;
 #[cfg(any(target_os = "macos", test))]
 mod mac_security;
 mod run_host;
@@ -245,6 +247,21 @@ async fn run_status(
     })
     .await
 }
+async fn history_database<T: Send + 'static>(
+    state: &Database,
+    action: impl FnOnce(workflow_engine::runs::history::HistoryReader) -> Result<T, Error>
+        + Send
+        + 'static,
+) -> Result<T, Error> {
+    let root = state.directory.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        action(workflow_engine::runs::history::HistoryReader::open(&root)?)
+    })
+    .await
+    .map_err(|_| Error::Storage {
+        message: "Captured history unavailable.".into(),
+    })?
+}
 #[tauri::command]
 async fn list_run_history(
     state: tauri::State<'_, Database>,
@@ -252,7 +269,7 @@ async fn list_run_history(
     cursor: Option<String>,
     limit: u32,
 ) -> Result<workflow_engine::runs::history::HistoryPage, Error> {
-    database(&state, move |s| {
+    history_database(&state, move |s| {
         s.list_run_history(&definition_id, cursor.as_deref(), limit)
     })
     .await
@@ -263,7 +280,7 @@ async fn run_detail(
     definition_id: String,
     id: String,
 ) -> Result<workflow_engine::runs::history::RunDetail, Error> {
-    database(&state, move |s| s.run_detail(&definition_id, &id)).await
+    history_database(&state, move |s| s.run_detail(&definition_id, &id)).await
 }
 #[tauri::command]
 async fn stop_run(
@@ -440,7 +457,18 @@ fn main() {
             .build()?;
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                inspection_host::release(window.label());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            inspection_commands::inspect_workflow,
+            inspection_commands::inspect_subscribe,
+            inspection_commands::inspect_page,
+            inspection_commands::inspect_close,
+            inspection_commands::inspect_artifacts,
+            inspection_commands::inspect_artifact,
             list_definitions,
             load_definition,
             save_definition,

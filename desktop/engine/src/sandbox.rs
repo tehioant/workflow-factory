@@ -852,6 +852,46 @@ impl<P: Pipe> Sandbox<P> {
         }
         crate::output::Publication::decode(&bytes, &identity, secrets)
     }
+    pub fn capture_artifacts(
+        &mut self,
+        r: &Resources,
+        block: &str,
+        cache: &[u8],
+        secrets: &[String],
+        root: &std::path::Path,
+    ) -> Result<(), Error> {
+        self.inspect_work(r)?;
+        if self.live_epoch(r)?
+            != r.started_at
+                .clone()
+                .ok_or_else(|| validation("Artifact epoch unavailable."))?
+        {
+            return Err(validation("Artifact epoch changed."));
+        }
+        crate::sessions::validate_cache(cache)?;
+        let identity = crate::output::DiagnosticIdentity {
+            run_id: r.owner.clone(),
+            block_id: block.into(),
+            epoch: r.started_at.clone().unwrap(),
+        };
+        let request=serde_json::to_vec(&serde_json::json!({"identity":identity,"cache":std::str::from_utf8(cache).map_err(crate::storage)?,"secrets":secrets})).map_err(crate::storage)?;
+        if request.len() > 262144 {
+            return Err(validation("Artifact request limit exceeded."));
+        }
+        let bytes = self.success(
+            &strings(&[
+                "exec",
+                "-i",
+                &r.container,
+                "node",
+                "/opt/workflow-factory/capture-artifacts.mjs",
+            ]),
+            &request,
+            1_048_576,
+        )?;
+        self.inspect_work(r)?;
+        crate::runs::inspection::artifacts::Artifacts::commit(root, &identity, &bytes, secrets)
+    }
     pub fn export(&mut self, r: &Resources) -> Result<Vec<u8>, Error> {
         self.inspect_work(r)?;
         let cache = self.success(

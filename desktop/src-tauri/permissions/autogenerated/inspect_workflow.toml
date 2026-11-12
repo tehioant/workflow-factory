@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-inspect-workflow"
+description = "Enables the inspect_workflow command without any pre-configured scope."
+commands.allow = ["inspect_workflow"]
+
+[[permission]]
+identifier = "deny-inspect-workflow"
+description = "Denies the inspect_workflow command without any pre-configured scope."
+commands.deny = ["inspect_workflow"]

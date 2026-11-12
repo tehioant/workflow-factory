@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import RunInspection from './RunInspection.svelte';
   import type { Commands } from './commands.ts';
   import type { HistoryPage, RunDetail } from './transport.ts';
-  let { commands, definitionId }: { commands: Pick<Commands,'listRunHistory'|'runDetail'>; definitionId: string } = $props();
+  let { commands, definitionId }: { commands: Commands; definitionId: string } = $props();
   let page = $state<HistoryPage|null>(null), detail = $state<RunDetail|null>(null);
   let cursor = $state<string|null>(null), selected = $state('');
   let listBusy = $state(false), detailBusy = $state(false);
@@ -39,7 +40,7 @@
 </script>
 <section class="notice" aria-label="Retained run history">
   <h2>Retained run history · read-only</h2>
-  <p>Captured records, separate from editor and active run controls. Newest retained record first; execution dates were not captured. Logs and artifacts are not included.</p>
+  <p>Captured records, separate from editor and active run controls. Newest retained record first; execution dates were not captured. Select a captured run to inspect retained logs and text artifacts.</p>
   <div aria-busy={listBusy}>
     <button disabled={listBusy} onclick={()=>readPage(definitionId,cursor)}>Refresh history page</button>
     <button disabled={listBusy||cursor===null} onclick={()=>navigate(null)}>Newest page</button>
@@ -71,6 +72,7 @@
         {#if block.configuration}<p>Captured configuration: {block.configuration.config.name} · revision {block.configuration.revision} · {block.configuration.config.model} / {block.configuration.config.reasoning}</p>{:else}<p>Per-block configuration unavailable</p>{/if}
         {#if block.result}<p>{block.result.state} · Actual retained resolved prompt</p><pre>{block.result.resolvedPrompt}</pre><p>Durable block response</p><pre>{block.result.finalResponse??'Unavailable'}</pre>{:else}<p>{detail.legacy?'Execution evidence unavailable':'Not executed: no retained block result or executed prompt'}</p>{/if}
       {/each}
+      {#key detail.id}<RunInspection {commands} {definitionId} runId={detail.id}/>{/key}
       <h4>Retained final response</h4><pre>{detail.finalResponse??'Unavailable'}</pre>
       <h4>Retained diagnostic</h4><pre>{detail.diagnostic||'None captured'}</pre>
     {/if}

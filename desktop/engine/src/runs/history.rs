@@ -61,9 +61,62 @@ fn identity(id: &str) -> Result<(), Error> {
 fn unavailable() -> Error {
     validation("Captured run unavailable: unsupported, incomplete, oversized or inconsistent retained record.")
 }
+pub struct HistoryReader {
+    store: Store,
+}
+impl HistoryReader {
+    pub fn workflow(&self, id: &str) -> Result<String, Error> {
+        identity(id)?;
+        let c = connection(&self.store)?;
+        let sql = format!("SELECT {SCOPE} FROM runs WHERE id=?1");
+        let workflow: String = c.query_row(&sql, [id], |r| r.get(0)).map_err(storage)?;
+        identity(&workflow)?;
+        detail(&c, &workflow, id)?;
+        Ok(workflow)
+    }
+    pub fn open(root: &std::path::Path) -> Result<Self, Error> {
+        use std::os::unix::fs::MetadataExt;
+        for (path, dir) in [
+            (root.to_path_buf(), true),
+            (root.join("definitions.sqlite3"), false),
+        ] {
+            let m = path.symlink_metadata().map_err(storage)?;
+            if m.uid() != unsafe { libc::geteuid() }
+                || m.mode() & 0o077 != 0
+                || m.file_type().is_symlink()
+                || if dir {
+                    !m.is_dir()
+                } else {
+                    !m.is_file() || m.nlink() != 1
+                }
+            {
+                return Err(unavailable());
+            }
+        }
+        let store = Store {
+            path: root.join("definitions.sqlite3"),
+        };
+        connection(&store)?;
+        Ok(Self { store })
+    }
+    pub fn run_detail(&self, workflow: &str, id: &str) -> Result<RunDetail, Error> {
+        self.store.run_detail(workflow, id)
+    }
+    pub fn list_run_history(
+        &self,
+        workflow: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<HistoryPage, Error> {
+        self.store.list_run_history(workflow, cursor, limit)
+    }
+}
 fn connection(store: &Store) -> Result<Connection, Error> {
-    let c = Connection::open_with_flags(&store.path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(storage)?;
+    let c = Connection::open_with_flags(
+        &store.path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(storage)?;
     c.busy_timeout(std::time::Duration::from_millis(250))
         .map_err(storage)?;
     let version: u32 = c
@@ -74,7 +127,7 @@ fn connection(store: &Store) -> Result<Connection, Error> {
     }
     Ok(c)
 }
-fn detail(c: &Connection, workflow: &str, id: &str) -> Result<RunDetail, Error> {
+pub(crate) fn detail(c: &Connection, workflow: &str, id: &str) -> Result<RunDetail, Error> {
     // Check bytes in SQL before materializing any stored JSON in Rust.
     let sql = format!("SELECT request_id,request,snapshot,status FROM runs WHERE id=?1 AND {SCOPE}=?2 AND length(CAST(request_id AS BLOB))=36 AND length(CAST(request AS BLOB))+length(CAST(snapshot AS BLOB))+length(CAST(status AS BLOB))<=?3");
     let row: Option<(String, String, String, String)> = c

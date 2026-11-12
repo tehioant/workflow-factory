@@ -1,6 +1,12 @@
 fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
+            "inspect_workflow",
+            "inspect_subscribe",
+            "inspect_page",
+            "inspect_close",
+            "inspect_artifacts",
+            "inspect_artifact",
             "list_definitions",
             "load_definition",
             "save_definition",

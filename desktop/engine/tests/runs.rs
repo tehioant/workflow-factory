@@ -595,6 +595,18 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
     assert!(next.entries[0].id.ends_with('2'));
     assert!(next.next_cursor.is_none());
     let id = &page.entries[0].id;
+    let before_read = std::fs::read(dir.path().join("definitions.sqlite3")).unwrap();
+    workflow_engine::runs::inspection::view::scoped(dir.path(), DEFINITION, id).unwrap();
+    assert!(workflow_engine::runs::inspection::view::scoped(dir.path(), CONFIG, id).is_err());
+    let reader = workflow_engine::runs::history::HistoryReader::open(dir.path()).unwrap();
+    assert_eq!(
+        reader.run_detail(DEFINITION, id).unwrap().id.as_str(),
+        id.as_str()
+    );
+    assert_eq!(
+        before_read,
+        std::fs::read(dir.path().join("definitions.sqlite3")).unwrap()
+    );
     let detail = store.run_detail(DEFINITION, id).unwrap();
     assert!(detail.legacy);
     assert_eq!(
@@ -729,6 +741,18 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
         ],
     )
     .unwrap();
+    let before_read = std::fs::read(dir.path().join("definitions.sqlite3")).unwrap();
+    workflow_engine::runs::inspection::view::scoped(dir.path(), DEFINITION, id).unwrap();
+    assert!(workflow_engine::runs::inspection::view::scoped(dir.path(), CONFIG, id).is_err());
+    let reader = workflow_engine::runs::history::HistoryReader::open(dir.path()).unwrap();
+    assert_eq!(
+        reader.run_detail(DEFINITION, id).unwrap().id.as_str(),
+        id.as_str()
+    );
+    assert_eq!(
+        before_read,
+        std::fs::read(dir.path().join("definitions.sqlite3")).unwrap()
+    );
     let detail = store.run_detail(DEFINITION, id).unwrap();
     assert!(!detail.legacy);
     assert!(detail.blocks[1].result.is_none());

@@ -1,4 +1,9 @@
 //! Private bounded selected diagnostics. No credentials, runtime, recovery or generic path API.
+pub mod artifacts;
+pub mod view;
+pub fn opaque_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
 use crate::{output::Publication, storage, validation, Error};
 use serde::{Deserialize, Serialize};
 use std::{
