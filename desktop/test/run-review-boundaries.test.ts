@@ -115,15 +115,15 @@ test('queued and active runs project scoped capacity and admission errors', asyn
   const projection={settings:{active:4,waiting:16},occupied:3,waiting:1,entries};let reads=0;const writes:any[]=[];const selected:any[]=[];
   const commands={queueStatus:async()=>{reads++;return projection;},saveQueueSettings:async(value:any)=>{writes.push(value);throw {message:'Capacity cannot be reduced below occupied or waiting counts.'};}};
   globalThis.setTimeout=((fn:any)=>{tick=fn;return 1;}) as any;globalThis.clearTimeout=(()=>{}) as any;
-  flushSync(()=>{component=mount(Component,{target,props:{commands,onselect:(entry:any)=>selected.push(entry)}});});
+  flushSync(()=>{component=mount(Component,{target,props:{commands,onselect:(entry:any)=>selected.push(entry),admissionError:"Waiting queue is full. No run was accepted."}});});
   const settle=async()=>{await Promise.resolve();await Promise.resolve();flushSync();};await settle();
-  assert.ok(target.textContent.includes('Occupied 3 / 4'));assert.ok(target.textContent.includes('Waiting 1 / 16'));assert.ok(target.textContent.includes('Credential wait <img>'));assert.ok(target.textContent.includes('authorizationRequired'));assert.ok(target.textContent.includes('Ownership hold'));assert.equal(target.querySelectorAll('img,script').length,0);
+  assert.ok(target.textContent.includes('Waiting queue is full. No run was accepted.'));assert.ok(target.textContent.includes('Occupied 3 / 4'));assert.ok(target.textContent.includes('Waiting 1 / 16'));assert.ok(target.textContent.includes('Credential wait <img>'));assert.ok(target.textContent.includes('authorizationRequired'));assert.ok(target.textContent.includes('Ownership hold'));assert.equal(target.querySelectorAll('img,script').length,0);
   const choose=Array.from(target.querySelectorAll('button')).find(b=>b.textContent.includes('Run oldest'))!;choose.click();flushSync();assert.deepEqual(selected,[entries[0]]);
   const input=target.querySelector('#queue-active') as HTMLInputElement;input.value='1';input.dispatchEvent(new window.Event('input',{bubbles:true}));flushSync();
   Array.from(target.querySelectorAll('button')).find(b=>b.textContent==='Save capacities')!.click();await settle();assert.deepEqual(writes,[{active:1,waiting:16}]);assert.ok(target.textContent.includes('cannot be reduced'));assert.equal(input.value,'1');
   await tick();await settle();assert.equal(reads,2);assert.equal(writes.length,1);assert.equal(input.value,'1');
   await unmount(component);component=null;assert.equal(target.textContent,'');
-  const app=await readFile(new URL('../src/App.svelte',import.meta.url),'utf8');assert.match(app,/<QueuePanel \{commands\} onselect=\{selectQueued\}/);assert.match(app,/selected\?\.id===entry.id/);assert.match(app,/activeInspectionWorkflow=entry.definitionId/);
+  const app=await readFile(new URL('../src/App.svelte',import.meta.url),'utf8');assert.match(app,/<QueuePanel \{commands\} onselect=\{selectQueued\} admissionError=\{runError\}/);assert.match(app,/selected\?\.id===entry.id/);assert.match(app,/activeInspectionWorkflow=entry.definitionId/);
  }finally{globalThis.setTimeout=realSet;globalThis.clearTimeout=realClear;if(component)await unmount(component);await rm(directory,{recursive:true,force:true});window.happyDOM.abort();}
 });
 

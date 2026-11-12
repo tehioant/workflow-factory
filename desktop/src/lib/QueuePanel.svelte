@@ -3,7 +3,7 @@
  import type {Commands} from './commands.ts';
  import type {QueueStatus,QueueEntry} from './transport.ts';
  import {errorMessage} from './editor.ts';
- let {commands,onselect}:{commands:Commands;onselect:(entry:QueueEntry)=>void}=$props();
+ let {commands,onselect,admissionError=""}:{commands:Commands;onselect:(entry:QueueEntry)=>void;admissionError?:string}=$props();
  let queue=$state<QueueStatus|null>(null);let active=$state(2);let waiting=$state(16);
  let error=$state('');let readError=$state('');let saving=$state(false);let reading=false;let alive=true;let generation=0;
  async function refresh(){if(reading)return;reading=true;const version=++generation;try{const value=await commands.queueStatus();if(alive&&version===generation){if(!queue){active=value.settings.active;waiting=value.settings.waiting;}queue=value;readError='';}}catch(e){if(alive&&version===generation)readError=errorMessage(e);}finally{reading=false;}}
@@ -12,6 +12,7 @@
 </script>
 <section class="notice" aria-label="Global run queue">
  <h2>Global run queue</h2>
+ {#if admissionError}<p role="alert">{admissionError}</p>{/if}
  {#if queue}
  <p role="status">Occupied {queue.occupied} / {queue.settings.active} · Waiting {queue.waiting} / {queue.settings.waiting}</p>
  <p>Cleanup and persistence holds remain occupied. FIFO head is never bypassed. Credential wait requires an independently acquired app-owned session; no automatic login, retry or failover.</p>

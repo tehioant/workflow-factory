@@ -9,6 +9,50 @@ const DEFINITION: &str = "00000000-0000-0000-0000-000000000001";
 #[test]
 fn d11_prepared_admission_bounds_snapshot_and_idempotency() {
     use workflow_engine::runs::queue::QueueSettings;
+    {
+        let (dir, _store, c) = prepared();
+        let held = status();
+        seed_run(&c, &held, true);
+        c.execute(
+            "INSERT INTO managed_sessions VALUES('owned-slot','quarantined',7,'owned')",
+            [],
+        )
+        .unwrap();
+        let before: String = c
+            .query_row("SELECT request||snapshot||status FROM runs", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        c.execute_batch("DROP TABLE run_queue; DROP TABLE queue_settings; CREATE UNIQUE INDEX one_active_run ON runs(active) WHERE active=1; PRAGMA user_version=3;").unwrap();
+        let migrated = Store::open(dir.path()).unwrap();
+        assert_eq!(migrated.queue_settings().unwrap().active, 2);
+        assert_eq!(
+            c.query_row("SELECT request||snapshot||status FROM runs", [], |r| r
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+            before
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT phase||':'||slot||':'||generation FROM run_queue WHERE run_id='owned'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "occupied:owned-slot:7"
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='one_active_run'",
+                [],
+                |r| r.get::<_, u32>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
     let (_dir, store, c) = prepared();
     assert_eq!(
         (

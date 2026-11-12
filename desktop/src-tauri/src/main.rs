@@ -205,7 +205,11 @@ fn dispatch_reserved(
     selected: Option<String>,
 ) -> Result<(), Error> {
     let store = Store::open(&directory)?;
-    store.reserve_next_run()?;
+    for _ in 0..8 {
+        if store.reserve_next_run()?.is_none() {
+            break;
+        }
+    }
     let entries = workflow_engine::runs::history::HistoryReader::open(&directory)?
         .queue_status()?
         .entries;
@@ -456,9 +460,18 @@ async fn stop_run(
 ) -> Result<workflow_engine::runs::RunStatus, Error> {
     let active = app.state::<Arc<ActiveRuns>>();
     active.signal_stop(&id)?;
-    database(&state, move |s| s.stop_run(&id)).await.map_err(|_| Error::Storage {
-        message: "Selected worker cancellation requested, but stop storage failed. Ownership and cleanup remain held; retry Stop/status. No new work authorized.".into(),
-    })
+    let status=database(&state,move|s|s.stop_run(&id)).await.map_err(|_| Error::Storage {
+        message:"Selected worker cancellation requested, but stop storage failed. Ownership and cleanup remain held; retry Stop/status. No new work authorized.".into(),
+    })?;
+    if status.state == workflow_engine::runs::RunState::Stopped {
+        let directory = state.directory.clone();
+        tauri::async_runtime::spawn_blocking(move || dispatch_reserved(&app, directory, None))
+            .await
+            .map_err(|_| Error::Busy {
+                message: "Selected run stopped; next reservation requires recheck.".into(),
+            })??;
+    }
+    Ok(status)
 }
 #[tauri::command]
 async fn managed_session_status(

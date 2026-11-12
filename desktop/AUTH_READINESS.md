@@ -95,6 +95,28 @@ contains typed nonsecret settings, not credential DTOs or source content.
 User-entered names/prompts are not automatically secret-detected or encrypted;
 model syntax validation is not subscription entitlement.
 
+## Independently acquired managed slots (#34)
+
+The execution route now supports up to eight separately acquired app-owned slots,
+with one pending native acquisition. Every acquisition still starts the existing
+CLI sign-in in a fresh empty app-owned home. Each slot has exclusive owner/generation
+leasing, independent native secure storage and current-cache writeback. There is no
+cache cloning, host import, automatic login, stale-cache reseeding or slot failover.
+Native-only bounded comparisons refuse known duplicate login ownership or refresh
+material before publication. Same account alone is not a duplicate; separate client
+logins do **not** guarantee independent provider token families or account capacity.
+
+Publication comparison/write/readback is serialized, not provider execution. Failed
+provider execution, uncertain cache persistence or cleanup retains quarantine and
+requires explicit reauthentication. FIFO acceptance itself does not need a free
+credential; execution requires the exact reserved session plus a distinct single-use
+native confirmation. No credential/account/token fields are exposed in queue DTOs.
+
+Provider concurrency/refresh, native login/keyring/container/consent and macOS
+interaction remain **unrun**. Source/fake-boundary checks are not native qualification.
+Historical blocker text above describes the host-file inspector and earlier slice;
+it does not revoke this separate managed-session source route.
+
 ## Verification limits
 
 Routine checks use synthetic source bytes/errors, synthetic metadata and a
