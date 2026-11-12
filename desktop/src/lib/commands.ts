@@ -4,7 +4,7 @@ export type Invoke = <T>(command: string, args?: Record<string, unknown>) => Pro
 export function createCommands(invoke: Invoke) {
   return {
     shutdownPreview:()=>invoke<import('./transport.ts').ShutdownPreview>('shutdown_preview'),
-    shutdownConfirm:(token:string,cancelWork:boolean)=>invoke<void>('shutdown_confirm',{token,cancelWork}),
+    shutdownConfirm:(token:string,cancelWork:boolean)=>invoke<boolean>('shutdown_confirm',{token,cancelWork}),
     shutdownFinish:()=>invoke<void>('shutdown_finish'),
     queueStatus:()=>invoke<import('./transport.ts').QueueStatus>('queue_status'),
     queueSettings:()=>invoke<import('./transport.ts').QueueSettings>('queue_settings'),

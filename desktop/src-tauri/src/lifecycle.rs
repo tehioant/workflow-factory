@@ -43,6 +43,31 @@ pub fn request(app: &tauri::AppHandle) {
         let _ = w.emit("shutdown-requested", ());
     }
 }
+fn confirm_transition(
+    freeze: impl FnOnce() -> Result<Vec<String>, Error>,
+    mut signal: impl FnMut(&str) -> Result<(), Error>,
+    mut stop: impl FnMut(&str) -> Result<(), Error>,
+    cancel_setup: impl FnOnce() -> Result<(), Error>,
+) -> Result<bool, Error> {
+    let ids = freeze()?;
+    let mut pending = false;
+    for id in &ids {
+        pending |= signal(id).is_err();
+    }
+    for id in &ids {
+        pending |= stop(id).is_err();
+    }
+    pending |= cancel_setup().is_err();
+    Ok(pending)
+}
+fn finish_transition(
+    native: impl FnOnce() -> Result<(usize, bool, bool), Error>,
+    durable: impl FnOnce() -> Result<bool, Error>,
+    exit: impl FnOnce(),
+) -> Result<(), Error> {
+    let (workers, setup, retained) = native()?;
+    ready_to_exit(workers, setup, retained, durable()?, exit)
+}
 fn native(app: &tauri::AppHandle) -> Result<(Vec<String>, bool, bool), Error> {
     let active = app.state::<std::sync::Arc<ActiveRuns>>();
     let ids = active
@@ -65,8 +90,8 @@ pub async fn shutdown_preview(
     }
     let root = app.state::<Database>().directory.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let store = Store::open(&root)?;
-        let engine = store.shutdown_snapshot()?;
+        let (engine, work) =
+            workflow_engine::runs::history::HistoryReader::open(&root)?.shutdown_snapshot()?;
         let state = native(&app)?;
         let signature = serde_json::to_string(&(engine, &state)).map_err(|_| busy())?;
         static TOKENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -75,10 +100,10 @@ pub async fn shutdown_preview(
             .preview
             .try_lock()
             .map_err(|_| busy())? = Some((token.clone(), signature));
-        let queue = workflow_engine::runs::history::HistoryReader::open(&root)?.queue_status()?;
+
         Ok(workflow_engine::lifecycle::ShutdownPreview {
             token,
-            work: queue.entries.len() as u32,
+            work,
             workers: state.0.len() as u32,
             setup: state.1,
             retained: state.2,
@@ -94,7 +119,7 @@ pub async fn shutdown_confirm(
     app: tauri::AppHandle,
     token: String,
     cancel_work: bool,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     if window.label() != "main" || !cancel_work {
         return Err(busy());
     }
@@ -117,33 +142,27 @@ pub async fn shutdown_confirm(
             return Err(busy());
         }
         let active = app.state::<std::sync::Arc<ActiveRuns>>();
-        let registrations = active.0.lock().map_err(|_| busy())?;
-        let ids = store.freeze_shutdown(&engine)?;
-        active.1.store(true, Ordering::Release);
-        drop(registrations);
-        app.state::<Lifecycle>()
-            .frozen
-            .store(true, Ordering::Release);
-        // Signal ALL selected workers even when any durable stop write fails.
-        let mut failed = false;
-        for id in &ids {
-            failed |= app
-                .state::<std::sync::Arc<ActiveRuns>>()
-                .signal_stop(id)
-                .is_err();
-        }
-        for id in &ids {
-            failed |= store.stop_run(id).is_err();
-        }
-        if signin_host::pending(&app.state::<std::sync::Arc<signin_host::SignIn>>())? {
-            failed |=
-                signin_host::cancel(&root, &app.state::<std::sync::Arc<signin_host::SignIn>>())
-                    .is_err();
-        }
-        if failed {
-            return Err(busy());
-        }
-        Ok(())
+        confirm_transition(
+            || {
+                let registrations = active.0.lock().map_err(|_| busy())?;
+                let ids = store.freeze_shutdown(&engine)?;
+                active.1.store(true, Ordering::Release);
+                app.state::<Lifecycle>()
+                    .frozen
+                    .store(true, Ordering::Release);
+                drop(registrations);
+                Ok(ids)
+            },
+            |id| active.signal_stop(id),
+            |id| store.stop_run(id).map(|_| ()),
+            || {
+                let setup = app.state::<std::sync::Arc<signin_host::SignIn>>();
+                if signin_host::pending(&setup)? {
+                    signin_host::cancel(&root, &setup)?;
+                }
+                Ok(())
+            },
+        )
     })
     .await
     .map_err(|_| busy())?
@@ -161,11 +180,9 @@ pub async fn shutdown_finish(
         let state = native(&app)?;
         let active = app.state::<std::sync::Arc<ActiveRuns>>();
         let registrations = active.0.lock().map_err(|_| busy())?;
-        ready_to_exit(
-            registrations.len(),
-            state.1,
-            state.2,
-            Store::open(&root)?.shutdown_ready()?,
+        finish_transition(
+            || Ok((registrations.len(), state.1, state.2)),
+            || Store::open(&root)?.shutdown_ready(),
             || {
                 app.state::<Lifecycle>()
                     .approved
@@ -282,13 +299,125 @@ mod tests {
         .unwrap();
         let stale = store.shutdown_snapshot().unwrap();
         c.execute(
-            "UPDATE runs SET status=json_set(status,'$.diagnostic','changed')",
+            "UPDATE runs SET status=json_set(status,'$.cleanupPending',json('true'))",
             [],
         )
         .unwrap();
         assert!(store.freeze_shutdown(&stale).is_err());
-        let fresh = store.shutdown_snapshot().unwrap();
-        assert_eq!(store.freeze_shutdown(&fresh).unwrap(), vec![run]);
+        c.execute(
+            "UPDATE runs SET status=json_set(status,'$.cleanupPending',json('false'))",
+            [],
+        )
+        .unwrap();
+        let claimed = "00000000-0000-0000-0000-000000000014";
+        c.execute(
+            "INSERT INTO runs VALUES(?1,'claimed','{}','{}',?2,1)",
+            rusqlite::params![
+                claimed,
+                status.replace(run, claimed).replace("queued", "admitted")
+            ],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO run_queue(run_id,phase,slot,generation) VALUES(?1,'occupied','slot',7)",
+            [claimed],
+        )
+        .unwrap();
+        c.execute(
+            "UPDATE managed_sessions SET state='leased',owner=?1",
+            [claimed],
+        )
+        .unwrap();
+        // Irrelevant completed history does not grow the bounded consent payload.
+        c.execute_batch("BEGIN").unwrap();
+        for n in 0..600 {
+            let id = format!("history-{n}");
+            let body=serde_json::json!({"id":id,"state":"succeeded","cleanupPending":false,"finalResponse":"x".repeat(8192)}).to_string();
+            c.execute(
+                "INSERT INTO runs VALUES(?1,?1,'{}','{}',?2,0)",
+                rusqlite::params![id, body],
+            )
+            .unwrap();
+        }
+        c.execute_batch("COMMIT").unwrap();
+        let db = dir.join("definitions.sqlite3");
+        let before = std::fs::read(&db).unwrap();
+        let mode = std::fs::metadata(&db).unwrap().permissions();
+        let reader = workflow_engine::runs::history::HistoryReader::open(&dir).unwrap();
+        let (fresh, count) = reader.shutdown_snapshot().unwrap();
+        assert_eq!(count, 2);
+        assert!(fresh.len() < 2048);
+        assert_eq!(std::fs::read(&db).unwrap(), before);
+        assert_eq!(std::fs::metadata(&db).unwrap().permissions(), mode);
+        c.execute("UPDATE runs SET active=1 WHERE id LIKE 'history-%'", [])
+            .unwrap();
+        assert!(reader.shutdown_snapshot().is_err());
+        c.execute("UPDATE runs SET active=0 WHERE id LIKE 'history-%'", [])
+            .unwrap();
+        c.execute("UPDATE runs SET status='not-json' WHERE id=?1", [run])
+            .unwrap();
+        assert!(reader.shutdown_snapshot().is_err());
+        c.execute(
+            "UPDATE runs SET status=?1 WHERE id=?2",
+            rusqlite::params![status, run],
+        )
+        .unwrap();
+        let absent = dir.join("absent");
+        assert!(workflow_engine::runs::history::HistoryReader::open(&absent).is_err());
+        assert!(!absent.exists());
+        let frozen = Cell::new(false);
+        let signals = std::cell::RefCell::new(Vec::new());
+        let stops = std::cell::RefCell::new(Vec::new());
+        let claimed_before: String = c
+            .query_row("SELECT status FROM runs WHERE id=?1", [claimed], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(super::confirm_transition(
+            || {
+                let ids = store.freeze_shutdown(&fresh)?;
+                frozen.set(true);
+                Ok(ids)
+            },
+            |id| {
+                assert!(frozen.get());
+                signals.borrow_mut().push(id.to_string());
+                Ok(())
+            },
+            |id| {
+                assert!(frozen.get());
+                stops.borrow_mut().push(id.to_string());
+                Err(super::busy())
+            },
+            || Err(super::busy()),
+        )
+        .unwrap());
+        assert_eq!(*signals.borrow(), vec![run, claimed]);
+        assert_eq!(*stops.borrow(), vec![run, claimed]);
+        assert!(store.claim_run(claimed).is_err());
+        assert_eq!(
+            c.query_row("SELECT status FROM runs WHERE id=?1", [claimed], |r| r
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
+            claimed_before
+        );
+        store.stop_run(claimed).unwrap();
+        assert!(super::confirm_transition(
+            || Err(super::busy()),
+            |_| panic!("signal before freeze"),
+            |_| panic!("stop before freeze"),
+            || panic!("setup before freeze")
+        )
+        .is_err());
+        assert!(!super::confirm_transition(
+            || Ok(vec![run.into()]),
+            |_| Ok(()),
+            |_| Ok(()),
+            || Ok(())
+        )
+        .unwrap());
         assert!(store.reserve_next_run().unwrap().is_none());
         assert!(store.begin_acquisition().is_err());
         assert!(!store
@@ -313,6 +442,49 @@ mod tests {
         assert!(cancel.check().is_err());
         store.stop_run(run).unwrap();
         assert!(store.shutdown_ready().unwrap());
+        // The authoritative settled row is reusable; no duplicate receipt ledger.
+        c.execute(
+            "INSERT INTO run_resources VALUES(?1,'keeper','exact-retained-id')",
+            [claimed],
+        )
+        .unwrap();
+        assert!(store.shutdown_ready().unwrap());
+        c.execute(
+            "UPDATE run_queue SET slot=NULL,generation=NULL WHERE run_id=?1",
+            [claimed],
+        )
+        .unwrap();
+        assert!(!store.shutdown_ready().unwrap());
+        c.execute(
+            "UPDATE run_queue SET slot='slot',generation=7 WHERE run_id=?1",
+            [claimed],
+        )
+        .unwrap();
+        c.execute(
+            "UPDATE managed_sessions SET state='quarantined',owner=?1",
+            [claimed],
+        )
+        .unwrap();
+        assert!(store.shutdown_ready().unwrap());
+        c.execute(
+            "UPDATE runs SET status=json_set(status,'$.state','running') WHERE id=?1",
+            [claimed],
+        )
+        .unwrap();
+        assert!(!store.shutdown_ready().unwrap());
+        c.execute(
+            "UPDATE runs SET status=json_set(status,'$.state','stopped') WHERE id=?1",
+            [claimed],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO run_resources VALUES('orphan','keeper','unknown')",
+            [],
+        )
+        .unwrap();
+        assert!(!store.shutdown_ready().unwrap());
+        c.execute("DELETE FROM run_resources WHERE run_id='orphan'", [])
+            .unwrap();
         let exit = Cell::new(0);
         for (workers, setup, retained, durable) in [
             (1, false, false, true),
@@ -320,14 +492,26 @@ mod tests {
             (0, false, true, true),
             (0, false, false, false),
         ] {
-            assert!(
-                super::ready_to_exit(workers, setup, retained, durable, || exit
-                    .set(exit.get() + 1))
-                .is_err()
-            );
+            assert!(super::finish_transition(
+                || Ok((workers, setup, retained)),
+                || Ok(durable),
+                || exit.set(exit.get() + 1)
+            )
+            .is_err());
         }
         assert_eq!(exit.get(), 0);
-        super::ready_to_exit(0, false, false, true, || exit.set(exit.get() + 1)).unwrap();
+        assert!(super::finish_transition(
+            || Ok((0, false, false)),
+            || Err(super::busy()),
+            || exit.set(exit.get() + 1)
+        )
+        .is_err());
+        super::finish_transition(
+            || Ok((0, false, false)),
+            || store.shutdown_ready(),
+            || exit.set(exit.get() + 1),
+        )
+        .unwrap();
         assert_eq!(exit.get(), 1);
         assert_eq!(super::activate(|| true), b"ok");
         assert_eq!(super::activate(|| false), b"no");

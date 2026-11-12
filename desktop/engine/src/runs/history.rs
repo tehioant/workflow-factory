@@ -70,6 +70,10 @@ pub struct HistoryReader {
     db: std::fs::File,
 }
 impl HistoryReader {
+    pub fn shutdown_snapshot(&self) -> Result<(String, u32), Error> {
+        let tx = self.checked()?.unchecked_transaction().map_err(storage)?;
+        crate::lifecycle::snapshot(&tx)
+    }
     fn checked(&self) -> Result<&Connection, Error> {
         use std::os::unix::fs::MetadataExt;
         for (handle, path, directory) in [
