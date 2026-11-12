@@ -23,7 +23,7 @@ test('mounted input form ignores a preparation invalidated by definition changes
     const modulePath = join(directory,'component.mjs'); await writeFile(modulePath,code);
     const Component = (await import(pathToFileURL(modulePath).href)).default;
     let resolve: (value: unknown)=>void = ()=>{};
-    const props = proxy({definition:{schemaVersion:1,id:'old',name:'Old',blocks:[],connections:[],inputs:[]},commands:{prepare:()=>new Promise(r=>{resolve=r;})}});
+    const props = proxy({definition:{schemaVersion:1, isolation: 'perRun' as const,id:'old',name:'Old',blocks:[],connections:[],inputs:[]},commands:{prepare:()=>new Promise(r=>{resolve=r;})}});
     const target=window.document.createElement('main'); window.document.body.append(target);
     flushSync(()=>{component=mount(Component,{target,props});});
     target.querySelector('form')!.dispatchEvent(new window.Event('submit',{bubbles:true,cancelable:true}));

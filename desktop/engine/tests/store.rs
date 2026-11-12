@@ -7,6 +7,7 @@ fn reports_storage_failure_without_a_saved_revision() {
     rusqlite::Connection::open(dir.path().join("definitions.sqlite3")).unwrap().execute_batch("CREATE TRIGGER fail_save BEFORE INSERT ON revisions BEGIN SELECT RAISE(ABORT, 'disk failure'); END;").unwrap();
     let definition = Definition {
         schema_version: 1,
+        isolation: Default::default(),
         id: "ecbca0a8-d457-4c42-89d4-6727261747bc".into(),
         name: "Keep my edits".into(),
         inputs: vec![],
@@ -55,6 +56,7 @@ fn rejects_a_stale_save_without_overwriting() {
     let store = Store::open(dir.path()).unwrap();
     let definition = Definition {
         schema_version: 1,
+        isolation: Default::default(),
         id: "ecbca0a8-d457-4c42-89d4-6727261747bc".into(),
         name: "Stale".into(),
         inputs: vec![],
@@ -84,6 +86,7 @@ fn updates_only_the_expected_revision() {
     let store = Store::open(dir.path()).unwrap();
     let definition = Definition {
         schema_version: 1,
+        isolation: Default::default(),
         id: "ecbca0a8-d457-4c42-89d4-6727261747bc".into(),
         name: "Updated".into(),
         inputs: vec![],
@@ -178,6 +181,7 @@ fn saves_a_new_definition_at_revision_one() {
         .save(SaveDefinition {
             definition: Definition {
                 schema_version: 1,
+                isolation: Default::default(),
                 id: "ecbca0a8-d457-4c42-89d4-6727261747bc".into(),
                 name: "Research".into(),
                 inputs: vec![],

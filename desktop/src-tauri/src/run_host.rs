@@ -61,9 +61,13 @@ pub fn execute(
     let result = (|| {
         native_prerequisites().map_err(|message| workflow_engine::Error::Validation { message })?;
         cancel.check()?;
-        let resources = sandbox.create(&id, &snapshot.image_id, &cancel, |kind, resource| {
-            store.resource_intent(&id, kind, resource)
-        })?;
+        let mut resources = sandbox.create_for_mode(
+            &id,
+            &snapshot.image_id,
+            snapshot.definition.definition.isolation,
+            &cancel,
+            |kind, resource| store.resource_intent(&id, kind, resource),
+        )?;
         native_prerequisites().map_err(|message| workflow_engine::Error::Validation { message })?;
         let seed = secure.read(&lease.slot)?;
         cancel.check()?;
@@ -77,7 +81,21 @@ pub fn execute(
         let mut latest_cache = seed.clone();
         let mut cache_ready = false;
         let mut secrets = Vec::new();
+        let mut completed = 0;
         let final_result = loop {
+            if completed > 0 && completed < snapshot.plans.len() {
+                resources = sandbox.switch_block_environment(
+                    &resources,
+                    completed,
+                    &cancel,
+                    || store.checkpoint_session(&lease, &latest_cache, &mut secure, &cancel),
+                    |kind, resource| store.resource_intent(&id, kind, resource),
+                    || {
+                        native_prerequisites()
+                            .map_err(|message| workflow_engine::Error::Validation { message })
+                    },
+                )?;
+            }
             let mut pending_output = None;
             let step = store.execute_next_block(
                 &id,
@@ -139,7 +157,9 @@ pub fn execute(
                 None => step,
             };
             match step {
-                Ok(true) => {}
+                Ok(true) => {
+                    completed += 1;
+                }
                 Ok(false) => break Ok(store.run_status(&id)?.final_response.unwrap_or_default()),
                 Err(error @ workflow_engine::Error::Storage { .. }) => return Err(error),
                 Err(error) => {
@@ -156,7 +176,15 @@ pub fn execute(
             lease.generation,
             &latest_cache,
             &mut secure,
-            || sandbox.cleanup(&resources),
+            || {
+                if resources.workspace.is_some() {
+                    sandbox.cleanup_block_resources(&resources, |kind, resource| {
+                        store.resource_intent(&id, kind, resource)
+                    })
+                } else {
+                    sandbox.cleanup(&resources)
+                }
+            },
         )?;
         match final_result {Ok(text)=>store.finish_run(&id,Some(text),"Completed; secure cache persisted and owned resources removed.",true,true),Err(_)=>store.finish_run(&id,None,"Codex output failed validation or was interrupted. Cache persisted and resources removed.",true,false)}
     })();

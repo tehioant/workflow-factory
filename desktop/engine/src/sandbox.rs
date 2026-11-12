@@ -1,6 +1,7 @@
 //! Structured local Docker mutations. No shell, ambient credentials, bind mounts or name-only deletion.
 use crate::{runtime::verify_private_network, sessions::CACHE_LIMIT, validation, Error};
 use serde_json::Value;
+mod block;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -170,6 +171,10 @@ pub struct Resources {
     pub outer: String,
     pub helper: String,
     pub container: String,
+    pub workspace: Option<String>,
+    pub peer: Option<String>,
+    pub started_at: Option<String>,
+    pub retired: Option<String>,
 }
 pub struct Sandbox<P: Pipe> {
     pub pipe: P,
@@ -180,15 +185,41 @@ impl<P: Pipe> Sandbox<P> {
         owner: &str,
         image_id: &str,
         cancel: &Cancel,
+        receipt: impl FnMut(&str, Option<&str>) -> Result<(), Error>,
+    ) -> Result<Resources, Error> {
+        self.create_for_mode(
+            owner,
+            image_id,
+            crate::IsolationMode::PerRun,
+            cancel,
+            receipt,
+        )
+    }
+    pub fn create_for_mode(
+        &mut self,
+        owner: &str,
+        image_id: &str,
+        mode: crate::IsolationMode,
+        cancel: &Cancel,
         mut receipt: impl FnMut(&str, Option<&str>) -> Result<(), Error>,
     ) -> Result<Resources, Error> {
         if uuid::Uuid::parse_str(owner).is_err() || !image(image_id) {
             return Err(validation("Invalid immutable run identity."));
         }
+        let workspace = if mode == crate::IsolationMode::PerBlock {
+            Some(self.create_workspace(owner, cancel, &mut receipt)?)
+        } else {
+            None
+        };
         let label = format!("org.workflow-factory.owner={owner}");
         let mut create = |kind: &str, args: Vec<String>| -> Result<String, Error> {
             cancel.check()?;
             receipt(kind, None)?;
+            if kind.starts_with("work-container") {
+                if let Some(name) = &workspace {
+                    self.inspect_workspace(name, owner)?;
+                }
+            }
             let bytes = self.work_success(&args, &[], 131072, cancel)?;
             let id = std::str::from_utf8(&bytes)
                 .map_err(|_| validation("Resource ID unavailable; ownership held."))?
@@ -289,14 +320,48 @@ impl<P: Pipe> Sandbox<P> {
             "node",
             "/opt/workflow-factory/keeper.mjs",
         ]));
-        let container = create("work-container", args)?;
-        let r = Resources {
+        if let Some(name) = &workspace {
+            let index = args
+                .iter()
+                .position(|s| s.starts_with("/workspace:"))
+                .unwrap();
+            args.splice(
+                index - 1..=index,
+                strings(&[
+                    "--mount",
+                    &format!("type=volume,src={name},dst=/workspace,volume-nocopy"),
+                ]),
+            );
+            let end = args.len();
+            args.splice(
+                end - 3..end,
+                strings(&[
+                    "--entrypoint",
+                    "node",
+                    image_id,
+                    "/opt/workflow-factory/keeper.mjs",
+                ]),
+            );
+        }
+        let container = create(
+            if workspace.is_some() {
+                "work-container-0"
+            } else {
+                "work-container"
+            },
+            args,
+        )?;
+        let mut r = Resources {
             owner: owner.into(),
             image: image_id.into(),
             network,
             outer,
             helper,
             container,
+            workspace,
+            peer: None,
+            started_at: None,
+            retired: None,
         };
         self.owned("container", &r.helper, owner)?;
         self.owned("network", &r.network, owner)?;
@@ -315,8 +380,19 @@ impl<P: Pipe> Sandbox<P> {
         )?;
         self.inspect_phase(&r, false)?;
         self.work_success(&strings(&["start", &r.helper]), &[], 131072, cancel)?;
+        if r.workspace.is_some() {
+            cancel.check()?;
+            receipt("agent-start-0", None)?;
+        }
         self.work_success(&strings(&["start", &r.container]), &[], 131072, cancel)?;
+        if r.workspace.is_some() {
+            r.started_at = Some(self.live_epoch(&r)?);
+        }
         self.inspect_work(&r)?;
+        if r.workspace.is_some() {
+            cancel.check()?;
+            receipt("agent-start-0", Some(&r.container))?;
+        }
         Ok(r)
     }
 
@@ -396,6 +472,10 @@ impl<P: Pipe> Sandbox<P> {
         let c = self.owned("container", &r.container, &r.owner)?;
         let helper = self.owned("container", &r.helper, &r.owner)?;
         let outer = self.owned("network", &r.outer, &r.owner)?;
+        if r.workspace.is_some() {
+            self.helper_mounts(&helper)?;
+            self.inspect_workspace_mount(r, &c, started)?;
+        }
         let helper_networks = helper["NetworkSettings"]["Networks"]
             .as_object()
             .ok_or_else(|| validation("Helper network inspection missing."))?;
@@ -423,10 +503,11 @@ impl<P: Pipe> Sandbox<P> {
         {
             return Err(validation("Applied provider helper containment changed."));
         }
-        for (network, allowed) in [
-            (&network, vec![r.container.as_str(), r.helper.as_str()]),
-            (&outer, vec![r.helper.as_str()]),
-        ] {
+        let mut agents = vec![r.container.as_str(), r.helper.as_str()];
+        if let Some(peer) = &r.peer {
+            agents.push(peer);
+        }
+        for (network, allowed) in [(&network, agents), (&outer, vec![r.helper.as_str()])] {
             if network["Containers"].as_object().is_none_or(|containers| {
                 containers.keys().any(|id| !allowed.contains(&id.as_str()))
                     || (started && containers.len() != allowed.len())
@@ -439,6 +520,9 @@ impl<P: Pipe> Sandbox<P> {
             .as_object()
             .ok_or_else(|| validation("Sandbox network inspection missing."))?;
         for path in ["/run/wf-codex", "/workspace", "/tmp"] {
+            if path == "/workspace" && r.workspace.is_some() {
+                continue;
+            }
             if h["Tmpfs"][path].as_str().is_none_or(|s| {
                 !s.contains("uid=1000")
                     || !s.contains("mode=700")
@@ -455,7 +539,13 @@ impl<P: Pipe> Sandbox<P> {
             }) {
                 return Err(validation("Container core dumps not disabled."));
             }
-            for field in ["Binds", "Devices", "DeviceRequests", "CapAdd"] {
+            for field in [
+                "Binds",
+                "Devices",
+                "DeviceRequests",
+                "CapAdd",
+                "VolumesFrom",
+            ] {
                 if !host[field].is_null() && host[field].as_array().is_none_or(|a| !a.is_empty()) {
                     return Err(validation("Unexpected sandbox host access."));
                 }
@@ -486,6 +576,9 @@ impl<P: Pipe> Sandbox<P> {
             ("/run/wf-codex", false),
             ("/tmp", false),
         ] {
+            if path == "/workspace" && r.workspace.is_some() {
+                continue;
+            }
             let options = h["Tmpfs"][path]
                 .as_str()
                 .unwrap_or("")
@@ -514,9 +607,14 @@ impl<P: Pipe> Sandbox<P> {
                     .any(|v| v == "no-new-privileges" || v == "no-new-privileges:true")
             })
             || !exactly_private
-            || c["Mounts"]
-                .as_array()
-                .is_none_or(|a| a.iter().any(|v| v["Type"] != "tmpfs"))
+            || c["Mounts"].as_array().is_none_or(|a| {
+                a.iter().any(|v| {
+                    v["Type"] != "tmpfs"
+                        && !(r.workspace.is_some()
+                            && v["Type"] == "volume"
+                            && v["Destination"] == "/workspace")
+                })
+            })
         {
             return Err(validation(
                 "Applied sandbox configuration differs; execution withheld.",
@@ -609,6 +707,9 @@ impl<P: Pipe> Sandbox<P> {
         #[cfg(target_os = "macos")]
         self.check_guest(r, cancel)?;
         self.check_no_swap(r)?;
+        if let Some(id) = &r.retired {
+            self.absent_container(id, cancel)?;
+        }
         self.work_success(
             &strings(&[
                 "exec",
@@ -635,6 +736,12 @@ impl<P: Pipe> Sandbox<P> {
         self.inspect_work(r)?;
         #[cfg(target_os = "macos")]
         self.check_guest(r, cancel)?;
+        if r.workspace.is_some() {
+            self.check_no_swap(r)?;
+        }
+        if let Some(id) = &r.retired {
+            self.absent_container(id, cancel)?;
+        }
         cancel.check()?;
         let (code, out, _) = self.pipe.call(
             &strings(&[
@@ -680,7 +787,7 @@ impl<P: Pipe> Sandbox<P> {
         records: &[(String, Option<String>)],
     ) -> Result<(), Error> {
         crate::sessions::valid_slot(owner)?;
-        for kind in ["container", "network"] {
+        for kind in ["container", "volume", "network"] {
             let mut args = strings(&[
                 kind,
                 "ls",
@@ -690,17 +797,26 @@ impl<P: Pipe> Sandbox<P> {
                 "--format",
                 "{{.ID}}",
             ]);
+            if kind == "volume" {
+                args.retain(|a| a != "--no-trunc");
+                let n = args.len();
+                args[n - 1] = "{{.Name}}".into();
+            }
             if kind == "container" {
                 args.push("-a".into());
             }
             let bytes = self.success(&args, &[], 131072)?;
             let text = std::str::from_utf8(&bytes).map_err(crate::storage)?;
             for id in text.split_whitespace() {
-                self.owned(kind, id, owner)?;
+                if kind == "volume" {
+                    self.inspect_workspace(id, owner)?;
+                } else {
+                    self.owned(kind, id, owner)?;
+                }
                 let rm = if kind == "container" {
                     strings(&["rm", "-f", id])
                 } else {
-                    strings(&["network", "rm", id])
+                    strings(&[kind, "rm", id])
                 };
                 self.success(&rm, &[], 131072)?;
             }
@@ -712,16 +828,38 @@ impl<P: Pipe> Sandbox<P> {
                 return Err(validation("Owned retirement absence unconfirmed."));
             }
             for (record_kind, id) in records {
-                let expected = if record_kind.ends_with("network") {
-                    "network"
-                } else {
-                    "container"
+                let expected = match record_kind.as_str() {
+                    "workspace-volume" | "workspace-remove" => "volume",
+                    "private-network"
+                    | "egress-network"
+                    | "private-network-remove"
+                    | "egress-network-remove" => "network",
+                    "work-container" | "egress-helper" | "final-agent-remove" | "helper-remove" => {
+                        "container"
+                    }
+                    s if [
+                        "work-container-",
+                        "agent-start-",
+                        "agent-overlap-",
+                        "agent-remove-",
+                    ]
+                    .iter()
+                    .any(|prefix| {
+                        s.strip_prefix(prefix)
+                            .is_some_and(|n| n.parse::<usize>().is_ok_and(|n| n < 100))
+                    }) =>
+                    {
+                        "container"
+                    }
+                    _ => return Err(validation("Unknown resource kind; retirement held.")),
                 };
                 if expected != kind {
                     continue;
                 }
                 if let Some(id) = id {
-                    if !opaque(id) {
+                    if (kind == "volume" && id != &format!("wf-workspace-{owner}"))
+                        || (kind != "volume" && !opaque(id))
+                    {
                         return Err(validation("Invalid recorded resource."));
                     }
                     let mut exact = strings(&[
@@ -733,6 +871,13 @@ impl<P: Pipe> Sandbox<P> {
                         "--format",
                         "{{.ID}}",
                     ]);
+                    if kind == "volume" {
+                        exact.retain(|a| a != "--no-trunc");
+                        let n = exact.len();
+                        exact[n - 1] = "{{.Name}}".into();
+                        let i = exact.iter().position(|a| a.starts_with("id=")).unwrap();
+                        exact[i] = format!("name=^{id}$");
+                    }
                     if kind == "container" {
                         exact.push("-a".into());
                     }

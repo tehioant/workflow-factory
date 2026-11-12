@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import IsolationSelect from './lib/IsolationSelect.svelte';
   import RunPanel from './lib/RunPanel.svelte';
   import OutputReferencePicker from './lib/OutputReferencePicker.svelte';
   import type { RunStatus, StartRun } from './lib/transport.ts';
@@ -79,7 +80,7 @@
         // Failed load must retain the old working copy, including its dirty flag.
         editor = opened.error ? { ...editor, error: opened.error } : opened;
       } else {
-        editor = { working: { schemaVersion: 1, id: crypto.randomUUID(), name: 'Untitled workflow', blocks: [], connections: [], inputs: [] }, revision: null, dirty: true, error: '' };
+        editor = { working: { schemaVersion: 1, id: crypto.randomUUID(), name: 'Untitled workflow', isolation: 'perRun', blocks: [], connections: [], inputs: [] }, revision: null, dirty: true, error: '' };
       }
     } finally { busy = false; }
   }
@@ -122,6 +123,7 @@
         <label for="workflow-name">Workflow name</label>
         <input id="workflow-name" maxlength="200" disabled={busy} value={editor.working.name} oninput={(event) => { if (editor.working) editor = { ...editor, working: { ...editor.working, name: event.currentTarget.value }, dirty: true, error: '' }; }} />
         <h2>Workflow properties</h2>
+        <IsolationSelect value={editor.working.isolation} disabled={busy} onchange={(isolation)=>{if(editor.working)editor={...editor,working:{...editor.working,isolation},dirty:true,error:''};}}/>
         <h3>Named text inputs</h3>
         {#each editor.working.inputs as input,i}
          <label for={`input-name-${i}`}>Input name</label><input id={`input-name-${i}`} disabled={busy} value={input.name} oninput={(e)=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:editor.working.inputs.map((v,n)=>n===i?{...v,name:e.currentTarget.value}:v)},dirty:true};}} />

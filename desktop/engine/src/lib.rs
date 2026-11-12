@@ -12,10 +12,20 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use ts_rs::TS;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum IsolationMode {
+    #[default]
+    PerRun,
+    PerBlock,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Definition {
     pub schema_version: u32,
+    #[serde(default)]
+    pub isolation: IsolationMode,
     pub id: String,
     pub name: String,
     #[serde(default)]

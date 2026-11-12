@@ -21,7 +21,7 @@ test('p3 mounted inspector picker inserts only predecessor final response at the
  try{
   const modulePath=join(directory,'picker.mjs');await writeFile(modulePath,code);const Component=(await import(pathToFileURL(modulePath).href)).default;
   for(const invalid of [false,true]){
-   const definition:any={schemaVersion:1,id:'prepared',name:'Prepared',inputs:[],blocks:['c','b','a'].map(id=>({id,name:id.toUpperCase(),prompt:id==='b'?'Own replace tail':'Other',position:{x:0,y:0},configurationId:null})),connections:invalid?[]:[{source:'a',target:'b'},{source:'b',target:'c'}]};
+   const definition:any={schemaVersion:1, isolation: 'perRun' as const,id:'prepared',name:'Prepared',inputs:[],blocks:['c','b','a'].map(id=>({id,name:id.toUpperCase(),prompt:id==='b'?'Own replace tail':'Other',position:{x:0,y:0},configurationId:null})),connections:invalid?[]:[{source:'a',target:'b'},{source:'b',target:'c'}]};
    let editor:any={working:definition,revision:1,dirty:false,error:''};const target=window.document.createElement('main');window.document.body.append(target);const field=window.document.createElement('textarea');field.value='Own replace tail';field.setSelectionRange(4,11);target.append(field);let changes=0;
    flushSync(()=>{component=mount(Component,{target,props:{definition,blockId:'b',field,onprompt:(prompt:string)=>{changes++;editor=editGraph(editor,{type:'update',id:'b',patch:{prompt}});}}});});
    const select=target.querySelector('select')!;assert.deepEqual(Array.from(select.options).map(o=>o.value),invalid?['']:['','a']);
@@ -75,4 +75,25 @@ test('held and long-running panels remain refreshable and reject stale or unmoun
   commands.runStatus=()=>new Promise(resolve=>{resolveRead=resolve;});recheck.click();await Promise.resolve();
   await unmount(component);component=null;const before=statuses.length;resolveRead!(held);await Promise.resolve();assert.equal(statuses.length,before);
  }finally{globalThis.setTimeout=realSet;globalThis.clearTimeout=realClear;if(component)await unmount(component);await rm(directory,{recursive:true,force:true});window.happyDOM.abort();}
+});
+
+test('f2 mounted workflow isolation selection changes only the working copy', async()=>{
+ const window=new Window();
+ for(const key of ['document','Node','Element','HTMLElement','Text','Comment','Event','MouseEvent','HTMLMediaElement'])Object.defineProperty(globalThis,key,{configurable:true,value:(window as any)[key]});
+ Object.defineProperty(globalThis,'window',{configurable:true,value:window});Object.defineProperty(globalThis,'navigator',{configurable:true,value:window.navigator});
+ const {mount,unmount,flushSync}=await import(new URL('../node_modules/svelte/src/index-client.js',import.meta.url).href);
+ const filename=new URL('../src/lib/IsolationSelect.svelte',import.meta.url);
+ const compiled=compile(await readFile(filename,'utf8'),{filename:filename.pathname,generate:'client'}).js.code;
+ const code=compiled.replace(/import (['"])([^'"]+)\1/g,(_a,_q,s)=>`import ${JSON.stringify(import.meta.resolve(s))}`).replace(/from (['"])([^'"]+)\1/g,(_a,_q,s)=>`from ${JSON.stringify(s==='svelte'?new URL('../node_modules/svelte/src/index-client.js',import.meta.url).href:import.meta.resolve(s))}`);
+ const directory=await mkdtemp(join(tmpdir(),'isolation-select-'));let component:any;
+ try{
+  const modulePath=join(directory,'component.mjs');await writeFile(modulePath,code);const Component=(await import(pathToFileURL(modulePath).href)).default;
+  const saved={isolation:'perRun'};let editor={working:saved,dirty:false,error:'old'};
+  const target=window.document.createElement('main');window.document.body.append(target);
+  flushSync(()=>{component=mount(Component,{target,props:{value:editor.working.isolation,onchange:(isolation:string)=>{editor={...editor,working:{...editor.working,isolation},dirty:true,error:''};}}});});
+  const select=target.querySelector('select')!;assert.equal(target.querySelector('label')!.htmlFor,select.id);assert.equal(select.value,'perRun');assert.deepEqual(Array.from(select.options).map(o=>o.value),['perRun','perBlock']);
+  select.value='perBlock';select.dispatchEvent(new window.Event('change',{bubbles:true}));flushSync();
+  assert.deepEqual(editor,{working:{isolation:'perBlock'},dirty:true,error:''});assert.equal(saved.isolation,'perRun');
+  const app=await readFile(new URL('../src/App.svelte',import.meta.url),'utf8');assert.match(app,/<IsolationSelect value={editor.working.isolation}/);assert.match(app,/working:{\.\.\.editor.working,isolation},dirty:true/);
+ }finally{if(component)await unmount(component);await rm(directory,{recursive:true,force:true});window.happyDOM.abort();}
 });
