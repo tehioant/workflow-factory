@@ -90,8 +90,18 @@ async fn delete_configuration(
     .await
 }
 #[tauri::command]
-fn auth_readiness() -> workflow_engine::AuthReadiness {
-    workflow_engine::auth_readiness()
+async fn auth_readiness(app: tauri::AppHandle) -> Result<workflow_engine::AuthReadiness, Error> {
+    let home = app.path().home_dir().map_err(|_| Error::Busy {
+        message: "Codex source location unavailable. No inspection performed.".into(),
+    })?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut source = workflow_engine::auth_file::CodexFile { home };
+        workflow_engine::credential_readiness(workflow_engine::auth::inspect(&mut source))
+    })
+    .await
+    .map_err(|_| Error::Busy {
+        message: "Credential inspection interrupted. Retry manually.".into(),
+    })
 }
 struct RuntimeGate(Arc<tokio::sync::Semaphore>);
 #[tauri::command]

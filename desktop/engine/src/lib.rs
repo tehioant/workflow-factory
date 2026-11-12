@@ -1,3 +1,5 @@
+pub mod auth;
+pub mod auth_file;
 pub mod runtime;
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -307,14 +309,39 @@ pub struct SaveConfiguration {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+pub enum CredentialSourceKind {
+    NotInspected,
+    CodexFile,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ContainerAuthSupport {
+    UnsupportedConcurrentAuth,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct AuthReadiness {
     pub execution_enabled: bool,
-    pub credential_source: String,
-    pub status: String,
+    pub credential_source: CredentialSourceKind,
+    pub credential_availability: auth::CredentialAvailability,
+    pub status: ContainerAuthSupport,
     pub guidance: String,
 }
 pub fn auth_readiness() -> AuthReadiness {
-    AuthReadiness { execution_enabled:false, credential_source:"notInspected".into(), status:"unsupportedConcurrentAuth".into(), guidance:"Execution disabled: no approved supported concurrent subscription-auth staging/refresh route. Host credentials were not inspected. Copied refresh tokens race; the external-token bridge is internal-only. Configure non-secret settings here; resolve public-support, independent-login and secure-store gates before implementing execution. No API-key fallback or new login flow is available.".into() }
+    credential_readiness(auth::CredentialAvailability::NotInspected)
+}
+pub fn credential_readiness(availability: auth::CredentialAvailability) -> AuthReadiness {
+    use auth::CredentialAvailability as A;
+    let setup = match availability {
+        A::NotInspected => "No credential inspection requested.",
+        A::Available => "Subscription-shaped material is available in the supported existing Codex file. Validity, expiry, revocation and entitlement are not checked; this is not authentication.",
+        A::Missing => "The fixed Codex file is missing. This does not rule out a keyring login. Consult Codex's own subscription setup; do not export or convert credentials for this app.",
+        A::Unsupported => "This source or auth kind is unsupported. Keyring, custom CODEX_HOME, ephemeral, external tokens and API keys are not inspected; do not change stores for this app.",
+        A::Malformed => "The supported file does not match the bounded subscription schema. Use Codex's own setup guidance; this app will not repair it.",
+        A::Inaccessible => "The fixed Codex source could not be read. Review local access using Codex's own setup; no fallback was attempted.",
+        A::Unsafe => "Source safety checks failed (type, ownership, permissions, links, size or concurrent modification). No repair, copying or fallback was attempted.",
+    };
+    AuthReadiness { execution_enabled:false, credential_source:if availability==A::NotInspected {CredentialSourceKind::NotInspected} else {CredentialSourceKind::CodexFile}, credential_availability:availability, status:ContainerAuthSupport::UnsupportedConcurrentAuth, guidance:format!("{setup} Execution blocked: container authentication/staging and managed-cache refresh/write-back are not implemented in this app. The documented serialized app-owned cache route requires trusted-private workloads, secure native storage/staging and platform verification in #29. No login, refresh, host-auth write, paid API-key fallback or model call is performed.") }
 }
 fn validate_configuration(c: &CodexConfiguration) -> Result<(), Error> {
     if c.id.len() != 36

@@ -8,6 +8,9 @@ use workflow_engine::{
 fn main() {
     let config = Default::default();
     let declarations = [
+        workflow_engine::auth::CredentialAvailability::decl(&config),
+        workflow_engine::CredentialSourceKind::decl(&config),
+        workflow_engine::ContainerAuthSupport::decl(&config),
         Readiness::decl(&config),
         RuntimeStatus::decl(&config),
         IsolationEvidence::decl(&config),
