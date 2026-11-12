@@ -38,7 +38,7 @@
   let pendingStart=$state<StartRun|null>(null);
   onMount(()=>{let alive=true;void commands.runStatus().then(value=>{if(alive){run=value;runReady=true;}}).catch(error=>{if(alive)runError=errorMessage(error);});return()=>{alive=false;};});
   async function begin(mode:'save'|'saved'|'retry'){
-    if(busy||!runReady||(mode!=='retry'&&!editor.working))return;
+    if(busy||!runReady||(mode!=='retry'&&(!editor.working||pendingStart!==null)))return;
     const inputs=$state.snapshot(supplied);
     busy=true;runError='';
     try{
@@ -164,9 +164,9 @@
       <p>Trusted private workloads only. Native secure staging, managed login and containment must be qualified before execution.</p>
       {#if dirtyStart}
       <h2>Unsaved changes</h2><p>Save and start, explicitly use the last saved revision without discarding edits, or stay.</p>
-      <button disabled={busy} onclick={()=>begin('save')}>Save and start</button>
-      <button disabled={busy||!editor.revision} onclick={()=>begin('saved')}>Start last saved revision</button>
-      <button disabled={busy} onclick={()=>{dirtyStart=false;}}>Stay</button>
+      <button disabled={busy||pendingStart!==null} onclick={()=>begin('save')}>Save and start</button>
+      <button disabled={busy||pendingStart!==null||!editor.revision} onclick={()=>begin('saved')}>Start last saved revision</button>
+      <button disabled={busy||pendingStart!==null} onclick={()=>{dirtyStart=false;}}>Stay</button>
       {/if}
       {#if pendingStart}<p>Admission outcome may be unknown. Retry the same immutable request, not a new start.</p><button disabled={busy} onclick={()=>begin('retry')}>Retry same request</button>{/if}
       {#if runError}<p role="alert">{runError}</p>{/if}

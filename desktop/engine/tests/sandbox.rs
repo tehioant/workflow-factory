@@ -56,15 +56,36 @@ fn c14_inspection_accepts_inert_static_endpoints_but_requires_applied_ids_after_
     struct Inspect {
         r: Resources,
         applied: bool,
+        cancel_after_inspect: Option<Cancel>,
+        executions: usize,
     }
     impl Pipe for Inspect {
         fn call(
             &mut self,
             args: &[String],
-            _: &[u8],
+            input: &[u8],
             _: usize,
             _: &Cancel,
         ) -> Result<(i32, Vec<u8>, Vec<u8>), Error> {
+            if args[0] == "exec" {
+                assert_eq!(
+                    args,
+                    &[
+                        "exec",
+                        "-i",
+                        &self.r.container,
+                        "node",
+                        "/opt/workflow-factory/keeper.mjs",
+                        "run",
+                        "codex",
+                        "high"
+                    ]
+                    .map(str::to_string)
+                );
+                assert_eq!(input, b"literal $HOME; not shell");
+                self.executions += 1;
+                return Ok((0, b"prepared output".to_vec(), vec![]));
+            }
             assert_eq!(args[1], "inspect");
             let r = &self.r;
             let label = json!({"org.workflow-factory.owner":r.owner});
@@ -79,6 +100,11 @@ fn c14_inspection_accepts_inert_static_endpoints_but_requires_applied_ids_after_
             } else {
                 json!({"Id":r.container,"Image":r.image,"Config":{"Labels":label,"User":"1000:1000"},"HostConfig":host(536870912,128),"Mounts":[],"NetworkSettings":{"Networks":{private:endpoint(&r.network)}}})
             };
+            if args[2] == r.outer {
+                if let Some(cancel) = &self.cancel_after_inspect {
+                    cancel.request();
+                }
+            }
             Ok((0, serde_json::to_vec(&vec![value]).unwrap(), vec![]))
         }
     }
@@ -93,7 +119,9 @@ fn c14_inspection_accepts_inert_static_endpoints_but_requires_applied_ids_after_
     assert!(Sandbox {
         pipe: Inspect {
             r: r.clone(),
-            applied: false
+            applied: false,
+            cancel_after_inspect: None,
+            executions: 0
         }
     }
     .inspect_phase(&r, false)
@@ -101,7 +129,9 @@ fn c14_inspection_accepts_inert_static_endpoints_but_requires_applied_ids_after_
     assert!(Sandbox {
         pipe: Inspect {
             r: r.clone(),
-            applied: false
+            applied: false,
+            cancel_after_inspect: None,
+            executions: 0
         }
     }
     .inspect_work(&r)
@@ -109,9 +139,59 @@ fn c14_inspection_accepts_inert_static_endpoints_but_requires_applied_ids_after_
     assert!(Sandbox {
         pipe: Inspect {
             r: r.clone(),
-            applied: true
+            applied: true,
+            cancel_after_inspect: None,
+            executions: 0
         }
     }
     .inspect_work(&r)
     .is_ok());
+    for interrupted in [false, true] {
+        let cancel = Cancel::default();
+        let mut sandbox = Sandbox {
+            pipe: Inspect {
+                r: r.clone(),
+                applied: true,
+                cancel_after_inspect: interrupted.then(|| cancel.clone()),
+                executions: 0,
+            },
+        };
+        let config: workflow_engine::CodexConfiguration = serde_json::from_value(serde_json::json!({"id":"00000000-0000-0000-0000-000000000001","name":"Prepared","model":"codex","reasoning":"high"})).unwrap();
+        assert_eq!(
+            sandbox
+                .execute(&r, "literal $HOME; not shell", &config, &cancel)
+                .is_ok(),
+            !interrupted
+        );
+        assert_eq!(sandbox.pipe.executions, usize::from(!interrupted));
+    }
+}
+#[test]
+fn c15_cancelled_create_never_mutates_even_when_cancel_arrives_in_intent() {
+    struct NoWork;
+    impl Pipe for NoWork {
+        fn call(
+            &mut self,
+            _: &[String],
+            _: &[u8],
+            _: usize,
+            _: &Cancel,
+        ) -> Result<(i32, Vec<u8>, Vec<u8>), Error> {
+            panic!("cancelled work transport invoked")
+        }
+    }
+    let cancel = Cancel::default();
+    let mut sandbox = Sandbox { pipe: NoWork };
+    assert!(sandbox
+        .create(
+            "00000000-0000-0000-0000-000000000003",
+            &format!("sha256:{}", "f".repeat(64)),
+            &cancel,
+            |_, _| {
+                cancel.request();
+                Ok(())
+            }
+        )
+        .is_err());
+    assert!(cancel.check().is_err()); // Native pre-spawn boundary uses the retained refusing-process fake probe.
 }

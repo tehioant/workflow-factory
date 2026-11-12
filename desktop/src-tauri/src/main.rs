@@ -1,4 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#[cfg(any(target_os = "macos", test))]
+mod mac_security;
 mod run_host;
 mod runtime_host;
 mod sessions_host;
@@ -13,6 +15,40 @@ use workflow_engine::{
 struct ActiveRuns(
     std::sync::Mutex<std::collections::BTreeMap<String, workflow_engine::sandbox::Cancel>>,
 );
+impl ActiveRuns {
+    fn signal_stop(&self, id: &str) -> Result<(), Error> {
+        let runs = self.0.lock().map_err(|_| Error::Busy {
+            message: "Worker cancellation ownership unavailable; retry Stop.".into(),
+        })?;
+        if let Some(cancel) = runs.get(id) {
+            cancel.request();
+        }
+        Ok(())
+    }
+}
+#[cfg(test)]
+mod stop_tests {
+    #[test]
+    fn c17_stop_signals_only_exact_worker_despite_storage_refusal() {
+        let active = super::ActiveRuns::default();
+        let selected = workflow_engine::sandbox::Cancel::default();
+        let other = workflow_engine::sandbox::Cancel::default();
+        active.0.lock().unwrap().extend([
+            ("selected".into(), selected.clone()),
+            ("other".into(), other.clone()),
+        ]);
+        let stop = || -> Result<(), workflow_engine::Error> {
+            active.signal_stop("selected")?;
+            Err(workflow_engine::Error::Storage {
+                message: "prepared database refusal; ownership held".into(),
+            })
+        };
+        assert!(stop().is_err());
+        assert!(selected.check().is_err());
+        assert!(other.check().is_ok());
+        assert_eq!(active.0.lock().unwrap().len(), 2);
+    }
+}
 struct Database {
     directory: PathBuf,
     gate: Arc<tokio::sync::Semaphore>,
@@ -199,9 +235,12 @@ async fn run_status(
     state: tauri::State<'_, Database>,
     id: Option<String>,
 ) -> Result<Option<workflow_engine::runs::RunStatus>, Error> {
-    database(&state, move |s| match id {
-        Some(id) => s.run_status(&id).map(Some),
-        None => s.latest_run(),
+    database(&state, move |s| {
+        run_host::retry_outputs(&s)?;
+        match id {
+            Some(id) => s.run_status(&id).map(Some),
+            None => s.latest_run(),
+        }
     })
     .await
 }
@@ -211,18 +250,11 @@ async fn stop_run(
     state: tauri::State<'_, Database>,
     id: String,
 ) -> Result<workflow_engine::runs::RunStatus, Error> {
-    let status = database(&state, {
-        let id = id.clone();
-        move |s| s.stop_run(&id)
-    })
-    .await?;
     let active = app.state::<Arc<ActiveRuns>>();
-    if let Ok(runs) = active.0.lock() {
-        if let Some(cancel) = runs.get(&id) {
-            cancel.request();
-        }
-    }
-    Ok(status)
+    active.signal_stop(&id)?;
+    database(&state, move |s| s.stop_run(&id)).await.map_err(|_| Error::Storage {
+        message: "Selected worker cancellation requested, but stop storage failed. Ownership and cleanup remain held; retry Stop/status. No new work authorized.".into(),
+    })
 }
 #[tauri::command]
 async fn managed_session_status(

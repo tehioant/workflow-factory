@@ -120,12 +120,16 @@ fn c04_restart_withholds_active_run_and_session_without_releasing() {
         1
     );
 }
-struct FailingStore;
+struct FailingStore(bool);
 impl SecureStore for FailingStore {
     fn write(&mut self, _: &str, _: &[u8]) -> Result<(), workflow_engine::Error> {
-        Err(workflow_engine::Error::Storage {
-            message: "simulated denial".into(),
-        })
+        if self.0 {
+            Err(workflow_engine::Error::Storage {
+                message: "simulated denial".into(),
+            })
+        } else {
+            Ok(())
+        }
     }
     fn read(&mut self, _: &str) -> Result<Vec<u8>, workflow_engine::Error> {
         Ok(br#"{"auth_mode":"chatgpt","tokens":{"login_owner_id":"synthetic","access_token":"synthetic-a","refresh_token":"synthetic-r","id_token":"a.b.c","account_id":"synthetic-account","oauth_provenance":{"issuer":"https://auth.openai.com","client_id":"synthetic-client"}}}"#.to_vec())
@@ -133,24 +137,48 @@ impl SecureStore for FailingStore {
 }
 #[test]
 fn c05_writeback_failure_quarantines_and_never_destroys_tmpfs() {
-    let (_dir, store, c) = prepared();
-    c.execute(
-        "INSERT INTO managed_sessions VALUES('slot','leased',7,'owned')",
-        [],
-    )
-    .unwrap();
-    let cache=br#"{"auth_mode":"chatgpt","tokens":{"login_owner_id":"synthetic","access_token":"synthetic-a","refresh_token":"synthetic-r","id_token":"a.b.c","account_id":"synthetic-account","oauth_provenance":{"issuer":"https://auth.openai.com","client_id":"synthetic-client"}}}"#;
-    assert!(store
-        .finish_session("slot", "owned", 7, cache, &mut FailingStore, || panic!(
-            "cleanup before persistence"
-        ))
-        .is_err());
-    assert_eq!(
-        c.query_row("SELECT state FROM managed_sessions", [], |r| r
-            .get::<_, String>(0))
-            .unwrap(),
-        "quarantined"
-    );
+    for write_fails in [true, false] {
+        let (_dir, store, c) = prepared();
+        seed_run(&c, &status(), true);
+        store
+            .retain_run_output("owned", "validated [REDACTED] response")
+            .unwrap();
+        c.execute(
+            "INSERT INTO managed_sessions VALUES('slot','leased',7,'owned')",
+            [],
+        )
+        .unwrap();
+        let cache=br#"{"auth_mode":"chatgpt","tokens":{"login_owner_id":"synthetic","access_token":"synthetic-a","refresh_token":"synthetic-r","id_token":"a.b.c","account_id":"synthetic-account","oauth_provenance":{"issuer":"https://auth.openai.com","client_id":"synthetic-client"}}}"#;
+        assert!(store
+            .finish_session(
+                "slot",
+                "owned",
+                7,
+                cache,
+                &mut FailingStore(write_fails),
+                || {
+                    assert!(!write_fails, "cleanup before persistence");
+                    Err(workflow_engine::Error::Storage {
+                        message: "prepared cleanup refusal".into(),
+                    })
+                }
+            )
+            .is_err());
+        assert_eq!(
+            c.query_row("SELECT state FROM managed_sessions", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "quarantined"
+        );
+        store
+            .finish_run("owned", None, "Cleanup held", false, false)
+            .unwrap();
+        assert_eq!(
+            store.run_status("owned").unwrap().final_response.as_deref(),
+            Some("validated [REDACTED] response")
+        );
+        assert!(store.run_status("owned").unwrap().cleanup_pending);
+    }
 }
 #[test]
 fn c06_structured_terminal_output_redacts_staged_and_rotated_secrets() {

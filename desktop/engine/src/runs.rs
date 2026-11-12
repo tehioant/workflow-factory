@@ -50,6 +50,28 @@ pub struct Admission {
     pub blocker: Option<String>,
 }
 impl Store {
+    /// Retain validated, redacted output without declaring cleanup or completion.
+    pub fn retain_run_output(&self, id: &str, text: &str) -> Result<(), Error> {
+        let mut c = rusqlite::Connection::open(&self.path).map_err(storage)?;
+        let tx = c
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let body: String = tx
+            .query_row(
+                "SELECT status FROM runs WHERE id=?1 AND active=1",
+                [id],
+                |r| r.get(0),
+            )
+            .map_err(storage)?;
+        let mut status: RunStatus = serde_json::from_str(&body).map_err(storage)?;
+        status.final_response = Some(text.into());
+        tx.execute(
+            "UPDATE runs SET status=?1 WHERE id=?2 AND active=1",
+            params![serde_json::to_string(&status).map_err(storage)?, id],
+        )
+        .map_err(storage)?;
+        tx.commit().map_err(storage)
+    }
     pub fn claim_run(&self, id: &str) -> Result<Option<(Snapshot, crate::sessions::Lease)>, Error> {
         let mut c = rusqlite::Connection::open(&self.path).map_err(storage)?;
         let tx = c

@@ -5,10 +5,10 @@
  import { onMount } from 'svelte';
  import type { SignInStatus } from './transport.ts';
  import { errorMessage } from './editor.ts';
- let status=$state<SignInStatus|null>(null);let busy=$state(false);let error=$state('');
+ let status=$state<SignInStatus|null>(null);let busy=$state(true);let error=$state('');
  let alive=true;
  async function action(command:string){busy=true;error='';try{const value=await (command==='begin_session_sign_in'?commands.begin():command==='read_session_sign_in'?commands.read():command==='retire_session_sign_in'?commands.retire():commands.cancel());if(alive)status=value;}catch(e){if(alive)error=errorMessage(e);}finally{if(alive)busy=false;}}
- onMount(()=>{let timer:ReturnType<typeof setTimeout>;let polls=0;async function poll(){if(!alive)return;if(status?.state==='pending'&&!busy&&polls++<300)await action('read_session_sign_in');if(alive)timer=setTimeout(poll,2000);}timer=setTimeout(poll,2000);return()=>{alive=false;clearTimeout(timer);status=null;};});
+ onMount(()=>{let timer:ReturnType<typeof setTimeout>;async function poll(){if(!alive)return;if(status?.state==='pending'&&!busy)await action('read_session_sign_in');if(alive)timer=setTimeout(poll,2000);}void action('read_session_sign_in');timer=setTimeout(poll,2000);return()=>{alive=false;clearTimeout(timer);status=null;};});
 </script>
 <main class="notice">
  <h1>App-owned Codex managed session</h1>

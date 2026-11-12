@@ -1,5 +1,34 @@
 //! Native observations only. No IPC flag can establish platform qualification.
+use std::collections::BTreeMap;
+use std::sync::{Mutex, OnceLock};
 use workflow_engine::runs::Admission;
+fn outputs() -> &'static Mutex<BTreeMap<String, String>> {
+    static OUTPUTS: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+    OUTPUTS.get_or_init(Mutex::default)
+}
+fn output_hold() -> workflow_engine::Error {
+    workflow_engine::Error::Storage { message: "Completed redacted output retained in app memory; storage failed. Ownership remains held. Keep the app open and Recheck status to retry storage; no execution retry.".into() }
+}
+fn retain_output(
+    id: &str,
+    text: String,
+    persist: impl FnOnce(&str, &str) -> Result<(), workflow_engine::Error>,
+) -> Result<(), workflow_engine::Error> {
+    let mut pending = outputs().lock().map_err(|_| output_hold())?;
+    pending.insert(id.into(), text);
+    persist(id, &pending[id]).map_err(|_| output_hold())?;
+    pending.remove(id);
+    Ok(())
+}
+pub fn retry_outputs(store: &workflow_engine::Store) -> Result<(), workflow_engine::Error> {
+    let mut pending = outputs().lock().map_err(|_| output_hold())?;
+    pending.retain(|id, text| store.retain_run_output(id, text).is_err());
+    if pending.is_empty() {
+        Ok(())
+    } else {
+        Err(output_hold())
+    }
+}
 pub fn execute(
     directory: std::path::PathBuf,
     id: String,
@@ -21,12 +50,13 @@ pub fn execute(
     let result = (|| {
         native_prerequisites().map_err(|message| workflow_engine::Error::Validation { message })?;
         cancel.check()?;
-        let resources = sandbox.create(&id, &snapshot.image_id, |kind, resource| {
+        let resources = sandbox.create(&id, &snapshot.image_id, &cancel, |kind, resource| {
             store.resource_intent(&id, kind, resource)
         })?;
+        native_prerequisites().map_err(|message| workflow_engine::Error::Validation { message })?;
         let seed = secure.read(&lease.slot)?;
         cancel.check()?;
-        sandbox.stage(&resources, &seed)?;
+        sandbox.stage(&resources, &seed, &cancel)?;
         cancel.check()?;
         let execution = sandbox.execute(
             &resources,
@@ -67,6 +97,11 @@ pub fn execute(
         let final_result = execution.and_then(|(code, output)| {
             workflow_engine::output::Decoder::decode(&output, code, &secrets)
         });
+        if let Ok(text) = &final_result {
+            retain_output(&id, text.clone(), |id, text| {
+                store.retain_run_output(id, text)
+            })?;
+        }
         store.finish_session(
             &lease.slot,
             &id,
@@ -103,6 +138,7 @@ pub fn admission() -> Admission {
         },
     }
 }
+#[cfg(any(target_os = "linux", test))]
 fn policy(swaps: &str, core_pattern: &str, limits: &str) -> bool {
     swaps
         .lines()
@@ -169,16 +205,24 @@ fn native_prerequisites() -> Result<(), String> {
     }
     Ok(())
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn native_prerequisites() -> Result<(), String> {
-    Err("secureStagingUnavailable: only qualified local Linux secure mode is implemented; macOS/VM execution unsupported.".into())
+    crate::mac_security::qualify()
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn native_prerequisites() -> Result<(), String> {
+    Err("secureStagingUnavailable: this operating system has no supported secure mode; Linux and macOS require native qualification.".into())
 }
 /// No IPC approval Boolean: the host owns the question, text and direct native
 /// user response. Approval is consumed by this exact caller, never cached/reused.
 pub fn confirm(scope: &str) -> Result<(), workflow_engine::Error> {
+    #[cfg(target_os = "macos")]
+    return crate::mac_security::confirm(scope);
+    #[cfg(not(target_os = "macos"))]
     let result = std::process::Command::new("/usr/bin/zenity")
         .args(["--question","--no-markup","--default-cancel","--title=Workflow Factory · trusted private scope","--text", &format!("Authorize only this operation on trusted private infrastructure and private trusted inputs (not public/open-source or untrusted workloads). Credentials are accessible to the workload. Do not hibernate or take memory snapshots while active. This mode does not defend against privileged host administrators. No paid fallback or host grant import.\n\n{scope}")])
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+    #[cfg(not(target_os = "macos"))]
     if result.is_ok_and(|s| s.success()) {
         Ok(())
     } else {
@@ -188,7 +232,37 @@ pub fn confirm(scope: &str) -> Result<(), workflow_engine::Error> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn c16_redacted_output_storage_failure_retains_exact_retry_payload() {
+        let id = "prepared-output-test";
+        let text = "validated [REDACTED] response";
+        assert!(super::retain_output(id, text.into(), |_, _| Err(super::output_hold())).is_err());
+        assert_eq!(
+            super::outputs().lock().unwrap().get(id).map(String::as_str),
+            Some(text)
+        );
+        super::retain_output(id, text.into(), |actual, payload| {
+            assert_eq!(actual, id);
+            assert_eq!(payload, text);
+            Ok(())
+        })
+        .unwrap();
+        assert!(!super::outputs().lock().unwrap().contains_key(id));
+    }
+    #[test]
     fn c11_native_security_policy_has_supported_positive_and_specific_refusals() {
+        let docker = r#"{"OperatingSystem":"Docker Desktop","OSType":"linux"}"#;
+        assert!(crate::mac_security::observations(
+            "FileVault is On.\n",
+            docker
+        ));
+        assert!(!crate::mac_security::observations(
+            "FileVault is Off.",
+            docker
+        ));
+        assert!(!crate::mac_security::observations("FileVault is On.", "{}"));
+        assert!(crate::mac_security::confirmation_script()
+            .contains("default button \"Cancel\" cancel button \"Cancel\""));
+        assert!(crate::mac_security::confirmation_script().contains("item 1 of argv"));
         let swaps = "Filename\tType\tSize\tUsed\tPriority\n";
         let limits = "Max core file size        0                    0                    bytes\n";
         assert!(super::policy(swaps, "core", limits));

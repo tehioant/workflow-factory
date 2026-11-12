@@ -37,9 +37,12 @@ pub fn begin(directory: &std::path::Path, state: &SignIn) -> Result<SignInStatus
     let store = Store::open(directory)?;
     let lease = store.begin_acquisition()?;
     let mut sandbox = Sandbox { pipe: NativePipe };
-    let resources = match sandbox.create(&lease.owner, &admission.image_id, |kind, resource| {
-        store.resource_intent(&lease.owner, kind, resource)
-    }) {
+    let resources = match sandbox.create(
+        &lease.owner,
+        &admission.image_id,
+        &workflow_engine::sandbox::Cancel::default(),
+        |kind, resource| store.resource_intent(&lease.owner, kind, resource),
+    ) {
         Ok(value) => value,
         Err(error) => {
             store.quarantine_session(&lease)?;

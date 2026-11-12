@@ -56,7 +56,9 @@ impl Pipe for NativePipe {
         for stream in [&out, &err, &writer] {
             stream.set_nonblocking(true).map_err(crate::storage)?;
         }
-        let mut child = std::process::Command::new("docker")
+        cancel.check()?;
+        let mut command = std::process::Command::new("docker");
+        command
             .args(["--host", "unix:///var/run/docker.sock"])
             .args(args)
             .env_clear()
@@ -65,7 +67,9 @@ impl Pipe for NativePipe {
             .env("DOCKER_CONFIG", "/var/empty/workflow-factory-no-config")
             .stdin(Stdio::from(OwnedFd::from(reader)))
             .stdout(Stdio::from(OwnedFd::from(out_writer)))
-            .stderr(Stdio::from(OwnedFd::from(err_writer)))
+            .stderr(Stdio::from(OwnedFd::from(err_writer)));
+        cancel.check()?;
+        let mut child = command
             .spawn()
             .map_err(|_| validation("Local sandbox transport unavailable."))?;
         let result = (|| {
@@ -175,6 +179,7 @@ impl<P: Pipe> Sandbox<P> {
         &mut self,
         owner: &str,
         image_id: &str,
+        cancel: &Cancel,
         mut receipt: impl FnMut(&str, Option<&str>) -> Result<(), Error>,
     ) -> Result<Resources, Error> {
         if uuid::Uuid::parse_str(owner).is_err() || !image(image_id) {
@@ -182,8 +187,9 @@ impl<P: Pipe> Sandbox<P> {
         }
         let label = format!("org.workflow-factory.owner={owner}");
         let mut create = |kind: &str, args: Vec<String>| -> Result<String, Error> {
+            cancel.check()?;
             receipt(kind, None)?;
-            let bytes = self.success(&args, &[], 131072)?;
+            let bytes = self.work_success(&args, &[], 131072, cancel)?;
             let id = std::str::from_utf8(&bytes)
                 .map_err(|_| validation("Resource ID unavailable; ownership held."))?
                 .trim()
@@ -294,7 +300,7 @@ impl<P: Pipe> Sandbox<P> {
         };
         self.owned("container", &r.helper, owner)?;
         self.owned("network", &r.network, owner)?;
-        self.success(
+        self.work_success(
             &strings(&[
                 "network",
                 "connect",
@@ -305,16 +311,47 @@ impl<P: Pipe> Sandbox<P> {
             ]),
             &[],
             131072,
+            cancel,
         )?;
         self.inspect_phase(&r, false)?;
-        self.success(&strings(&["start", &r.helper]), &[], 131072)?;
-        self.success(&strings(&["start", &r.container]), &[], 131072)?;
+        self.work_success(&strings(&["start", &r.helper]), &[], 131072, cancel)?;
+        self.work_success(&strings(&["start", &r.container]), &[], 131072, cancel)?;
         self.inspect_work(&r)?;
         Ok(r)
     }
 
+    #[cfg(target_os = "macos")]
+    fn check_guest(&mut self, r: &Resources, cancel: &Cancel) -> Result<(), Error> {
+        #[cfg(target_os = "macos")]
+        {
+            let guest = self.work_success(&strings(&["exec", &r.container, "node", "-e", "const fs=require('node:fs');process.stdout.write(JSON.stringify({swaps:fs.readFileSync('/proc/swaps','utf8'),core:fs.readFileSync('/proc/sys/kernel/core_pattern','utf8')}))"]), &[], 16384, cancel)?;
+            let v: Value = serde_json::from_slice(&guest).map_err(crate::storage)?;
+            if !v["swaps"].as_str().is_some_and(|s| {
+                s.lines().next().is_some_and(|h| h.starts_with("Filename"))
+                    && !s.lines().skip(1).any(|s| !s.trim().is_empty())
+            }) || !v["core"]
+                .as_str()
+                .is_some_and(|s| !s.trim().is_empty() && !s.trim().starts_with('|'))
+            {
+                return Err(validation(
+                    "Docker Desktop guest swap/core policy unavailable; no credentials staged.",
+                ));
+            }
+        }
+        Ok(())
+    }
     fn success(&mut self, args: &[String], input: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
-        let (code, out, _) = self.pipe.call(args, input, limit, &Cancel::default())?;
+        self.work_success(args, input, limit, &Cancel::default())
+    }
+    fn work_success(
+        &mut self,
+        args: &[String],
+        input: &[u8],
+        limit: usize,
+        cancel: &Cancel,
+    ) -> Result<Vec<u8>, Error> {
+        cancel.check()?;
+        let (code, out, _) = self.pipe.call(args, input, limit, cancel)?;
         if code != 0 {
             return Err(validation(
                 "Sandbox operation failed. Raw diagnostics withheld; ownership retained.",
@@ -489,6 +526,8 @@ impl<P: Pipe> Sandbox<P> {
     }
     pub fn start_login(&mut self, r: &Resources) -> Result<(), Error> {
         self.inspect_work(r)?;
+        #[cfg(target_os = "macos")]
+        self.check_guest(r, &Cancel::default())?;
         self.check_no_swap(r)?;
         self.success(
             &strings(&[
@@ -564,11 +603,13 @@ impl<P: Pipe> Sandbox<P> {
         }
         Ok(())
     }
-    pub fn stage(&mut self, r: &Resources, cache: &[u8]) -> Result<(), Error> {
+    pub fn stage(&mut self, r: &Resources, cache: &[u8], cancel: &Cancel) -> Result<(), Error> {
         crate::sessions::validate_cache(cache)?;
         self.inspect_work(r)?;
+        #[cfg(target_os = "macos")]
+        self.check_guest(r, cancel)?;
         self.check_no_swap(r)?;
-        self.success(
+        self.work_success(
             &strings(&[
                 "exec",
                 "-i",
@@ -579,6 +620,7 @@ impl<P: Pipe> Sandbox<P> {
             ]),
             cache,
             CACHE_LIMIT,
+            cancel,
         )?;
         Ok(())
     }
@@ -589,7 +631,11 @@ impl<P: Pipe> Sandbox<P> {
         config: &crate::CodexConfiguration,
         cancel: &Cancel,
     ) -> Result<(i32, Vec<u8>), Error> {
+        cancel.check()?;
         self.inspect_work(r)?;
+        #[cfg(target_os = "macos")]
+        self.check_guest(r, cancel)?;
+        cancel.check()?;
         let (code, out, _) = self.pipe.call(
             &strings(&[
                 "exec",
