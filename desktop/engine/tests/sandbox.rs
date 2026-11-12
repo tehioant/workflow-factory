@@ -343,7 +343,31 @@ fn d10_owned_workspace_capture_is_immutable_and_scoped() {
         .capture_artifacts(&r, "a", cache, &["synthetic-secret".into()], d.path())
         .unwrap();
     assert_eq!(sandbox.pipe.executions, 1);
-
+    use workflow_engine::{output::Publication, runs::inspection::Journal};
+    Journal::commit(
+        d.path(),
+        &identity.run_id,
+        &Publication::acknowledged(identity.clone()),
+    )
+    .unwrap();
+    let before = Journal::page(d.path(), &identity.run_id, None, 0).unwrap();
+    let mut notified = false;
+    Journal::capture_committed(d.path(), &identity.run_id, identity.clone(), || {
+        assert!(Artifacts::read(d.path(), &identity.run_id).is_ok());
+        let durable = Journal::page(
+            d.path(),
+            &identity.run_id,
+            Some(&before.generation),
+            before.high,
+        )
+        .unwrap();
+        assert_eq!(durable.high, before.high + 1);
+        assert_eq!(durable.entries[0].kind, "capture.committed");
+        assert_eq!(durable.entries[0].text, "ARTIFACT_CAPTURE_COMMITTED");
+        notified = true;
+    })
+    .unwrap();
+    assert!(notified);
     let original = Artifacts::read(d.path(), &identity.run_id).unwrap();
     assert_eq!(original.files[0].text, "immutable <script> café [REDACTED]");
     assert!(uuid::Uuid::parse_str(&original.files[0].id).is_ok());

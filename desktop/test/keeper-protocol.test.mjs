@@ -4,6 +4,21 @@ import assert from 'node:assert/strict';
 import {devicePrompt,confirmedStopped,stopWriters,DiagnosticProjection,publishDiagnostics,diagnosticLimits,redactDiagnostics} from '../../runtime/keeper-protocol.mjs';
 
 test('d10_guest_projection_withholds_until_known_secret_checkpoint',async()=>{
+  const {captureArtifacts}=await import('../../runtime/capture-artifacts.mjs');
+  const fs=await import('node:fs');
+  for(const count of [1,257]) {
+    let reads=0,closed=0;
+    const stat={uid:BigInt(process.getuid()),nlink:1n,size:2n,dev:1n,ino:1n,mode:0o600n,mtimeNs:1n,ctimeNs:1n,isDirectory:()=>true,isFile:()=>false};
+    const fake={constants:fs.constants,openSync:path=>path==='/workspace'?7:8,
+      fstatSync:fd=>fd===7?stat:{...stat,isDirectory:()=>false,isFile:()=>true},
+      opendirSync:()=>({readSync:()=>++reads<=count?{name:'file-'+reads}:null,closeSync:()=>closed++}),
+      readdirSync:()=>assert.fail('unbounded enumeration forbidden'),
+      readSync:(_fd,buffer)=>{buffer.write('ok');return 2;},closeSync:()=>closed++};
+    const current=Buffer.from(JSON.stringify({tokens:{access_token:'prepared-token'}}));
+    const capture=captureArtifacts({identity:{runId:'00000000-0000-0000-0000-000000000001',blockId:'a',epoch:'prepared'},cache:current.toString(),secrets:[]},{stopped:async()=>true,cache:async()=>current},fake);
+    if(count===1){assert.equal((await capture).files[0].text,'ok');assert.equal(reads,2);assert.equal(closed,3);}
+    else {await assert.rejects(capture);assert.equal(reads,257);assert.equal(closed,2);}
+  }
   const files=new Map();
   const store={write:(key,bytes)=>files.set(key,Buffer.from(bytes)),read:key=>Buffer.from(files.get(key)??assert.fail('missing prepared staging'))};
   const cache=token=>Buffer.from(JSON.stringify({tokens:{access_token:token}}));

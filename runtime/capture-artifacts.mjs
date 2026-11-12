@@ -1,16 +1,17 @@
 // Fixed guest workspace only. No raw bytes leave before the stopped/cache checkpoint.
 import * as fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { diagnosticIdentity, redactDiagnostics, confirmedStopped } from './keeper-protocol.mjs';
+import { diagnosticIdentity, redactDiagnostics, confirmedStopped, boundedNames } from './keeper-protocol.mjs';
 const denied=()=>Error('Artifact capture unavailable');
 const {O_RDONLY,O_DIRECTORY,O_NOFOLLOW,O_NONBLOCK}=fs.constants;
-function checked(fd,directory) {
+function checked(fs,fd,directory) {
   const s=fs.fstatSync(fd,{bigint:true});
   if(s.uid!==BigInt(process.getuid()) || (directory?!s.isDirectory():!s.isFile()||s.nlink!==1n))throw denied();
   return s;
 }
 function unchanged(a,b) {return ['dev','ino','size','mtimeNs','ctimeNs','mode','nlink','uid'].every(k=>a[k]===b[k]);}
-export async function captureArtifacts(request,checkpoint) {
+export async function captureArtifacts(request,checkpoint,io=fs) {
+  const fs=io;
   const identity=diagnosticIdentity(request.identity);
   if(!await checkpoint.stopped())throw denied();
   const current=await checkpoint.cache();
@@ -23,9 +24,9 @@ export async function captureArtifacts(request,checkpoint) {
   const root=fs.openSync('/workspace',O_RDONLY|O_DIRECTORY|O_NOFOLLOW);
   let inspected=0,total=0;const files=[];
   function walk(parent,segments) {
-    const before=checked(parent,true);
-    const names=fs.readdirSync(`/proc/self/fd/${parent}`);
-    if(inspected+names.length>256)throw denied();inspected+=names.length;
+    const before=checked(fs,parent,true);
+    const names=boundedNames(fs,`/proc/self/fd/${parent}`,256-inspected);
+    inspected+=names.length;
     for(const name of names.sort()) {
       if(!name||name==='.'||name==='..'||name.includes('/')||name.includes('\\')||/[\x00-\x1f\x7f]/.test(name)||Buffer.byteLength(name)>128||segments.length>=16)throw denied();
       const path=`/proc/self/fd/${parent}/${name}`;
@@ -34,11 +35,11 @@ export async function captureArtifacts(request,checkpoint) {
         const before=fs.fstatSync(fd,{bigint:true});
         if(before.isDirectory())walk(fd,[...segments,name]);
         else {
-          checked(fd,false);
+          checked(fs,fd,false);
           if(before.size>65536n||files.length>=64)throw denied();
           const bytes=Buffer.alloc(Number(before.size));let offset=0;
           while(offset<bytes.length){const n=fs.readSync(fd,bytes,offset,bytes.length-offset,offset);if(!n)throw denied();offset+=n;}
-          if(!unchanged(before,checked(fd,false)))throw denied();
+          if(!unchanged(before,checked(fs,fd,false)))throw denied();
           let text;try{text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);}catch{throw denied();}
           if(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text))throw denied();
           const filename=redactDiagnostics([...segments,name].join('/'),secrets);
@@ -49,7 +50,7 @@ export async function captureArtifacts(request,checkpoint) {
         }
       }finally{fs.closeSync(fd);}
     }
-    if(!unchanged(before,checked(parent,true)))throw denied();
+    if(!unchanged(before,checked(fs,parent,true)))throw denied();
   }
   try{walk(root,[]);}finally{fs.closeSync(root);}
   if(!await checkpoint.stopped()||!current.equals(await checkpoint.cache()))throw denied();
@@ -66,7 +67,7 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href) {
     const read=fs.promises.readFile;
     const cache=async()=>{
       const parent=fs.openSync('/run/wf-codex',O_RDONLY|O_DIRECTORY|O_NOFOLLOW);let fd;
-      try{checked(parent,true);fd=fs.openSync(`/proc/self/fd/${parent}/auth.json`,O_RDONLY|O_NOFOLLOW|O_NONBLOCK);const before=checked(fd,false);if(before.size>65536n||(before.mode&0o077n)!==0n)throw denied();const bytes=Buffer.alloc(Number(before.size));let offset=0;while(offset<bytes.length){const n=fs.readSync(fd,bytes,offset,bytes.length-offset,offset);if(!n)throw denied();offset+=n;}if(bytes.length>65536||!unchanged(before,checked(fd,false)))throw denied();return bytes;}finally{if(fd!==undefined)fs.closeSync(fd);fs.closeSync(parent);}
+      try{checked(fs,parent,true);fd=fs.openSync(`/proc/self/fd/${parent}/auth.json`,O_RDONLY|O_NOFOLLOW|O_NONBLOCK);const before=checked(fs,fd,false);if(before.size>65536n||(before.mode&0o077n)!==0n)throw denied();const bytes=Buffer.alloc(Number(before.size));let offset=0;while(offset<bytes.length){const n=fs.readSync(fd,bytes,offset,bytes.length-offset,offset);if(!n)throw denied();offset+=n;}if(bytes.length>65536||!unchanged(before,checked(fs,fd,false)))throw denied();return bytes;}finally{if(fd!==undefined)fs.closeSync(fd);fs.closeSync(parent);}
     };
     process.stdout.write(JSON.stringify(await captureArtifacts(request,{stopped:()=>confirmedStopped(read,'/run/wf-codex/writer.json','/run/wf-codex/writers-stopped'),cache})));
   }catch{process.stderr.write('Artifact capture unavailable\n');process.exitCode=1;}

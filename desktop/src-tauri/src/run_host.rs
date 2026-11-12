@@ -109,8 +109,9 @@ pub fn execute(
                     native_prerequisites()
                         .map_err(|message| workflow_engine::Error::Validation { message })?;
                     cancel.check()?;
-                    let mut live=workflow_engine::output::LiveDecoder::default();
-                    let execution = sandbox.execute(resources,prompt,&plan.configuration.config,&cancel,&plan.block_id,&mut |chunk|live.push(chunk));
+                    let identity=workflow_engine::output::DiagnosticIdentity{run_id:id.clone(),block_id:plan.block_id.clone(),epoch:resources.started_at.clone().ok_or_else(||workflow_engine::Error::Validation{message:"Diagnostic epoch unavailable.".into()})?};
+                    let mut live=workflow_engine::runs::inspection::LiveJournal::new(&directory,identity)?;
+                    let execution = sandbox.execute(resources,prompt,&plan.configuration.config,&cancel,&plan.block_id,&mut |chunk|live.push(chunk,||crate::inspection_host::notify(&directory,&id)));
                     // Even on Codex error, export its CURRENT cache before stopping the keeper.
                     if execution.is_err() {
                         sandbox.stop_writers(resources)?;
@@ -201,6 +202,28 @@ pub fn execute(
                 message: "Artifacts unavailable: writers/cache unconfirmed.".into(),
             })
         };
+        let artifact_result = artifact_result.and_then(|_| {
+            let identity = workflow_engine::output::DiagnosticIdentity {
+                run_id: id.clone(),
+                block_id: capture_block.clone().ok_or_else(|| {
+                    workflow_engine::Error::Validation {
+                        message: "Capture identity unavailable.".into(),
+                    }
+                })?,
+                epoch: resources.started_at.clone().ok_or_else(|| {
+                    workflow_engine::Error::Validation {
+                        message: "Capture epoch unavailable.".into(),
+                    }
+                })?,
+            };
+            workflow_engine::runs::inspection::Journal::capture_committed(
+                &directory,
+                &id,
+                identity,
+                || crate::inspection_host::notify(&directory, &id),
+            )?;
+            Ok(())
+        });
         store.finish_session(
             &lease.slot,
             &id,

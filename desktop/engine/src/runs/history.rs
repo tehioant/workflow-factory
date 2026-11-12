@@ -61,46 +61,93 @@ fn identity(id: &str) -> Result<(), Error> {
 fn unavailable() -> Error {
     validation("Captured run unavailable: unsupported, incomplete, oversized or inconsistent retained record.")
 }
+/// Retains the actual SQLite connection and checked handles. SQLite may canonicalize
+/// /dev/fd on open; these checks detect path drift, not arbitrary ancestor races.
 pub struct HistoryReader {
-    store: Store,
+    c: Connection,
+    root: std::path::PathBuf,
+    parent: std::fs::File,
+    db: std::fs::File,
 }
 impl HistoryReader {
-    pub fn workflow(&self, id: &str) -> Result<String, Error> {
-        identity(id)?;
-        let c = connection(&self.store)?;
-        let sql = format!("SELECT {SCOPE} FROM runs WHERE id=?1");
-        let workflow: String = c.query_row(&sql, [id], |r| r.get(0)).map_err(storage)?;
-        identity(&workflow)?;
-        detail(&c, &workflow, id)?;
-        Ok(workflow)
-    }
-    pub fn open(root: &std::path::Path) -> Result<Self, Error> {
+    fn checked(&self) -> Result<&Connection, Error> {
         use std::os::unix::fs::MetadataExt;
-        for (path, dir) in [
-            (root.to_path_buf(), true),
-            (root.join("definitions.sqlite3"), false),
+        for (handle, path, directory) in [
+            (&self.parent, self.root.clone(), true),
+            (&self.db, self.root.join("definitions.sqlite3"), false),
         ] {
-            let m = path.symlink_metadata().map_err(storage)?;
-            if m.uid() != unsafe { libc::geteuid() }
-                || m.mode() & 0o077 != 0
-                || m.file_type().is_symlink()
-                || if dir {
-                    !m.is_dir()
-                } else {
-                    !m.is_file() || m.nlink() != 1
-                }
+            super::inspection::private(handle, directory)?;
+            let held = handle.metadata().map_err(storage)?;
+            let named = path.symlink_metadata().map_err(storage)?;
+            if named.file_type().is_symlink()
+                || held.dev() != named.dev()
+                || held.ino() != named.ino()
             {
                 return Err(unavailable());
             }
         }
-        let store = Store {
-            path: root.join("definitions.sqlite3"),
+        Ok(&self.c)
+    }
+    pub fn workflow(&self, id: &str) -> Result<String, Error> {
+        identity(id)?;
+        let c = self.checked()?;
+        let sql = format!("SELECT {SCOPE} FROM runs WHERE id=?1");
+        let workflow: String = c.query_row(&sql, [id], |r| r.get(0)).map_err(storage)?;
+        identity(&workflow)?;
+        detail(c, &workflow, id)?;
+        Ok(workflow)
+    }
+    pub fn open(root: &std::path::Path) -> Result<Self, Error> {
+        use std::os::{
+            fd::AsRawFd,
+            unix::fs::{MetadataExt, OpenOptionsExt},
         };
-        connection(&store)?;
-        Ok(Self { store })
+        let parent = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(root)
+            .map_err(storage)?;
+        super::inspection::private(&parent, true)?;
+        let db = super::inspection::open(
+            &parent,
+            "definitions.sqlite3",
+            libc::O_RDONLY | libc::O_NONBLOCK,
+        )?;
+        super::inspection::private(&db, false)?;
+        let c = Connection::open_with_flags(
+            format!("/dev/fd/{}", db.as_raw_fd()),
+            OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .map_err(storage)?;
+        c.busy_timeout(std::time::Duration::from_millis(250))
+            .map_err(storage)?;
+        let version: u32 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(storage)?;
+        if version != 3 {
+            return Err(unavailable());
+        }
+        // Confirm SQLite's resolved name still identifies the checked descriptor.
+        let actual = c.path().ok_or_else(unavailable)?;
+        let named = std::fs::metadata(actual).map_err(storage)?;
+        let held = db.metadata().map_err(storage)?;
+        if named.dev() != held.dev() || named.ino() != held.ino() {
+            return Err(unavailable());
+        }
+        let reader = Self {
+            c,
+            root: root.to_path_buf(),
+            parent,
+            db,
+        };
+        reader.checked()?;
+        Ok(reader)
     }
     pub fn run_detail(&self, workflow: &str, id: &str) -> Result<RunDetail, Error> {
-        self.store.run_detail(workflow, id)
+        identity(workflow)?;
+        identity(id)?;
+        let tx = self.checked()?.unchecked_transaction().map_err(storage)?;
+        detail(&tx, workflow, id)
     }
     pub fn list_run_history(
         &self,
@@ -108,7 +155,7 @@ impl HistoryReader {
         cursor: Option<&str>,
         limit: u32,
     ) -> Result<HistoryPage, Error> {
-        self.store.list_run_history(workflow, cursor, limit)
+        list(self.checked()?, workflow, cursor, limit)
     }
 }
 fn connection(store: &Store) -> Result<Connection, Error> {
@@ -318,82 +365,88 @@ impl Store {
         cursor: Option<&str>,
         limit: u32,
     ) -> Result<HistoryPage, Error> {
-        identity(workflow)?;
-        if !(1..=50).contains(&limit) {
-            return Err(validation("History page size must be 1–50."));
-        }
-        let mut c = connection(self)?;
-        let tx = c.transaction().map_err(storage)?;
-        let boundary: Option<i64> = if let Some(id) = cursor {
-            identity(id)?;
-            let sql = format!(
-                "SELECT rowid FROM runs WHERE id=?1 AND {SAFE_ID} IS NOT NULL AND {SCOPE}=?2"
-            );
-            Some(
-                tx.query_row(&sql, params![id, workflow], |r| r.get(0))
-                    .optional()
-                    .map_err(storage)?
-                    .ok_or_else(unavailable)?,
-            )
-        } else {
-            None
-        };
-        let warnings = format!("SELECT EXISTS(SELECT 1 FROM runs WHERE {SCOPE}=?1 AND {SAFE_ID} IS NULL), EXISTS(SELECT 1 FROM runs WHERE {SCOPE} IS NULL)");
-        let (unavailable_records, unknown_scope_records) = tx
-            .query_row(&warnings, [workflow], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map_err(storage)?;
-        let sql = format!("SELECT {SAFE_ID} FROM runs WHERE {SCOPE}=?1 AND {SAFE_ID} IS NOT NULL AND (?2 IS NULL OR rowid<?2) ORDER BY rowid DESC LIMIT ?3");
-        let mut query = tx.prepare(&sql).map_err(storage)?;
-        let ids = query
-            .query_map(params![workflow, boundary, limit + 1], |r| {
-                r.get::<_, String>(0)
-            })
-            .map_err(storage)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(storage)?;
-        let has_more = ids.len() > limit as usize;
-        let mut entries = Vec::new();
-        for id in ids.into_iter().take(limit as usize) {
-            identity(&id)?;
-            let captured = detail(&tx, workflow, &id);
-            let entry = match captured {
-                Ok(d) => {
-                    let mut summary = String::new();
-                    for (name, value) in d.inputs.values {
-                        for ch in format!("{name}: {value}; ").chars() {
-                            if summary.len() + ch.len_utf8() > 240 {
-                                break;
-                            }
-                            summary.push(ch);
-                        }
-                        if summary.len() >= 237 {
+        list(&connection(self)?, workflow, cursor, limit)
+    }
+}
+fn list(
+    c: &Connection,
+    workflow: &str,
+    cursor: Option<&str>,
+    limit: u32,
+) -> Result<HistoryPage, Error> {
+    identity(workflow)?;
+    if !(1..=50).contains(&limit) {
+        return Err(validation("History page size must be 1–50."));
+    }
+    let tx = c.unchecked_transaction().map_err(storage)?;
+    let boundary: Option<i64> = if let Some(id) = cursor {
+        identity(id)?;
+        let sql =
+            format!("SELECT rowid FROM runs WHERE id=?1 AND {SAFE_ID} IS NOT NULL AND {SCOPE}=?2");
+        Some(
+            tx.query_row(&sql, params![id, workflow], |r| r.get(0))
+                .optional()
+                .map_err(storage)?
+                .ok_or_else(unavailable)?,
+        )
+    } else {
+        None
+    };
+    let warnings = format!("SELECT EXISTS(SELECT 1 FROM runs WHERE {SCOPE}=?1 AND {SAFE_ID} IS NULL), EXISTS(SELECT 1 FROM runs WHERE {SCOPE} IS NULL)");
+    let (unavailable_records, unknown_scope_records) = tx
+        .query_row(&warnings, [workflow], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(storage)?;
+    let sql = format!("SELECT {SAFE_ID} FROM runs WHERE {SCOPE}=?1 AND {SAFE_ID} IS NOT NULL AND (?2 IS NULL OR rowid<?2) ORDER BY rowid DESC LIMIT ?3");
+    let mut query = tx.prepare(&sql).map_err(storage)?;
+    let ids = query
+        .query_map(params![workflow, boundary, limit + 1], |r| {
+            r.get::<_, String>(0)
+        })
+        .map_err(storage)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage)?;
+    let has_more = ids.len() > limit as usize;
+    let mut entries = Vec::new();
+    for id in ids.into_iter().take(limit as usize) {
+        identity(&id)?;
+        let captured = detail(&tx, workflow, &id);
+        let entry = match captured {
+            Ok(d) => {
+                let mut summary = String::new();
+                for (name, value) in d.inputs.values {
+                    for ch in format!("{name}: {value}; ").chars() {
+                        if summary.len() + ch.len_utf8() > 240 {
                             break;
                         }
+                        summary.push(ch);
                     }
-                    HistoryEntry {
-                        id,
-                        state: Some(d.state),
-                        input_summary: summary,
-                        unavailable: false,
+                    if summary.len() >= 237 {
+                        break;
                     }
                 }
-                Err(_) => HistoryEntry {
+                HistoryEntry {
                     id,
-                    state: None,
-                    input_summary: "Captured data unavailable".into(),
-                    unavailable: true,
-                },
-            };
-            entries.push(entry);
-        }
-        let next_cursor = has_more.then(|| entries.last().unwrap().id.clone());
-        Ok(HistoryPage {
-            definition_id: workflow.into(),
-            cursor: cursor.map(str::to_string),
-            entries,
-            next_cursor,
-            unavailable_records,
-            unknown_scope_records,
-        })
+                    state: Some(d.state),
+                    input_summary: summary,
+                    unavailable: false,
+                }
+            }
+            Err(_) => HistoryEntry {
+                id,
+                state: None,
+                input_summary: "Captured data unavailable".into(),
+                unavailable: true,
+            },
+        };
+        entries.push(entry);
     }
+    let next_cursor = has_more.then(|| entries.last().unwrap().id.clone());
+    Ok(HistoryPage {
+        definition_id: workflow.into(),
+        cursor: cursor.map(str::to_string),
+        entries,
+        next_cursor,
+        unavailable_records,
+        unknown_scope_records,
+    })
 }

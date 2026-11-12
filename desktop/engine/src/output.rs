@@ -101,20 +101,22 @@ pub struct LiveDecoder {
     bytes: u64,
     received: usize,
     stopped: bool,
+    incomplete: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LiveFrame {
+pub struct LiveFrame {
     version: u32,
     r#type: String,
-    seq: u64,
-    kind: String,
-    bytes: u64,
+    pub seq: u64,
+    pub kind: String,
+    pub bytes: u64,
     text: String,
-    incomplete: bool,
+    pub incomplete: bool,
 }
 impl LiveDecoder {
-    pub fn push(&mut self, bytes: &[u8]) -> Result<(), Error> {
+    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<LiveFrame>, Error> {
+        let mut frames = Vec::new();
         self.received = self.received.saturating_add(bytes.len());
         if self.received > 1_048_576 {
             return Err(validation("Live diagnostic transport limit exceeded."));
@@ -129,6 +131,7 @@ impl LiveDecoder {
                     || frame.r#type != "wf.diagnostic"
                     || frame.seq != self.seq + 1
                     || frame.seq > 4097
+                    || (self.incomplete && !frame.incomplete)
                     || frame.bytes < self.bytes
                     || frame.bytes > 1_048_577
                     || frame.text != "WITHHELD"
@@ -140,7 +143,9 @@ impl LiveDecoder {
                 }
                 self.seq = frame.seq;
                 self.bytes = frame.bytes;
+                self.incomplete = frame.incomplete;
                 self.stopped = frame.kind == "stopped";
+                frames.push(frame);
             } else {
                 if self.line.len() >= 1024 {
                     return Err(validation("Live diagnostic frame limit exceeded."));
@@ -148,7 +153,7 @@ impl LiveDecoder {
                 self.line.push(*byte);
             }
         }
-        Ok(())
+        Ok(frames)
     }
     pub fn finish(&self) -> Result<(), Error> {
         if !self.stopped || !self.line.is_empty() {

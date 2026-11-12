@@ -59,31 +59,7 @@ pub struct ArtifactText {
 }
 /// No initialization, migration, permissions changes, execution, or recovery.
 pub fn scoped(root: &Path, workflow: &str, run: &str) -> Result<(), Error> {
-    let parent = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(root)
-        .map_err(storage)?;
-    private(&parent, true)?;
-    let db = open(
-        &parent,
-        "definitions.sqlite3",
-        libc::O_RDONLY | libc::O_NONBLOCK,
-    )?;
-    private(&db, false)?;
-    let c = rusqlite::Connection::open_with_flags(
-        format!("/dev/fd/{}", db.as_raw_fd()),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(storage)?;
-    c.busy_timeout(std::time::Duration::from_millis(250))
-        .map_err(storage)?;
-    let version: u32 = c
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
-        .map_err(storage)?;
-    if version != 3 {
-        return Err(validation("Captured schema unavailable."));
-    }
-    crate::runs::history::detail(&c, workflow, run).map(|_| ())
+    crate::runs::history::HistoryReader::open(root)?
+        .run_detail(workflow, run)
+        .map(|_| ())
 }
-use std::os::unix::fs::OpenOptionsExt;

@@ -378,6 +378,68 @@ fn d10_live_stream_projects_bounded_durable_pages() {
         block_id: "a".into(),
         epoch: "prepared-epoch".into(),
     };
+    let mut notices = 0;
+    let mut adapter =
+        workflow_engine::runs::inspection::LiveJournal::new(root.path(), identity.clone()).unwrap();
+    let first=b"{\"version\":1,\"type\":\"wf.diagnostic\",\"seq\":1,\"kind\":\"command\",\"bytes\":10,\"text\":\"WITHHELD\",\"incomplete\":false}\n";
+    adapter
+        .push(first, || {
+            notices += 1;
+            let durable = Journal::page(root.path(), id, None, 0).unwrap();
+            assert_eq!(durable.high, 1);
+            assert_eq!(durable.entries[0].text, "WITHHELD seq=1 bytes=10");
+            assert_eq!(durable.entries[0].block, "a");
+        })
+        .unwrap();
+    assert_eq!(notices, 1, "visible before executor EOF/return");
+    for seq in 2..=4096 {
+        let frame = serde_json::json!({"version":1,"type":"wf.diagnostic","seq":seq,"kind":"command","bytes":10,"text":"WITHHELD","incomplete":false});
+        adapter
+            .push(format!("{frame}\n").as_bytes(), || notices += 1)
+            .unwrap();
+    }
+    adapter.push(b"{\"version\":1,\"type\":\"wf.diagnostic\",\"seq\":4097,\"kind\":\"stopped\",\"bytes\":10,\"text\":\"WITHHELD\",\"incomplete\":false}\n", || notices+=1).unwrap();
+    adapter.finish().unwrap();
+    assert_eq!(notices, 2, "same-byte updates coalesce, stopped publishes");
+    assert!(adapter
+        .push(first, || panic!("invalid frame notified"))
+        .is_err());
+    std::fs::remove_dir_all(root.path().join("inspection")).unwrap();
+    let mut bucketed =
+        workflow_engine::runs::inspection::LiveJournal::new(root.path(), identity.clone()).unwrap();
+    let mut count = 0;
+    for (seq, bytes, kind, incomplete) in [
+        (1, 1, "command", false),
+        (2, 65536, "stderr", false),
+        (3, 65537, "error", false),
+        (4, 65537, "limit", true),
+        (5, 65537, "stopped", true),
+    ] {
+        let frame = serde_json::json!({"version":1,"type":"wf.diagnostic","seq":seq,"kind":kind,"bytes":bytes,"text":"WITHHELD","incomplete":incomplete});
+        bucketed
+            .push(format!("{frame}\n").as_bytes(), || count += 1)
+            .unwrap();
+    }
+    assert_eq!(count, 4);
+    let mut invalid =
+        workflow_engine::runs::inspection::LiveJournal::new(root.path(), identity.clone()).unwrap();
+    assert!(invalid
+        .push(&vec![b'a'; 1_048_577], || panic!("limit notified"))
+        .is_err());
+    assert!(invalid.push(b"{\"version\":1,\"type\":\"wf.diagnostic\",\"seq\":1,\"kind\":\"command\",\"bytes\":0,\"text\":\"provider raw\",\"incomplete\":false}\n",||panic!("raw notified")).is_err());
+    let mut wrong_identity = identity.clone();
+    wrong_identity.block_id = "../bad".into();
+    assert!(
+        workflow_engine::runs::inspection::LiveJournal::new(root.path(), wrong_identity).is_err()
+    );
+    std::fs::remove_dir_all(root.path().join("inspection")).unwrap();
+    let mut unavailable =
+        workflow_engine::runs::inspection::LiveJournal::new(root.path(), identity.clone()).unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(unavailable
+        .push(first, || panic!("uncommitted metadata notified"))
+        .is_err());
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut live = LiveDecoder::default();
     let frames=concat!("{\"version\":1,\"type\":\"wf.diagnostic\",\"seq\":1,\"kind\":\"command\",\"bytes\":10,\"text\":\"WITHHELD\",\"incomplete\":false}\n",
         "{\"version\":1,\"type\":\"wf.diagnostic\",\"seq\":2,\"kind\":\"stopped\",\"bytes\":20,\"text\":\"WITHHELD\",\"incomplete\":false}\n");
@@ -606,6 +668,58 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
     assert_eq!(
         before_read,
         std::fs::read(dir.path().join("definitions.sqlite3")).unwrap()
+    );
+    use std::os::unix::fs::PermissionsExt;
+    let db_path = dir.path().join("definitions.sqlite3");
+    std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(
+        reader.run_detail(DEFINITION, id).is_err(),
+        "permission drift must refuse"
+    );
+    std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let saved = dir.path().join("original.sqlite3");
+    std::fs::rename(&db_path, &saved).unwrap();
+    std::fs::copy(&saved, &db_path).unwrap();
+    assert!(
+        reader.run_detail(DEFINITION, id).is_err(),
+        "replacement must not rebind reader"
+    );
+    std::fs::remove_file(&db_path).unwrap();
+    std::fs::rename(&saved, &db_path).unwrap();
+    let link = dir.path().join("linked.sqlite3");
+    std::fs::hard_link(&db_path, &link).unwrap();
+    assert!(reader.workflow(id).is_err());
+    std::fs::remove_file(link).unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(reader.list_run_history(DEFINITION, None, 2).is_err());
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(reader.run_detail(CONFIG, id).is_err());
+    assert!(reader.list_run_history(DEFINITION, None, 51).is_err());
+    assert_eq!(
+        before_read,
+        std::fs::read(&db_path).unwrap(),
+        "read/refusal paths never change DB bytes"
+    );
+    assert_eq!(
+        c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        3
+    );
+    let missing = tempfile::tempdir().unwrap();
+    assert!(workflow_engine::runs::history::HistoryReader::open(missing.path()).is_err());
+    assert!(!missing.path().join("definitions.sqlite3").exists());
+    let unsupported = tempfile::tempdir().unwrap();
+    let unsupported_path = unsupported.path().join("definitions.sqlite3");
+    let unsupported_c = Connection::open(&unsupported_path).unwrap();
+    unsupported_c
+        .execute_batch("PRAGMA user_version=99")
+        .unwrap();
+    std::fs::set_permissions(&unsupported_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let unsupported_before = std::fs::read(&unsupported_path).unwrap();
+    assert!(workflow_engine::runs::history::HistoryReader::open(unsupported.path()).is_err());
+    assert_eq!(
+        unsupported_before,
+        std::fs::read(&unsupported_path).unwrap()
     );
     let detail = store.run_detail(DEFINITION, id).unwrap();
     assert!(detail.legacy);

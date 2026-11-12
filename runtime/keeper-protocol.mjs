@@ -3,6 +3,12 @@
 
 export const diagnosticLimits = Object.freeze({ frame: 65536, input: 1048576, events: 4096, selected: 524288, record: 16384, records: 64, final: 65536, secrets: 196608 });
 const denied = () => new Error('diagnostics unavailable');
+export function boundedNames(fs,path,limit) {
+  const directory=fs.opendirSync(path,{bufferSize:1});const names=[];
+  try {let entry;while((entry=directory.readSync())!==null){if(names.length>=limit)throw denied();names.push(entry.name);}}
+  finally {directory.closeSync();}
+  return names;
+}
 
 // Pin each directory and open only fixed names relative to its descriptor.
 // This adapter is Linux-guest-only; syscall/race qualification remains separate.
@@ -38,7 +44,7 @@ export function privateDiagnosticStore(fs, home='/run/wf-codex') {
   };
   return {
     read,
-    empty(){if(fs.readdirSync(`/proc/self/fd/${fd}`).length)throw denied();},
+    empty(){if(boundedNames(fs,`/proc/self/fd/${fd}`,0).length)throw denied();},
     write(key,bytes){
       const target=path(key),pending=target+'.pending';let file;
       if(!Buffer.isBuffer(bytes)||bytes.length>65536+2048)throw denied();
@@ -51,8 +57,7 @@ export function privateDiagnosticStore(fs, home='/run/wf-codex') {
     },
     discard(identity){
       if(JSON.stringify(JSON.parse(read('identity').toString('utf8')))!==JSON.stringify(diagnosticIdentity(identity)))throw denied();
-      const names=fs.readdirSync(`/proc/self/fd/${fd}`);
-      if(names.length>68)throw denied();
+      const names=boundedNames(fs,`/proc/self/fd/${fd}`,68);
       for(const name of names) {path(name);read(name);}
       for(const name of names)fs.unlinkSync(path(name));fs.fsyncSync(fd);
     },

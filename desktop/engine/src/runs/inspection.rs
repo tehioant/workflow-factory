@@ -17,6 +17,74 @@ use std::{
     path::Path,
 };
 const LIMIT: usize = 1_048_576;
+/// Only validated fixed metadata can cross the pre-checkpoint boundary.
+pub struct LiveJournal<'a> {
+    root: &'a Path,
+    identity: crate::output::DiagnosticIdentity,
+    decoder: crate::output::LiveDecoder,
+    published: bool,
+    bucket: u64,
+    limited: bool,
+}
+impl<'a> LiveJournal<'a> {
+    pub fn new(root: &'a Path, identity: crate::output::DiagnosticIdentity) -> Result<Self, Error> {
+        if identity.run_id.len() != 36
+            || uuid::Uuid::parse_str(&identity.run_id).is_err()
+            || identity.block_id.is_empty()
+            || identity.block_id.len() > 128
+            || !identity
+                .block_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            || identity.epoch.is_empty()
+            || identity.epoch.len() > 128
+            || !identity
+                .epoch
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_.:+-".contains(&b))
+        {
+            return Err(validation("Invalid live diagnostic identity."));
+        }
+        Ok(Self {
+            root,
+            identity,
+            decoder: Default::default(),
+            published: false,
+            bucket: 0,
+            limited: false,
+        })
+    }
+    pub fn push(&mut self, chunk: &[u8], mut notify: impl FnMut()) -> Result<(), Error> {
+        for frame in self.decoder.push(chunk)? {
+            let bucket = frame.bytes / 65536;
+            if !self.published
+                || bucket > self.bucket
+                || frame.kind == "stopped"
+                || (frame.kind == "limit" && !self.limited)
+            {
+                let mut publication = Publication::acknowledged(self.identity.clone());
+                publication.incomplete = frame.incomplete;
+                publication.records.push(crate::output::DiagnosticRecord {
+                    kind: format!("metadata.{}", frame.kind),
+                    text: format!("WITHHELD seq={} bytes={}", frame.seq, frame.bytes),
+                    command: None,
+                    status: None,
+                    exit_code: None,
+                });
+                Journal::commit(self.root, &self.identity.run_id, &publication)?;
+                self.published = true;
+                self.bucket = bucket;
+                self.limited |= frame.kind == "limit";
+                notify();
+            }
+        }
+        Ok(())
+    }
+    pub fn finish(&self) -> Result<(), Error> {
+        self.decoder.finish()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Entry {
@@ -47,7 +115,7 @@ pub struct Page {
     pub resync: bool,
     pub incomplete: bool,
 }
-fn private(file: &File, directory: bool) -> Result<(), Error> {
+pub(crate) fn private(file: &File, directory: bool) -> Result<(), Error> {
     let m = file.metadata().map_err(storage)?;
     if m.uid() != unsafe { libc::geteuid() }
         || m.mode() & 0o077 != 0
@@ -61,7 +129,7 @@ fn private(file: &File, directory: bool) -> Result<(), Error> {
     }
     Ok(())
 }
-fn open(parent: &File, name: &str, flags: i32) -> Result<File, Error> {
+pub(crate) fn open(parent: &File, name: &str, flags: i32) -> Result<File, Error> {
     let name = CString::new(name).map_err(storage)?;
     let fd = unsafe {
         libc::openat(
@@ -144,6 +212,26 @@ fn load(dir: &File, run: &str) -> Result<Journal, Error> {
     Ok(journal)
 }
 impl Journal {
+    /// Call only after the immutable artifact manifest is durable.
+    pub fn capture_committed(
+        root: &Path,
+        run: &str,
+        identity: crate::output::DiagnosticIdentity,
+        notify: impl FnOnce(),
+    ) -> Result<(), Error> {
+        let mut publication = Publication::acknowledged(identity);
+        publication.records.push(crate::output::DiagnosticRecord {
+            kind: "capture.committed".into(),
+            text: "ARTIFACT_CAPTURE_COMMITTED".into(),
+            command: None,
+            status: None,
+            exit_code: None,
+        });
+        Self::commit(root, run, &publication)?;
+        notify();
+        Ok(())
+    }
+
     pub fn commit(root: &Path, run: &str, publication: &Publication) -> Result<(), Error> {
         if publication.identity.run_id != run {
             return Err(validation("Cross-run diagnostic publication refused."));
