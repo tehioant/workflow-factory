@@ -24,6 +24,7 @@ fn main() {
             "start_run",
             "run_status",
             "retry_run_output",
+            "retry_run_cleanup",
             "list_run_history",
             "run_detail",
             "stop_run",

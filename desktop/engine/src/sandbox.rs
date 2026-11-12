@@ -2,6 +2,8 @@
 use crate::{runtime::verify_private_network, sessions::CACHE_LIMIT, validation, Error};
 use serde_json::Value;
 mod block;
+mod recovery;
+pub use recovery::CleanupContext;
 pub fn resource_names(owner: &str) -> [String; 3] {
     [
         format!("wf-private-{owner}"),

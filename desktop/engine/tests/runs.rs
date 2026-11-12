@@ -731,6 +731,109 @@ fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() 
     }
 }
 const CONFIG: &str = "00000000-0000-0000-0000-000000000002";
+#[test]
+fn d12_scoped_cancel_transition() {
+    use workflow_engine::{runs::BlockResult, sandbox::Cancel, sessions::Lease};
+    for mode in ["perRun", "perBlock"] {
+        for complete in [false, true] {
+            let (_dir, store, c) = prepared();
+            let mut selected = status();
+            selected.blocks = vec![BlockResult {
+                block_id: "a".into(),
+                state: RunState::Succeeded,
+                resolved_prompt: "Own prompt".into(),
+                final_response: Some("Completed A".into()),
+            }];
+            selected.final_response = Some("Completed A".into());
+            seed_run(&c, &selected, true);
+            c.execute("UPDATE runs SET snapshot=?1", [serde_json::json!({"definition":{"definition":{"isolation":mode}},"plans":if complete {serde_json::json!([{}])}else{serde_json::json!([{},{}])}}).to_string()]).unwrap();
+            let mut sibling = status();
+            sibling.id = "sibling".into();
+            sibling.request_id = "sibling-request".into();
+            seed_run(&c, &sibling, true);
+            let before: String = c
+                .query_row("SELECT status FROM runs WHERE id='sibling'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            let stopped = store.stop_run("owned").unwrap();
+            assert_eq!(
+                stopped.state,
+                if complete {
+                    RunState::Running
+                } else {
+                    RunState::Cancelling
+                }
+            );
+            assert_eq!(stopped.final_response.as_deref(), Some("Completed A"));
+            assert_eq!(store.stop_run("owned").unwrap().state, stopped.state);
+            assert_eq!(
+                c.query_row("SELECT status FROM runs WHERE id='sibling'", [], |r| r
+                    .get::<_, String>(
+                    0
+                ))
+                .unwrap(),
+                before
+            );
+            if !complete {
+                // Guard must reject before any external invocation, even with a fresh token.
+                let lease = Lease {
+                    slot: "slot".into(),
+                    owner: "owned".into(),
+                    generation: 7,
+                };
+                c.execute(
+                    "INSERT INTO managed_sessions VALUES('slot','leased',7,'owned')",
+                    [],
+                )
+                .unwrap();
+                let refused = store.execute_next_block(
+                    "owned",
+                    &lease,
+                    &(),
+                    &Cancel::default(),
+                    |_, _, _| panic!("successor forbidden"),
+                );
+                assert!(
+                    matches!(refused, Err(workflow_engine::Error::Validation{message}) if message.contains("Run is stopped, held"))
+                );
+            }
+        }
+        for (state, clean, expected) in [
+            (RunState::Held, true, RunState::Failed),
+            (RunState::Cancelling, true, RunState::Stopped),
+            (RunState::Cancelling, false, RunState::Cancelling),
+        ] {
+            let (_dir, store, c) = prepared();
+            let mut selected = status();
+            selected.state = state;
+            seed_run(&c, &selected, true);
+            c.execute(
+                "INSERT INTO managed_sessions VALUES('slot',?1,?2,?3)",
+                params![
+                    if clean { "available" } else { "quarantined" },
+                    if clean { 8 } else { 7 },
+                    if clean { None } else { Some("owned") }
+                ],
+            )
+            .unwrap();
+            c.execute("INSERT INTO run_queue(run_id,phase,slot,generation) VALUES('owned','occupied','slot',7)",[]).unwrap();
+            store
+                .finish_run("owned", None, "Prepared receipt", clean, false)
+                .unwrap();
+            let result = store.run_status("owned").unwrap();
+            assert_eq!(result.state, expected);
+            assert_eq!(result.cleanup_pending, !clean);
+            assert_eq!(result.final_response.as_deref(), Some("retained"));
+            if clean {
+                assert!(store
+                    .finish_run("owned", Some("late overwrite".into()), "late", true, true)
+                    .is_err());
+                assert_eq!(store.stop_run("owned").unwrap().state, expected);
+            }
+        }
+    }
+}
 fn prepared() -> (tempfile::TempDir, Store, Connection) {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
@@ -968,8 +1071,143 @@ impl SecureStore for FailingStore {
         Ok(br#"{"auth_mode":"chatgpt","tokens":{"login_owner_id":"synthetic","access_token":"synthetic-a","refresh_token":"synthetic-r","id_token":"a.b.c","account_id":"synthetic-account","oauth_provenance":{"issuer":"https://auth.openai.com","client_id":"synthetic-client"}}}"#.to_vec())
     }
 }
+#[path = "support/cleanup.rs"]
+mod cleanup_fixture;
 #[test]
 fn c05_writeback_failure_quarantines_and_never_destroys_tmpfs() {
+    cleanup_fixture::check();
+    use workflow_engine::sessions::Lease;
+    // Prepared final persistence boundary: no worker, Docker, preflight or keyring.
+    for (reusable, cleanup_ok) in [(true, true), (false, true), (false, false)] {
+        let (_dir, store, c) = prepared();
+        seed_run(&c, &status(), true);
+        let mut sibling = status();
+        sibling.id = "sibling".into();
+        sibling.request_id = "sibling-request".into();
+        seed_run(&c, &sibling, true);
+        let sibling_before = store.run_status("sibling").unwrap().diagnostic;
+        c.execute(
+            "INSERT INTO managed_sessions VALUES('slot','leased',7,'owned')",
+            [],
+        )
+        .unwrap();
+        c.execute("INSERT INTO run_queue(run_id,phase,slot,generation) VALUES('owned','occupied','slot',7)",[]).unwrap();
+        let lease = Lease {
+            slot: "slot".into(),
+            owner: "owned".into(),
+            generation: 7,
+        };
+        let cache = FailingStore(false).read("slot").unwrap();
+        let mut cleaned = false;
+        let receipt = store.finish_owned_session_receipt(
+            &lease,
+            &cache,
+            &mut FailingStore(false),
+            reusable,
+            || {
+                cleaned = true;
+                if cleanup_ok {
+                    Ok(())
+                } else {
+                    Err(workflow_engine::Error::Storage {
+                        message: "synthetic cleanup uncertainty".into(),
+                    })
+                }
+            },
+        );
+        assert!(cleaned);
+        assert_eq!(receipt.is_ok(), cleanup_ok);
+        let finality = workflow_engine::runs::settlement::FinalSettlement {
+            lease: lease.clone(),
+            text: Some("retained".into()),
+            diagnostic: "Prepared final outcome".into(),
+            success: reusable,
+            receipt: receipt.ok(),
+        };
+        if !reusable {
+            assert!(store
+                .finish_run("owned", None, "arbitrary clean bool", true, false)
+                .is_err());
+        }
+        if !cleanup_ok {
+            assert!(store.settle_run(&finality).is_err());
+            assert_eq!(
+                c.query_row(
+                    "SELECT phase FROM run_queue WHERE run_id='owned'",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+                "occupied"
+            );
+            continue;
+        }
+        // A committed cache/cleanup receipt survives a final status-write failure.
+        for drift in ["generation", "state", "owner"] {
+            let sql = match drift {
+                "generation" => "UPDATE managed_sessions SET generation=99 WHERE id='slot'",
+                "state" => "UPDATE managed_sessions SET state='acquiring' WHERE id='slot'",
+                _ => "UPDATE managed_sessions SET owner='sibling' WHERE id='slot'",
+            };
+            c.execute(sql, []).unwrap();
+            assert!(store.settle_run(&finality).is_err());
+            c.execute(
+                "UPDATE managed_sessions SET state=?1,owner=?2,generation=?3 WHERE id='slot'",
+                params![
+                    if reusable { "available" } else { "quarantined" },
+                    if reusable { None } else { Some("owned") },
+                    if reusable { 8 } else { 7 }
+                ],
+            )
+            .unwrap();
+        }
+        c.execute_batch("CREATE TRIGGER deny_final BEFORE UPDATE ON runs BEGIN SELECT RAISE(FAIL,'synthetic storage failure'); END;").unwrap();
+        assert!(store.settle_run(&finality).is_err());
+        c.execute_batch("DROP TRIGGER deny_final").unwrap();
+        for changed in ["slot", "generation", "run"] {
+            let mut stale = finality.clone();
+            match changed {
+                "slot" => stale.lease.slot = "other".into(),
+                "generation" => stale.lease.generation += 1,
+                _ => stale.lease.owner = "sibling".into(),
+            };
+            assert!(store.settle_run(&stale).is_err());
+        }
+        store.settle_run(&finality).unwrap();
+        let expected = if reusable {
+            RunState::Succeeded
+        } else {
+            RunState::Failed
+        };
+        assert_eq!(store.run_status("owned").unwrap().state, expected);
+        assert!(!store.run_status("owned").unwrap().cleanup_pending);
+        // Loss-of-ack exact repeat cannot issue any status/session/queue write.
+        c.execute_batch("CREATE TRIGGER no_run_write BEFORE UPDATE ON runs BEGIN SELECT RAISE(FAIL,'unexpected write'); END; CREATE TRIGGER no_session_write BEFORE UPDATE ON managed_sessions BEGIN SELECT RAISE(FAIL,'unexpected write'); END; CREATE TRIGGER no_queue_write BEFORE UPDATE ON run_queue BEGIN SELECT RAISE(FAIL,'unexpected write'); END;").unwrap();
+        store.settle_run(&finality).unwrap();
+        let mut conflict = finality.clone();
+        conflict.text = Some("late overwrite".into());
+        assert!(store.settle_run(&conflict).is_err());
+        conflict = finality.clone();
+        conflict.success = !conflict.success;
+        assert!(store.settle_run(&conflict).is_err());
+        assert_eq!(
+            store.run_status("sibling").unwrap().diagnostic,
+            sibling_before
+        );
+        assert_eq!(
+            c.query_row(
+                "SELECT state||':'||generation FROM managed_sessions WHERE id='slot'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            if reusable {
+                "available:8"
+            } else {
+                "quarantined:7"
+            }
+        );
+    }
     for write_fails in [true, false] {
         let (_dir, store, c) = prepared();
         seed_run(&c, &status(), true);
@@ -1160,8 +1398,11 @@ fn c08_scoped_stop_keeps_output_and_ownership_hold() {
     let (_dir, store, c) = prepared();
     seed_run(&c, &status(), true);
     let s = store.stop_run("owned").unwrap();
-    assert_eq!(store.run_status("owned").unwrap().state, RunState::Held);
-    assert_eq!(s.state, RunState::Held);
+    assert_eq!(
+        store.run_status("owned").unwrap().state,
+        RunState::Cancelling
+    );
+    assert_eq!(s.state, RunState::Cancelling);
     assert!(s.cleanup_pending);
     assert_eq!(s.final_response.as_deref(), Some("retained"));
     assert_eq!(
@@ -1201,7 +1442,7 @@ fn c12_unclaimed_stop_releases_only_reservation_without_any_resource_intent() {
             if safe {
                 RunState::Stopped
             } else {
-                RunState::Held
+                RunState::Cancelling
             }
         );
         assert_eq!(stopped.cleanup_pending, !safe);

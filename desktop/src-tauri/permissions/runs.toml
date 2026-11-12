@@ -1,4 +1,4 @@
 [[permission]]
 identifier = "single-block-runs"
 description = "Local main-window durable single-block admission, retained status and scoped stop only."
-commands.allow = ["queue_status", "queue_settings", "save_queue_settings", "authorize_run", "inspect_workflow", "inspect_subscribe", "inspect_page", "inspect_close", "inspect_artifacts", "inspect_artifact", "list_run_history", "run_detail", "start_run", "run_status", "retry_run_output", "stop_run", "managed_session_status", "open_session_sign_in"]
+commands.allow = ["queue_status", "queue_settings", "save_queue_settings", "authorize_run", "inspect_workflow", "inspect_subscribe", "inspect_page", "inspect_close", "inspect_artifacts", "inspect_artifact", "list_run_history", "run_detail", "start_run", "run_status", "retry_run_output", "retry_run_cleanup", "stop_run", "managed_session_status", "open_session_sign_in"]
