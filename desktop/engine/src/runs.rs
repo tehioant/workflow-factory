@@ -232,6 +232,7 @@ impl Store {
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
+        crate::lifecycle::admit(&tx)?;
         let row: Option<(String, String)> = tx
             .query_row(
                 "SELECT status,snapshot FROM runs WHERE id=?1 AND active=1",
@@ -452,6 +453,7 @@ impl Store {
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
+        crate::lifecycle::admit(&tx)?;
         let existing: Option<(String, String)> = tx
             .query_row(
                 "SELECT request,status FROM runs WHERE request_id=?1",

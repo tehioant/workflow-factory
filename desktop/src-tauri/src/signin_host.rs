@@ -120,3 +120,13 @@ pub fn cancel(directory: &std::path::Path, state: &SignIn) -> Result<SignInStatu
         "Setup cancelled. Any interrupted cache is quarantined, never reused.",
     ))
 }
+
+pub fn pending(state: &SignIn) -> Result<bool, Error> {
+    Ok(state
+        .0
+        .try_lock()
+        .map_err(|_| Error::Busy {
+            message: "Sign-in operation running; keep the app open and recheck.".into(),
+        })?
+        .is_some())
+}

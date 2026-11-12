@@ -8,6 +8,7 @@ use workflow_engine::{
 fn main() {
     let config = Default::default();
     let declarations = [
+        workflow_engine::lifecycle::ShutdownPreview::decl(&config),
         workflow_engine::runs::queue::QueueSettings::decl(&config),
         workflow_engine::runs::queue::QueueEntry::decl(&config),
         workflow_engine::runs::queue::QueueStatus::decl(&config),

@@ -63,7 +63,7 @@ pub(super) fn can_reserve(c: &Connection) -> Result<bool, Error> {
 }
 /// Called only inside the caller's IMMEDIATE transaction. Reserve at most one head.
 pub(super) fn reserve(c: &Connection) -> Result<Option<String>, Error> {
-    if counts(c)?.0 >= settings(c)?.active {
+    if crate::lifecycle::frozen(c)? || counts(c)?.0 >= settings(c)?.active {
         return Ok(None);
     }
     let head:Option<(String,String)>=c.query_row("SELECT r.id,r.status FROM run_queue q JOIN runs r ON r.id=q.run_id WHERE q.phase='waiting' AND r.active=1 ORDER BY q.sequence LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(storage)?;
@@ -204,6 +204,9 @@ impl Store {
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
+        if crate::lifecycle::frozen(&tx)? {
+            return Ok(false);
+        }
         let matches:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM run_queue q JOIN managed_sessions s ON s.id=q.slot AND s.generation=q.generation AND s.owner=q.run_id AND s.state='leased' WHERE q.run_id=?1 AND q.slot=?2 AND q.generation=?3 AND q.phase='occupied')",params![lease.owner,lease.slot,lease.generation],|r|r.get(0)).map_err(storage)?;
         if !matches {
             return Ok(false);

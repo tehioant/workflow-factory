@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod inspection_commands;
 mod inspection_host;
+mod lifecycle;
 #[cfg(any(target_os = "macos", test))]
 mod mac_security;
 mod run_host;
@@ -16,6 +17,7 @@ use workflow_engine::{
 #[derive(Default)]
 struct ActiveRuns(
     std::sync::Mutex<std::collections::BTreeMap<String, workflow_engine::sandbox::Cancel>>,
+    std::sync::atomic::AtomicBool,
 );
 impl ActiveRuns {
     fn register(
@@ -32,7 +34,7 @@ impl ActiveRuns {
         let mut runs = self.0.lock().map_err(|_| Error::Busy {
             message: "Worker registration unavailable; reservation remains held.".into(),
         })?;
-        if runs.contains_key(id) {
+        if self.1.load(std::sync::atomic::Ordering::Acquire) || runs.contains_key(id) {
             return Ok(None);
         }
         let Ok(permit) = permits.try_acquire_owned() else {
@@ -585,6 +587,13 @@ fn dispatch_reserved(
     directory: PathBuf,
     selected: Option<String>,
 ) -> Result<(), Error> {
+    if app
+        .state::<lifecycle::Lifecycle>()
+        .frozen
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Ok(());
+    }
     let store = Store::open(&directory)?;
     let active = app.state::<Arc<ActiveRuns>>().inner().clone();
     reservation_dispatch(
@@ -702,17 +711,29 @@ async fn save_queue_settings(
 }
 
 struct RuntimeGate(Arc<tokio::sync::Semaphore>);
+impl RuntimeGate {
+    fn acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit, Error> {
+        self.0.clone().try_acquire_owned().map_err(|_| Error::Busy {
+            message:
+                "Runtime check already running or shutdown admission frozen. Keep open and recheck."
+                    .into(),
+        })
+    }
+    fn freeze(&self) {
+        self.0.close();
+    }
+    fn pending(&self) -> bool {
+        self.0.available_permits() != 1
+    }
+    fn returned(&self) -> bool {
+        self.0.is_closed() && !self.pending()
+    }
+}
 #[tauri::command]
 async fn runtime_readiness(
     state: tauri::State<'_, RuntimeGate>,
 ) -> Result<workflow_engine::runtime::Readiness, Error> {
-    let permit = state
-        .0
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| Error::Busy {
-            message: "Runtime check already running. Retry shortly.".into(),
-        })?;
+    let permit = state.acquire()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
         runtime_host::readiness_with(&mut workflow_engine::runtime::RealProcess)
@@ -1004,26 +1025,17 @@ fn main() {
             let directory = app.path().app_data_dir()?;
             std::fs::create_dir_all(&directory)?;
             #[cfg(unix)]
-            {
-                use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-                if directory.symlink_metadata()?.file_type().is_symlink() {
-                    return Err("Unsafe data directory".into());
-                }
-                std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
-                let file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create(true)
-                    .truncate(false)
-                    .mode(0o600)
-                    .custom_flags(libc::O_NOFOLLOW)
-                    .open(directory.join("desktop.lock"))?;
-                file.try_lock()
-                    .map_err(|_| "Another process owns this desktop data directory")?;
-                app.manage(DataLock { _file: file });
+            if !lifecycle::own(app.handle(), &directory)? {
+                std::process::exit(0);
             }
+            #[cfg(not(unix))]
+            return Err("Desktop data ownership unavailable on this platform".into());
+            app.manage(lifecycle::Lifecycle::default());
             Store::open(&directory)
-                .and_then(|s| s.withhold_unfinished_runs())
+                .and_then(|s| {
+                    s.withhold_unfinished_runs()?;
+                    s.reset_shutdown()
+                })
                 .map_err(|_| "Startup storage reconciliation failed; execution withheld")?;
             app.manage(Database {
                 directory,
@@ -1042,9 +1054,26 @@ fn main() {
                     || url.host_str() == Some("tauri.localhost") && url.scheme() == "http"
             })
             .build()?;
+            let quit = tauri::menu::MenuItem::with_id(
+                app,
+                "safe-quit",
+                "Quit Workflow Factory…",
+                true,
+                Some("CmdOrCtrl+Q"),
+            )?;
+            app.set_menu(tauri::menu::Menu::with_items(app, &[&quit])?)?;
             Ok(())
         })
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "safe-quit" {
+                lifecycle::request(app);
+            }
+        })
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                lifecycle::request(window.app_handle());
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 inspection_host::release(window.label());
             }
@@ -1056,6 +1085,9 @@ fn main() {
             inspection_commands::inspect_close,
             inspection_commands::inspect_artifacts,
             inspection_commands::inspect_artifact,
+            lifecycle::shutdown_preview,
+            lifecycle::shutdown_confirm,
+            lifecycle::shutdown_finish,
             list_definitions,
             load_definition,
             save_definition,
@@ -1084,6 +1116,18 @@ fn main() {
             cancel_session_sign_in,
             retire_session_sign_in
         ])
-        .run(tauri::generate_context!())
-        .expect("desktop host failed");
+        .build(tauri::generate_context!())
+        .expect("desktop host initialization failed")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if !app
+                    .state::<lifecycle::Lifecycle>()
+                    .approved
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+                {
+                    api.prevent_exit();
+                    lifecycle::request(app);
+                }
+            }
+        });
 }

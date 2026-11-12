@@ -2,12 +2,19 @@
  import type { CodexConfiguration, SavedConfiguration } from './transport.ts';
  import type { Commands } from './commands.ts';
  import { errorMessage } from './editor.ts';
- let {configurations,commands,onchanged}:{configurations:SavedConfiguration[];commands:Commands;onchanged:()=>Promise<void>}=$props();
+ let {configurations,commands,onchanged,locked=false}:{configurations:SavedConfiguration[];commands:Commands;onchanged:()=>Promise<void>;locked?:boolean}=$props();
  let draft=$state<CodexConfiguration|null>(null);let revision=$state<number|null>(null);let dirty=$state(false);let busy=$state(false);let error=$state('');let confirmDelete=$state(false);
  function choose(saved:SavedConfiguration){draft=structuredClone($state.snapshot(saved.config));revision=saved.revision;dirty=false;error='';confirmDelete=false;}
+ export function shutdownState(){return {dirty,busy,identity:JSON.stringify([draft,revision,dirty,busy])};}
+ export async function saveDraft(){
+  if(busy)return false;if(!dirty)return true;if(!draft)return false;
+  const captured=JSON.stringify([draft,revision]);busy=true;
+  try{const saved=await commands.saveConfiguration({config:structuredClone($state.snapshot(draft)),expectedRevision:revision});if(captured!==JSON.stringify([draft,revision]))return false;choose(saved);await onchanged();return true;}catch(e){error=errorMessage(e);return false;}finally{busy=false;}
+ }
+
 </script>
 <svelte:window onbeforeunload={(event)=>{if(dirty)event.preventDefault();}}/>
-<section aria-label="Reusable Codex configurations">
+<section aria-label="Reusable Codex configurations" inert={locked}>
  <h2>Codex configurations</h2><p class="muted">Non-secret model/reasoning settings only. Model availability is not checked; never paste credentials.</p>
  {#each configurations as saved}<button disabled={busy||dirty} onclick={()=>choose(saved)}>{saved.config.name} · revision {saved.revision}</button>{/each}
  <button disabled={busy||dirty} onclick={()=>{draft={id:crypto.randomUUID(),name:'New configuration',model:'',reasoning:'medium'};revision=null;dirty=true;}}>New configuration</button>

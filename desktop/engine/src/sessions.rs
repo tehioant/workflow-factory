@@ -190,6 +190,7 @@ impl Store {
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
+        crate::lifecycle::admit(&tx)?;
         let count: u32 = tx
             .query_row("SELECT COUNT(*) FROM managed_sessions", [], |r| r.get(0))
             .map_err(storage)?;
