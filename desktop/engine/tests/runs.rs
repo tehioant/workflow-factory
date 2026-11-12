@@ -127,7 +127,7 @@ impl SecureStore for FailingStore {
         })
     }
     fn read(&mut self, _: &str) -> Result<Vec<u8>, workflow_engine::Error> {
-        panic!("readback after failed write")
+        Ok(br#"{"auth_mode":"chatgpt","tokens":{"login_owner_id":"synthetic","access_token":"synthetic-a","refresh_token":"synthetic-r","id_token":"a.b.c","account_id":"synthetic-account","oauth_provenance":{"issuer":"https://auth.openai.com","client_id":"synthetic-client"}}}"#.to_vec())
     }
 }
 #[test]
@@ -138,7 +138,7 @@ fn c05_writeback_failure_quarantines_and_never_destroys_tmpfs() {
         [],
     )
     .unwrap();
-    let cache=br#"{"auth_mode":"chatgpt","login_owner_id":"synthetic","tokens":{"access_token":"synthetic-a","refresh_token":"synthetic-r","id_token":"synthetic-i"}}"#;
+    let cache=br#"{"auth_mode":"chatgpt","tokens":{"login_owner_id":"synthetic","access_token":"synthetic-a","refresh_token":"synthetic-r","id_token":"a.b.c","account_id":"synthetic-account","oauth_provenance":{"issuer":"https://auth.openai.com","client_id":"synthetic-client"}}}"#;
     assert!(store
         .finish_session("slot", "owned", 7, cache, &mut FailingStore, || panic!(
             "cleanup before persistence"
@@ -169,6 +169,7 @@ fn c08_scoped_stop_keeps_output_and_ownership_hold() {
     let (_dir, store, c) = prepared();
     seed_run(&c, &status(), true);
     let s = store.stop_run("owned").unwrap();
+    assert_eq!(store.run_status("owned").unwrap().state, RunState::Held);
     assert_eq!(s.state, RunState::Held);
     assert!(s.cleanup_pending);
     assert_eq!(s.final_response.as_deref(), Some("retained"));

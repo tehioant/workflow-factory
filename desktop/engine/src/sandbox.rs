@@ -1,0 +1,615 @@
+//! Structured local Docker mutations. No shell, ambient credentials, bind mounts or name-only deletion.
+use crate::{runtime::verify_private_network, sessions::CACHE_LIMIT, validation, Error};
+use serde_json::Value;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+#[derive(Clone)]
+pub struct Cancel(pub Arc<AtomicBool>);
+impl Default for Cancel {
+    fn default() -> Self {
+        Self(Arc::new(AtomicBool::new(false)))
+    }
+}
+impl Cancel {
+    pub fn check(&self) -> Result<(), Error> {
+        if self.0.load(Ordering::Acquire) {
+            Err(validation(
+                "Scoped stop requested; no further work authorized.",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+    pub fn request(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+pub trait Pipe {
+    fn call(
+        &mut self,
+        args: &[String],
+        input: &[u8],
+        limit: usize,
+        cancel: &Cancel,
+    ) -> Result<(i32, Vec<u8>, Vec<u8>), Error>;
+}
+pub struct NativePipe;
+impl Pipe for NativePipe {
+    fn call(
+        &mut self,
+        args: &[String],
+        input: &[u8],
+        limit: usize,
+        cancel: &Cancel,
+    ) -> Result<(i32, Vec<u8>, Vec<u8>), Error> {
+        use std::io::{ErrorKind, Read, Write};
+        use std::os::{fd::OwnedFd, unix::net::UnixStream};
+        use std::process::Stdio;
+        if input.len() > 1_048_576 {
+            return Err(validation("Sandbox input limit exceeded."));
+        }
+        let (mut out, out_writer) = UnixStream::pair().map_err(crate::storage)?;
+        let (mut err, err_writer) = UnixStream::pair().map_err(crate::storage)?;
+        let (mut writer, reader) = UnixStream::pair().map_err(crate::storage)?;
+        for stream in [&out, &err, &writer] {
+            stream.set_nonblocking(true).map_err(crate::storage)?;
+        }
+        let mut child = std::process::Command::new("docker")
+            .args(["--host", "unix:///var/run/docker.sock"])
+            .args(args)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin:/usr/local/bin")
+            .env("HOME", "/var/empty")
+            .env("DOCKER_CONFIG", "/var/empty/workflow-factory-no-config")
+            .stdin(Stdio::from(OwnedFd::from(reader)))
+            .stdout(Stdio::from(OwnedFd::from(out_writer)))
+            .stderr(Stdio::from(OwnedFd::from(err_writer)))
+            .spawn()
+            .map_err(|_| validation("Local sandbox transport unavailable."))?;
+        let result = (|| {
+            let start = std::time::Instant::now();
+            let mut stdout = vec![];
+            let mut stderr = vec![];
+            let mut sent = 0;
+            let mut closed = [false; 2];
+            let mut input_closed = false;
+            let mut status = None;
+            loop {
+                if cancel.0.load(Ordering::Acquire)
+                    || start.elapsed() > std::time::Duration::from_secs(120)
+                {
+                    return Err(validation(
+                        "Sandbox operation interrupted; resource ownership remains held.",
+                    ));
+                }
+                if !input_closed {
+                    if sent == input.len() {
+                        writer
+                            .shutdown(std::net::Shutdown::Write)
+                            .map_err(crate::storage)?;
+                        input_closed = true;
+                    } else {
+                        match writer.write(&input[sent..]) {
+                            Ok(0) => return Err(validation("Sandbox stdin closed.")),
+                            Ok(n) => sent += n,
+                            Err(e)
+                                if matches!(
+                                    e.kind(),
+                                    ErrorKind::WouldBlock | ErrorKind::Interrupted
+                                ) => {}
+                            Err(_) => return Err(validation("Sandbox input failed.")),
+                        }
+                    }
+                }
+                let mut buf = [0u8; 8192];
+                for (i, stream) in [&mut out, &mut err].into_iter().enumerate() {
+                    match stream.read(&mut buf) {
+                        Ok(0) => closed[i] = true,
+                        Ok(n) => {
+                            if stdout.len() + stderr.len() + n > limit {
+                                return Err(validation(
+                                    "Sandbox output limit exceeded; ownership held.",
+                                ));
+                            }
+                            if i == 0 {
+                                stdout.extend_from_slice(&buf[..n]);
+                            } else {
+                                stderr.extend_from_slice(&buf[..n]);
+                            }
+                        }
+                        Err(e)
+                            if matches!(
+                                e.kind(),
+                                ErrorKind::WouldBlock | ErrorKind::Interrupted
+                            ) => {}
+                        Err(_) => return Err(validation("Sandbox output unavailable.")),
+                    }
+                }
+                if status.is_none() {
+                    status = child.try_wait().map_err(crate::storage)?;
+                }
+                if let Some(status) = status {
+                    if closed == [true, true] {
+                        return Ok((status.code().unwrap_or(1), stdout, stderr));
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        })();
+        if result.is_err() {
+            let _ = child.kill();
+        }
+        child.wait().map_err(crate::storage)?;
+        result
+    }
+}
+fn strings(args: &[&str]) -> Vec<String> {
+    args.iter().map(|s| s.to_string()).collect()
+}
+fn opaque(id: &str) -> bool {
+    id.len() == 64
+        && id
+            .bytes()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+fn image(id: &str) -> bool {
+    id.strip_prefix("sha256:").is_some_and(opaque)
+}
+pub type LoginObservation = (Option<i32>, Option<String>, Option<String>);
+#[derive(Clone)]
+pub struct Resources {
+    pub owner: String,
+    pub image: String,
+    pub network: String,
+    pub outer: String,
+    pub helper: String,
+    pub container: String,
+}
+pub struct Sandbox<P: Pipe> {
+    pub pipe: P,
+}
+impl<P: Pipe> Sandbox<P> {
+    pub fn create(
+        &mut self,
+        owner: &str,
+        image_id: &str,
+        mut receipt: impl FnMut(&str, Option<&str>) -> Result<(), Error>,
+    ) -> Result<Resources, Error> {
+        if uuid::Uuid::parse_str(owner).is_err() || !image(image_id) {
+            return Err(validation("Invalid immutable run identity."));
+        }
+        let label = format!("org.workflow-factory.owner={owner}");
+        let mut create = |kind: &str, args: Vec<String>| -> Result<String, Error> {
+            receipt(kind, None)?;
+            let bytes = self.success(&args, &[], 131072)?;
+            let id = std::str::from_utf8(&bytes)
+                .map_err(|_| validation("Resource ID unavailable; ownership held."))?
+                .trim()
+                .to_string();
+            if !opaque(&id) {
+                return Err(validation("Resource ID unavailable; ownership held."));
+            }
+            receipt(kind, Some(&id))?;
+            Ok(id)
+        };
+        let network = create(
+            "private-network",
+            strings(&[
+                "network",
+                "create",
+                "--internal",
+                "--driver",
+                "bridge",
+                "--ipv6=false",
+                "--opt",
+                "com.docker.network.bridge.gateway_mode_ipv4=isolated",
+                "--label",
+                &label,
+                &format!("wf-private-{owner}"),
+            ]),
+        )?;
+        let outer = create(
+            "egress-network",
+            strings(&[
+                "network",
+                "create",
+                "--driver",
+                "bridge",
+                "--ipv6=false",
+                "--label",
+                &label,
+                &format!("wf-outer-{owner}"),
+            ]),
+        )?;
+        let base = |network: &str, memory: &str, pids: &str| {
+            strings(&[
+                "create",
+                "--label",
+                &label,
+                "--network",
+                network,
+                "--read-only",
+                "--user",
+                "1000:1000",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--memory",
+                memory,
+                "--memory-swap",
+                memory,
+                "--cpus",
+                "1",
+                "--pids-limit",
+                pids,
+                "--log-driver",
+                "none",
+                "--tmpfs",
+                "/tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=700",
+            ])
+        };
+        let mut args = base(&outer, "128m", "32");
+        args.extend(strings(&[
+            image_id,
+            "node",
+            "/opt/workflow-factory/egress.mjs",
+        ]));
+        let helper = create("egress-helper", args)?;
+        let mut args = base(&network, "512m", "128");
+        args.extend(strings(&[
+            "--dns",
+            "127.0.0.1",
+            "--tmpfs",
+            "/run/wf-codex:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000,mode=700",
+            "--tmpfs",
+            "/workspace:rw,nosuid,nodev,size=256m,uid=1000,gid=1000,mode=700",
+            "--env",
+            "HOME=/run/wf-codex",
+            "--env",
+            "CODEX_HOME=/run/wf-codex",
+            "--env",
+            "HTTPS_PROXY=http://wf-egress:3128",
+            "--env",
+            "HTTP_PROXY=http://wf-egress:3128",
+            "--env",
+            "NO_PROXY=",
+            image_id,
+            "node",
+            "/opt/workflow-factory/keeper.mjs",
+        ]));
+        let container = create("work-container", args)?;
+        let r = Resources {
+            owner: owner.into(),
+            image: image_id.into(),
+            network,
+            outer,
+            helper,
+            container,
+        };
+        self.owned("container", &r.helper, owner)?;
+        self.owned("network", &r.network, owner)?;
+        self.success(
+            &strings(&[
+                "network",
+                "connect",
+                "--alias",
+                "wf-egress",
+                &r.network,
+                &r.helper,
+            ]),
+            &[],
+            131072,
+        )?;
+        self.inspect_work(&r)?;
+        self.success(&strings(&["start", &r.helper]), &[], 131072)?;
+        self.success(&strings(&["start", &r.container]), &[], 131072)?;
+        self.inspect_work(&r)?;
+        Ok(r)
+    }
+
+    fn success(&mut self, args: &[String], input: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
+        let (code, out, _) = self.pipe.call(args, input, limit, &Cancel::default())?;
+        if code != 0 {
+            return Err(validation(
+                "Sandbox operation failed. Raw diagnostics withheld; ownership retained.",
+            ));
+        }
+        Ok(out)
+    }
+    fn json(&mut self, args: &[&str]) -> Result<Value, Error> {
+        serde_json::from_slice(&self.success(&strings(args), &[], 131072)?)
+            .map_err(|_| validation("Sandbox inspection invalid."))
+    }
+    pub fn owned(&mut self, kind: &str, id: &str, owner: &str) -> Result<Value, Error> {
+        if !opaque(id) || uuid::Uuid::parse_str(owner).is_err() {
+            return Err(validation("Sandbox ownership identity invalid."));
+        }
+        let value = self.json(&[kind, "inspect", id])?;
+        let row = value
+            .get(0)
+            .ok_or_else(|| validation("Sandbox inspection missing."))?;
+        let label = if kind == "network" {
+            &row["Labels"]["org.workflow-factory.owner"]
+        } else {
+            &row["Config"]["Labels"]["org.workflow-factory.owner"]
+        };
+        if row["Id"] != id || label != owner {
+            return Err(validation(
+                "Sandbox ownership changed; no mutation authorized.",
+            ));
+        }
+        Ok(row.clone())
+    }
+    pub fn inspect_work(&mut self, r: &Resources) -> Result<(), Error> {
+        if !image(&r.image) {
+            return Err(validation("Immutable runtime image required."));
+        }
+        let network = self.owned("network", &r.network, &r.owner)?;
+        verify_private_network(&network, &r.network)
+            .map_err(|_| validation("Sandbox network is not isolated."))?;
+        let c = self.owned("container", &r.container, &r.owner)?;
+        let helper = self.owned("container", &r.helper, &r.owner)?;
+        let outer = self.owned("network", &r.outer, &r.owner)?;
+        let helper_networks = helper["NetworkSettings"]["Networks"]
+            .as_object()
+            .ok_or_else(|| validation("Helper network inspection missing."))?;
+        let helper_config = &helper["HostConfig"];
+        if outer["Driver"] != "bridge"
+            || outer["Internal"] != false
+            || outer["EnableIPv6"] != false
+            || helper["Image"] != r.image
+            || helper["Config"]["User"] != "1000:1000"
+            || helper_config["ReadonlyRootfs"] != true
+            || helper_config["Privileged"] != false
+            || helper_config["LogConfig"]["Type"] != "none"
+            || helper_config["Memory"] != 134217728u64
+            || helper_config["MemorySwap"] != 134217728u64
+            || helper_config["PidsLimit"] != 32
+            || helper_networks.len() != 2
+            || !helper_networks
+                .values()
+                .any(|n| n["NetworkID"] == r.network)
+            || !helper_networks.values().any(|n| n["NetworkID"] == r.outer)
+        {
+            return Err(validation("Applied provider helper containment changed."));
+        }
+        for (network, allowed) in [
+            (&network, vec![r.container.as_str(), r.helper.as_str()]),
+            (&outer, vec![r.helper.as_str()]),
+        ] {
+            if network["Containers"].as_object().is_none_or(|containers| {
+                containers.keys().any(|id| !allowed.contains(&id.as_str()))
+            }) {
+                return Err(validation("Unexpected network member; execution withheld."));
+            }
+        }
+        let h = &c["HostConfig"];
+        let networks = c["NetworkSettings"]["Networks"]
+            .as_object()
+            .ok_or_else(|| validation("Sandbox network inspection missing."))?;
+        for path in ["/run/wf-codex", "/workspace", "/tmp"] {
+            if h["Tmpfs"][path].as_str().is_none_or(|s| {
+                !s.contains("uid=1000")
+                    || !s.contains("mode=700")
+                    || !s.contains("nosuid")
+                    || !s.contains("nodev")
+            }) {
+                return Err(validation("Private tmpfs configuration changed."));
+            }
+        }
+        for host in [h, helper_config] {
+            for field in ["Binds", "Devices", "DeviceRequests", "CapAdd"] {
+                if !host[field].is_null() && host[field].as_array().is_none_or(|a| !a.is_empty()) {
+                    return Err(validation("Unexpected sandbox host access."));
+                }
+            }
+            if host["PublishAllPorts"] == true
+                || host["PortBindings"]
+                    .as_object()
+                    .is_some_and(|ports| !ports.is_empty())
+                || host["PidMode"] == "host"
+                || host["IpcMode"] == "host"
+            {
+                return Err(validation(
+                    "Unexpected sandbox host namespace or port access.",
+                ));
+            }
+        }
+        let exactly_private =
+            networks.len() == 1 && networks.values().all(|n| n["NetworkID"] == r.network);
+        if c["Image"] != r.image
+            || c["Config"]["User"] != "1000:1000"
+            || h["ReadonlyRootfs"] != true
+            || h["Privileged"] != false
+            || h["Memory"] != 536870912u64
+            || h["MemorySwap"] != 536870912u64
+            || h["PidsLimit"] != 128
+            || h["NanoCpus"] != 1_000_000_000u64
+            || h["LogConfig"]["Type"] != "none"
+            || !h["CapDrop"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|v| v == "ALL"))
+            || !h["SecurityOpt"].as_array().is_some_and(|a| {
+                a.iter()
+                    .any(|v| v == "no-new-privileges" || v == "no-new-privileges:true")
+            })
+            || !exactly_private
+            || c["Mounts"]
+                .as_array()
+                .is_none_or(|a| a.iter().any(|v| v["Type"] != "tmpfs"))
+        {
+            return Err(validation(
+                "Applied sandbox configuration differs; execution withheld.",
+            ));
+        }
+        Ok(())
+    }
+    pub fn start_login(&mut self, r: &Resources) -> Result<(), Error> {
+        self.inspect_work(r)?;
+        self.success(
+            &strings(&[
+                "exec",
+                "-d",
+                &r.container,
+                "node",
+                "/opt/workflow-factory/keeper.mjs",
+                "login",
+            ]),
+            &[],
+            131072,
+        )?;
+        Ok(())
+    }
+    pub fn login_status(&mut self, r: &Resources) -> Result<LoginObservation, Error> {
+        self.inspect_work(r)?;
+        let bytes = self.success(
+            &strings(&[
+                "exec",
+                &r.container,
+                "node",
+                "/opt/workflow-factory/keeper.mjs",
+                "login-status",
+            ]),
+            &[],
+            16384,
+        )?;
+        let value: Value =
+            serde_json::from_slice(&bytes).map_err(|_| validation("Invalid sign-in status."))?;
+        let url = value["url"]
+            .as_str()
+            .filter(|s| *s == "https://auth.openai.com/codex/device")
+            .map(str::to_string);
+        let code = value["code"]
+            .as_str()
+            .filter(|s| {
+                s.len() == 9
+                    && s.as_bytes()[4] == b'-'
+                    && s.bytes()
+                        .enumerate()
+                        .all(|(i, c)| i == 4 || c.is_ascii_uppercase() || c.is_ascii_digit())
+            })
+            .map(str::to_string);
+        if url.is_some() != code.is_some() {
+            return Err(validation("Unsupported device prompt."));
+        }
+        Ok((
+            value["exit"].as_i64().and_then(|v| i32::try_from(v).ok()),
+            url,
+            code,
+        ))
+    }
+    pub fn stop_writers(&mut self, r: &Resources) -> Result<(), Error> {
+        self.inspect_work(r)?;
+        self.success(
+            &strings(&[
+                "exec",
+                &r.container,
+                "node",
+                "/opt/workflow-factory/keeper.mjs",
+                "stop-writers",
+            ]),
+            &[],
+            131072,
+        )?;
+        Ok(())
+    }
+    pub fn stage(&mut self, r: &Resources, cache: &[u8]) -> Result<(), Error> {
+        crate::sessions::validate_cache(cache)?;
+        self.inspect_work(r)?;
+        let swap=self.success(&strings(&["exec",&r.container,"node","-e","process.stdout.write(require('node:fs').readFileSync('/sys/fs/cgroup/memory.swap.max','utf8'))"]),&[],1024)?;
+        if swap != b"0\n" && swap != b"0" {
+            return Err(validation("Applied container no-swap policy unavailable."));
+        }
+        self.success(
+            &strings(&[
+                "exec",
+                "-i",
+                &r.container,
+                "node",
+                "/opt/workflow-factory/keeper.mjs",
+                "stage",
+            ]),
+            cache,
+            CACHE_LIMIT,
+        )?;
+        Ok(())
+    }
+    pub fn execute(
+        &mut self,
+        r: &Resources,
+        prompt: &str,
+        config: &crate::CodexConfiguration,
+        cancel: &Cancel,
+    ) -> Result<(i32, Vec<u8>), Error> {
+        self.inspect_work(r)?;
+        let (code, out, _) = self.pipe.call(
+            &strings(&[
+                "exec",
+                "-i",
+                &r.container,
+                "node",
+                "/opt/workflow-factory/keeper.mjs",
+                "run",
+                &config.model,
+                serde_json::to_string(&config.reasoning)
+                    .map_err(crate::storage)?
+                    .trim_matches('"'),
+            ]),
+            prompt.as_bytes(),
+            1_048_576,
+            cancel,
+        )?;
+        Ok((code, out))
+    }
+    pub fn export(&mut self, r: &Resources) -> Result<Vec<u8>, Error> {
+        self.inspect_work(r)?;
+        let cache = self.success(
+            &strings(&[
+                "exec",
+                &r.container,
+                "node",
+                "/opt/workflow-factory/keeper.mjs",
+                "export",
+            ]),
+            &[],
+            CACHE_LIMIT,
+        )?;
+        crate::sessions::validate_cache(&cache)?;
+        Ok(cache)
+    }
+    pub fn cleanup(&mut self, r: &Resources) -> Result<(), Error> {
+        for id in [&r.container, &r.helper] {
+            self.owned("container", id, &r.owner)?;
+            self.success(&strings(&["rm", "-f", id]), &[], 131072)?;
+            // A failed inspect is not absence evidence. List the exact ID and require an empty result.
+            let found = self.success(
+                &strings(&[
+                    "container",
+                    "ls",
+                    "-a",
+                    "--no-trunc",
+                    "--filter",
+                    &format!("id={id}"),
+                    "--format",
+                    "{{.ID}}",
+                ]),
+                &[],
+                131072,
+            )?;
+            if found.iter().any(|c| !c.is_ascii_whitespace()) {
+                return Err(validation("Owned container removal unconfirmed."));
+            }
+        }
+        for id in [&r.network, &r.outer] {
+            let n = self.owned("network", id, &r.owner)?;
+            if n["Containers"].as_object().is_none_or(|a| !a.is_empty()) {
+                return Err(validation("Network still has resources; cleanup held."));
+            }
+            self.success(&strings(&["network", "rm", id]), &[], 131072)?;
+        }
+        Ok(())
+    }
+}

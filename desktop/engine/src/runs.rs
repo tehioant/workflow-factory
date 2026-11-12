@@ -50,6 +50,103 @@ pub struct Admission {
     pub blocker: Option<String>,
 }
 impl Store {
+    pub fn claim_run(&self, id: &str) -> Result<Option<(Snapshot, crate::sessions::Lease)>, Error> {
+        let mut c = rusqlite::Connection::open(&self.path).map_err(storage)?;
+        let tx = c
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let (body, snapshot): (String, String) = tx
+            .query_row(
+                "SELECT status,snapshot FROM runs WHERE id=?1 AND active=1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(storage)?;
+        let mut status: RunStatus = serde_json::from_str(&body).map_err(storage)?;
+        if status.state != RunState::Admitted {
+            return Ok(None);
+        }
+        let (slot, generation): (String, u32) = tx
+            .query_row(
+                "SELECT id,generation FROM managed_sessions WHERE owner=?1 AND state='leased'",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(storage)?;
+        status.state = RunState::Running;
+        tx.execute(
+            "UPDATE runs SET status=?1 WHERE id=?2",
+            params![serde_json::to_string(&status).map_err(storage)?, id],
+        )
+        .map_err(storage)?;
+        tx.commit().map_err(storage)?;
+        Ok(Some((
+            serde_json::from_str(&snapshot).map_err(storage)?,
+            crate::sessions::Lease {
+                slot,
+                owner: id.into(),
+                generation,
+            },
+        )))
+    }
+    pub fn resource_intent(
+        &self,
+        id: &str,
+        kind: &str,
+        resource: Option<&str>,
+    ) -> Result<(), Error> {
+        let c = rusqlite::Connection::open(&self.path).map_err(storage)?;
+        if let Some(resource) = resource {
+            if c.execute("UPDATE run_resources SET resource_id=?1 WHERE run_id=?2 AND kind=?3 AND resource_id IS NULL",params![resource,id,kind]).map_err(storage)?!=1{return Err(storage("ownership receipt"));}
+        } else {
+            c.execute(
+                "INSERT INTO run_resources VALUES(?1,?2,NULL)",
+                params![id, kind],
+            )
+            .map_err(storage)?;
+        }
+        Ok(())
+    }
+    pub fn finish_run(
+        &self,
+        id: &str,
+        final_response: Option<String>,
+        diagnostic: &str,
+        clean: bool,
+        success: bool,
+    ) -> Result<(), Error> {
+        let mut c = rusqlite::Connection::open(&self.path).map_err(storage)?;
+        let tx = c
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let body: String = tx
+            .query_row(
+                "SELECT status FROM runs WHERE id=?1 AND active=1",
+                [id],
+                |r| r.get(0),
+            )
+            .map_err(storage)?;
+        let mut status: RunStatus = serde_json::from_str(&body).map_err(storage)?;
+        status.state = if !clean {
+            RunState::Held
+        } else if status.state == RunState::Held {
+            RunState::Stopped
+        } else if success {
+            RunState::Succeeded
+        } else {
+            RunState::Failed
+        };
+        status.final_response = final_response.or(status.final_response);
+        status.diagnostic = diagnostic.into();
+        status.cleanup_pending = !clean;
+        tx.execute(
+            "UPDATE runs SET status=?1,active=?2 WHERE id=?3",
+            params![serde_json::to_string(&status).map_err(storage)?, !clean, id],
+        )
+        .map_err(storage)?;
+        tx.commit().map_err(storage)
+    }
+
     pub fn admit_run(&self, request: StartRun, admission: Admission) -> Result<RunStatus, Error> {
         if request.request_id.len() != 36 || uuid::Uuid::parse_str(&request.request_id).is_err() {
             return Err(validation("Request identity must be a UUID."));
@@ -138,6 +235,16 @@ impl Store {
             diagnostic: admission.blocker.unwrap_or_default(),
             cleanup_pending: false,
         };
+        if !blocked {
+            let slot: String = tx
+                .query_row(
+                    "SELECT id FROM managed_sessions WHERE state='available' ORDER BY id LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(|_| validation("No app-owned managed session is available."))?;
+            tx.execute("UPDATE managed_sessions SET state='leased',owner=?1 WHERE id=?2 AND state='available'",params![status.id,slot]).map_err(storage)?;
+        }
         tx.execute("INSERT INTO runs(id,request_id,request,snapshot,status,active) VALUES(?1,?2,?3,?4,?5,?6)",params![status.id,status.request_id,payload,serde_json::to_string(&snapshot).map_err(storage)?,serde_json::to_string(&status).map_err(storage)?,!blocked]).map_err(storage)?;
         tx.commit().map_err(storage)?;
         Ok(status)
@@ -167,7 +274,17 @@ impl Store {
             .transpose()
     }
     pub fn stop_run(&self, id: &str) -> Result<RunStatus, Error> {
-        let mut s = self.run_status(id)?;
+        let mut c = rusqlite::Connection::open(&self.path).map_err(storage)?;
+        let tx = c
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let body: String = tx
+            .query_row("SELECT status FROM runs WHERE id=?1", [id], |r| r.get(0))
+            .map_err(storage)?;
+        let mut s: RunStatus = serde_json::from_str(&body).map_err(storage)?;
+        if s.id != id {
+            return Err(storage("run identity"));
+        }
         if matches!(
             s.state,
             RunState::Admitted | RunState::Running | RunState::Held
@@ -175,13 +292,13 @@ impl Store {
             s.state = RunState::Held;
             s.cleanup_pending = true;
             s.diagnostic="Stop requested. Ownership/secure-cache cleanup must be confirmed; session remains withheld.".into();
-            let c = rusqlite::Connection::open(&self.path).map_err(storage)?;
-            c.execute(
+            tx.execute(
                 "UPDATE runs SET status=?1 WHERE id=?2 AND active=1",
                 params![serde_json::to_string(&s).map_err(storage)?, id],
             )
             .map_err(storage)?;
         }
+        tx.commit().map_err(storage)?;
         Ok(s)
     }
     pub fn withhold_unfinished_runs(&self) -> Result<(), Error> {
@@ -208,7 +325,7 @@ impl Store {
             .map_err(storage)?;
         }
         tx.execute(
-            "UPDATE managed_sessions SET state='quarantined' WHERE state='leased'",
+            "UPDATE managed_sessions SET state='quarantined' WHERE state IN ('leased','acquiring')",
             [],
         )
         .map_err(storage)?;

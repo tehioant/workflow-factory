@@ -38,7 +38,8 @@
   let pendingStart=$state<StartRun|null>(null);
   onMount(()=>{let alive=true;void commands.runStatus().then(value=>{if(alive){run=value;runReady=true;}}).catch(error=>{if(alive)runError=errorMessage(error);});return()=>{alive=false;};});
   async function begin(mode:'save'|'saved'|'retry'){
-    if(busy||!runReady||!editor.working)return;
+    if(busy||!runReady||(mode!=='retry'&&!editor.working))return;
+    const inputs=$state.snapshot(supplied);
     busy=true;runError='';
     try{
       if(mode!=='retry'){
@@ -52,7 +53,7 @@
         if(saved.definition.blocks.length!==1)throw new Error('This version runs exactly one saved AI block.');
         const config=configurations.find(c=>c.config.id===saved.definition.blocks[0].configurationId);
         if(!config)throw new Error('Select and save an available Codex configuration.');
-        pendingStart={requestId:crypto.randomUUID(),definitionId:saved.definition.id,expectedRevision:saved.revision,expectedConfigurationRevision:config.revision,supplied:$state.snapshot(supplied)};
+        pendingStart={requestId:crypto.randomUUID(),definitionId:saved.definition.id,expectedRevision:saved.revision,expectedConfigurationRevision:config.revision,supplied:inputs};
       }
       if(!pendingStart)return;
       run=await commands.startRun($state.snapshot(pendingStart));pendingStart=null;dirtyStart=false;
@@ -159,6 +160,7 @@
     {/if}
     <section class="notice" aria-label="Start run">
       <button disabled={busy||!runReady||!editor.working||pendingStart!==null} onclick={()=>{if(editor.dirty)dirtyStart=true;else void begin('saved');}}>Start one saved block</button>
+      <button disabled={busy} onclick={()=>{void commands.openSessionSignIn().catch(error=>{runError=errorMessage(error);});}}>Open native managed sign-in</button>
       <p>Trusted private workloads only. Native secure staging, managed login and containment must be qualified before execution.</p>
       {#if dirtyStart}
       <h2>Unsaved changes</h2><p>Save and start, explicitly use the last saved revision without discarding edits, or stay.</p>
