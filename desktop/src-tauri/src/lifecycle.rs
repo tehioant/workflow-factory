@@ -1,4 +1,4 @@
-use crate::{run_host, signin_host, ActiveRuns, Database};
+use crate::{run_host, signin_host, ActiveRuns, Database, RuntimeGate};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
@@ -45,11 +45,13 @@ pub fn request(app: &tauri::AppHandle) {
 }
 fn confirm_transition(
     freeze: impl FnOnce() -> Result<Vec<String>, Error>,
+    runtime: &RuntimeGate,
     mut signal: impl FnMut(&str) -> Result<(), Error>,
     mut stop: impl FnMut(&str) -> Result<(), Error>,
     cancel_setup: impl FnOnce() -> Result<(), Error>,
 ) -> Result<bool, Error> {
     let ids = freeze()?;
+    runtime.freeze();
     let mut pending = false;
     for id in &ids {
         pending |= signal(id).is_err();
@@ -61,14 +63,18 @@ fn confirm_transition(
     Ok(pending)
 }
 fn finish_transition(
+    runtime: &RuntimeGate,
     native: impl FnOnce() -> Result<(usize, bool, bool), Error>,
     durable: impl FnOnce() -> Result<bool, Error>,
     exit: impl FnOnce(),
 ) -> Result<(), Error> {
     let (workers, setup, retained) = native()?;
+    if !runtime.returned() {
+        return Err(busy());
+    }
     ready_to_exit(workers, setup, retained, durable()?, exit)
 }
-fn native(app: &tauri::AppHandle) -> Result<(Vec<String>, bool, bool), Error> {
+fn native(app: &tauri::AppHandle) -> Result<(Vec<String>, bool, bool, bool), Error> {
     let active = app.state::<std::sync::Arc<ActiveRuns>>();
     let ids = active
         .0
@@ -78,7 +84,12 @@ fn native(app: &tauri::AppHandle) -> Result<(Vec<String>, bool, bool), Error> {
         .cloned()
         .collect();
     let setup = signin_host::pending(&app.state::<std::sync::Arc<signin_host::SignIn>>())?;
-    Ok((ids, setup, run_host::shutdown_pending()?))
+    Ok((
+        ids,
+        setup,
+        run_host::shutdown_pending()?,
+        app.state::<RuntimeGate>().pending(),
+    ))
 }
 #[tauri::command]
 pub async fn shutdown_preview(
@@ -107,6 +118,7 @@ pub async fn shutdown_preview(
             workers: state.0.len() as u32,
             setup: state.1,
             retained: state.2,
+            runtime_pending: state.3,
             frozen: app.state::<Lifecycle>().frozen.load(Ordering::Acquire),
         })
     })
@@ -153,6 +165,7 @@ pub async fn shutdown_confirm(
                 drop(registrations);
                 Ok(ids)
             },
+            &app.state::<RuntimeGate>(),
             |id| active.signal_stop(id),
             |id| store.stop_run(id).map(|_| ()),
             || {
@@ -181,6 +194,7 @@ pub async fn shutdown_finish(
         let active = app.state::<std::sync::Arc<ActiveRuns>>();
         let registrations = active.0.lock().map_err(|_| busy())?;
         finish_transition(
+            &app.state::<RuntimeGate>(),
             || Ok((registrations.len(), state.1, state.2)),
             || Store::open(&root)?.shutdown_ready(),
             || {
@@ -366,6 +380,24 @@ mod tests {
         assert!(workflow_engine::runs::history::HistoryReader::open(&absent).is_err());
         assert!(!absent.exists());
         let frozen = Cell::new(false);
+        let runtime = crate::RuntimeGate(std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
+        assert!(super::confirm_transition(
+            || Err(super::busy()),
+            &runtime,
+            |_| panic!("signal before freeze"),
+            |_| panic!("stop before freeze"),
+            || panic!("setup before freeze"),
+        )
+        .is_err());
+        assert!(!runtime.0.is_closed());
+        let probe = runtime.acquire().unwrap();
+        let (release, wait) = std::sync::mpsc::channel();
+        let fake_probe = std::thread::spawn(move || {
+            let _permit = probe;
+            wait.recv().unwrap();
+        });
+        assert!(runtime.pending());
+        assert!(!runtime.0.is_closed());
         let signals = std::cell::RefCell::new(Vec::new());
         let stops = std::cell::RefCell::new(Vec::new());
         let claimed_before: String = c
@@ -379,8 +411,10 @@ mod tests {
                 frozen.set(true);
                 Ok(ids)
             },
+            &runtime,
             |id| {
                 assert!(frozen.get());
+                assert!(runtime.acquire().is_err());
                 signals.borrow_mut().push(id.to_string());
                 Ok(())
             },
@@ -406,6 +440,7 @@ mod tests {
         store.stop_run(claimed).unwrap();
         assert!(super::confirm_transition(
             || Err(super::busy()),
+            &runtime,
             |_| panic!("signal before freeze"),
             |_| panic!("stop before freeze"),
             || panic!("setup before freeze")
@@ -413,6 +448,7 @@ mod tests {
         .is_err());
         assert!(!super::confirm_transition(
             || Ok(vec![run.into()]),
+            &runtime,
             |_| Ok(()),
             |_| Ok(()),
             || Ok(())
@@ -486,6 +522,9 @@ mod tests {
         c.execute("DELETE FROM run_resources WHERE run_id='orphan'", [])
             .unwrap();
         let exit = Cell::new(0);
+        let returned_runtime =
+            crate::RuntimeGate(std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
+        returned_runtime.freeze();
         for (workers, setup, retained, durable) in [
             (1, false, false, true),
             (0, true, false, true),
@@ -493,6 +532,7 @@ mod tests {
             (0, false, false, false),
         ] {
             assert!(super::finish_transition(
+                &returned_runtime,
                 || Ok((workers, setup, retained)),
                 || Ok(durable),
                 || exit.set(exit.get() + 1)
@@ -501,12 +541,26 @@ mod tests {
         }
         assert_eq!(exit.get(), 0);
         assert!(super::finish_transition(
+            &returned_runtime,
             || Ok((0, false, false)),
             || Err(super::busy()),
             || exit.set(exit.get() + 1)
         )
         .is_err());
+        assert!(super::finish_transition(
+            &runtime,
+            || Ok((0, false, false)),
+            || store.shutdown_ready(),
+            || exit.set(exit.get() + 1),
+        )
+        .is_err());
+        assert_eq!(exit.get(), 0);
+        release.send(()).unwrap();
+        fake_probe.join().unwrap();
+        assert!(!runtime.pending());
+        assert!(runtime.acquire().is_err());
         super::finish_transition(
+            &runtime,
             || Ok((0, false, false)),
             || store.shutdown_ready(),
             || exit.set(exit.get() + 1),

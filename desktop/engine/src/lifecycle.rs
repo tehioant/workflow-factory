@@ -101,5 +101,6 @@ pub struct ShutdownPreview {
     pub workers: u32,
     pub setup: bool,
     pub retained: bool,
+    pub runtime_pending: bool,
     pub frozen: bool,
 }

@@ -21,7 +21,7 @@
  <button disabled={working} onclick={()=>{generation++;onstay();}}>Stay</button>
  <button disabled={working||busy||!dirty} onclick={saveDrafts}>Save drafts (keep open)</button>
  <button disabled={working||busy} onclick={recheck}>Inspect fresh shutdown state</button>
- {#if preview}<p>{preview.work} queued/held records · {preview.workers} workers · setup {preview.setup?'pending':'absent'} · retained settlement {preview.retained?'pending':'absent'}.</p>
+ {#if preview}<p>{preview.work} queued/held records · {preview.workers} workers · runtime probe {preview.runtimePending?'pending':'returned'} · setup {preview.setup?'pending':'absent'} · retained settlement {preview.retained?'pending':'absent'}.</p>
  <label><input type="checkbox" bind:checked={consent} disabled={working||busy}/> Explicitly cancel queued/active work and setup; discard any remaining drafts only when exit is safe.</label>
  <button disabled={working||busy||!consent} onclick={confirm}>Confirm safe shutdown</button>{/if}
  {:else}<p>Admission is frozen. Keep this app open until workers, exact current-cache cleanup and final durable storage are confirmed. Use the selected run's Stop / cleanup / storage recovery controls; no automatic retry or resume.</p><button disabled={working||busy} onclick={finish}>Recheck completion and quit</button><button disabled={working||busy} onclick={()=>{void commands.openSessionSignIn().catch(e=>{if(alive)error=errorMessage(e);});}}>Open setup recovery</button>{/if}

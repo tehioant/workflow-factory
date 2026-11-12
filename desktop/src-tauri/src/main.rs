@@ -711,17 +711,29 @@ async fn save_queue_settings(
 }
 
 struct RuntimeGate(Arc<tokio::sync::Semaphore>);
+impl RuntimeGate {
+    fn acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit, Error> {
+        self.0.clone().try_acquire_owned().map_err(|_| Error::Busy {
+            message:
+                "Runtime check already running or shutdown admission frozen. Keep open and recheck."
+                    .into(),
+        })
+    }
+    fn freeze(&self) {
+        self.0.close();
+    }
+    fn pending(&self) -> bool {
+        self.0.available_permits() != 1
+    }
+    fn returned(&self) -> bool {
+        self.0.is_closed() && !self.pending()
+    }
+}
 #[tauri::command]
 async fn runtime_readiness(
     state: tauri::State<'_, RuntimeGate>,
 ) -> Result<workflow_engine::runtime::Readiness, Error> {
-    let permit = state
-        .0
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| Error::Busy {
-            message: "Runtime check already running. Retry shortly.".into(),
-        })?;
+    let permit = state.acquire()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
         runtime_host::readiness_with(&mut workflow_engine::runtime::RealProcess)

@@ -21,11 +21,18 @@
   import { emptyEditor, saveEditor, openEditor, errorMessage } from './lib/editor.ts';
   import type { SavedConfiguration, SavedDefinition } from './lib/transport.ts';
   const commands = createCommands(invoke);
-  let shutdownVisible=$state(false),shutdownFrozen=$state(false);
+  let shutdownVisible=$state(false),shutdownFrozen=$state(false),shutdownSubscriptionFailed=$state(false);
   let configurationManager=$state<ConfigurationManager>();
   let configDraft=$derived(configurationManager?.shutdownState()??{dirty:false,busy:false,identity:''});
   async function saveShutdownDrafts(){if(busy||configDraft.busy)return false;if(editor.dirty)await save();if(editor.dirty)return false;return await configurationManager?.saveDraft()??true;}
-  onMount(()=>{let alive=true;let stop:(()=>void)|undefined;void listen('shutdown-requested',()=>{shutdownVisible=true;}).then(value=>{if(alive)stop=value;else value();});return()=>{alive=false;stop?.();};});
+  onMount(()=>{
+    let alive=true;
+    let stop:(()=>void)|undefined;
+    void listen('shutdown-requested',()=>{if(alive)shutdownVisible=true;})
+      .then(value=>{if(alive)stop=value;else value();})
+      .catch(()=>{if(alive)shutdownSubscriptionFailed=true;});
+    return()=>{alive=false;stop?.();};
+  });
   let editor = $state(emptyEditor());
   let configurations = $state<SavedConfiguration[]>([]);
   let configError = $state('');
@@ -109,6 +116,7 @@
 </script>
 
 <svelte:window onbeforeunload={(event) => { if (editor.dirty) event.preventDefault(); }} />
+{#if shutdownSubscriptionFailed}<section class="notice"><p role="alert">Native shutdown requests are unavailable. Keep the app open or use safe shutdown below.</p><button onclick={()=>{shutdownVisible=true;}}>Open safe shutdown</button></section>{/if}
 {#if shutdownVisible}<ShutdownDialog {commands} dirty={editor.dirty||configDraft.dirty} busy={busy||configDraft.busy} identity={shutdownIdentity} save={saveShutdownDrafts} onstay={()=>{shutdownVisible=false;}} onfreeze={()=>{shutdownFrozen=true;}}/>{/if}
 <div class="app-shell" inert={shutdownVisible&&!shutdownFrozen}>
   <aside aria-label="Saved workflows">

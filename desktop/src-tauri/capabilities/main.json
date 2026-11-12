@@ -6,6 +6,8 @@
     "main"
   ],
   "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
     "definitions",
     "runtime-readiness",
     "single-block-runs"
