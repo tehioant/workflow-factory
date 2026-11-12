@@ -12,7 +12,7 @@ def forbid(event,args):
     if event in ('subprocess.Popen','os.system','os.posix_spawn','socket.__new__','socket.connect'): raise AssertionError(event)
 sys.addaudithook(forbid)
 with tempfile.TemporaryDirectory(prefix='synthetic-resource-', dir=os.environ.get('TMPDIR')) as tmp:
-    base=pathlib.Path(tmp); src=base/'source'; src.mkdir(mode=0o700)
+    base=pathlib.Path(tmp).resolve(); src=base/'source'; src.mkdir(mode=0o700)
     run='10000000-0000-0000-0000-000000000001'; rel=f'inspection/{run}/journal'
     (src/'inspection').mkdir(mode=0o700); (src/'inspection'/run).mkdir(mode=0o700)
     files={'definitions.sqlite3': b'SYNTHETIC neverexecuted pure copy bytes', rel:b'SYNTHETIC journal copy bytes'}
