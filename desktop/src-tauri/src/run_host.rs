@@ -85,7 +85,6 @@ pub fn execute(
 ) {
     use workflow_engine::{
         sandbox::{NativePipe, Sandbox},
-        sessions::SecureStore,
         Store,
     };
     let Ok(store) = Store::open(&directory) else {
@@ -107,9 +106,7 @@ pub fn execute(
             |kind, resource| store.resource_intent(&id, kind, resource),
         )?;
         native_prerequisites().map_err(|message| workflow_engine::Error::Validation { message })?;
-        let seed = secure.read(&lease.slot)?;
-        cancel.check()?;
-        sandbox.stage(&resources, &seed, &cancel)?;
+        let seed = sandbox.stage_owned(&lease, &resources, &mut secure, &cancel)?;
         cancel.check()?;
         if snapshot.plans.is_empty() {
             return Err(workflow_engine::Error::Validation {

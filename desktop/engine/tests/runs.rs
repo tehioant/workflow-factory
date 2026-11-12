@@ -87,6 +87,158 @@ fn d11_prepared_admission_bounds_snapshot_and_idempotency() {
         assert_eq!(first.owner, captures[0].0);
         assert_eq!(second.owner, captures[1].0);
         assert_ne!(first.slot, second.slot);
+        // One stage operation per independently captured owner; never execute/settle a workflow.
+        struct Seed {
+            slot: String,
+            bytes: Vec<u8>,
+            reads: usize,
+        }
+        impl SecureStore for Seed {
+            fn read(&mut self, slot: &str) -> Result<Vec<u8>, workflow_engine::Error> {
+                assert_eq!(slot, self.slot);
+                self.reads += 1;
+                Ok(self.bytes.clone())
+            }
+            fn write(&mut self, _: &str, _: &[u8]) -> Result<(), workflow_engine::Error> {
+                panic!("stage must not write secure store")
+            }
+        }
+        struct Stage {
+            r: workflow_engine::sandbox::Resources,
+            bytes: Vec<u8>,
+            staged: Vec<(String, Vec<u8>)>,
+        }
+        impl workflow_engine::sandbox::Pipe for Stage {
+            fn call(
+                &mut self,
+                args: &[String],
+                input: &[u8],
+                _: usize,
+                _: &workflow_engine::sandbox::Cancel,
+            ) -> Result<(i32, Vec<u8>, Vec<u8>), workflow_engine::Error> {
+                use serde_json::json;
+                let r = &self.r;
+                if args.last().map(String::as_str) == Some("stage") {
+                    assert_eq!(
+                        args,
+                        &[
+                            "exec",
+                            "-i",
+                            &r.container,
+                            "node",
+                            "/opt/workflow-factory/keeper.mjs",
+                            "stage"
+                        ]
+                        .map(str::to_string)
+                    );
+                    assert_eq!(input, self.bytes);
+                    self.staged.push((r.container.clone(), input.to_vec()));
+                    return Ok((0, vec![], vec![]));
+                }
+                assert!(input.is_empty());
+                if args[0] == "exec" {
+                    assert_eq!(args[1], r.container);
+                    return Ok((0, b"0\n".to_vec(), vec![]));
+                }
+                assert_eq!(args[1], "inspect");
+                let label = json!({"org.workflow-factory.owner":r.owner});
+                let private = format!("wf-private-{}", r.owner);
+                let outer = format!("wf-outer-{}", r.owner);
+                let host = |memory: u64, pids: u32| json!({"ReadonlyRootfs":true,"Privileged":false,"Init":true,"Ulimits":[{"Name":"core","Soft":0,"Hard":0}],"Memory":memory,"MemorySwap":memory,"PidsLimit":pids,"NanoCpus":1000000000u64,"LogConfig":{"Type":"none"},"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges"],"Tmpfs":{"/workspace":"rw,exec,nosuid,nodev,uid=1000,mode=700","/run/wf-codex":"rw,noexec,nosuid,nodev,uid=1000,mode=700","/tmp":"rw,noexec,nosuid,nodev,uid=1000,mode=700"}});
+                let value = if args[0] == "volume" {
+                    assert_eq!(Some(&args[2]), r.workspace.as_ref());
+                    json!({"Name":args[2],"Driver":"local","Scope":"local","Labels":label,"Options":{"type":"tmpfs","device":"tmpfs","o":"rw,exec,nosuid,nodev,size=256m,uid=1000,gid=1000,mode=700"}})
+                } else if args[0] == "network" {
+                    assert!([&r.network, &r.outer].contains(&&args[2]));
+                    json!({"Id":args[2],"Labels":label,"Driver":"bridge","Internal":args[2]==r.network,"EnableIPv6":false,"Options":{"com.docker.network.bridge.gateway_mode_ipv4":"isolated"},"Containers":if args[2]==r.network {json!({r.container.clone():{},r.helper.clone():{}})}else{json!({r.helper.clone():{}})}})
+                } else if args[2] == r.helper {
+                    {
+                        let mut helper_host = host(134217728, 32);
+                        helper_host["Tmpfs"] =
+                            json!({"/tmp":"rw,noexec,nosuid,nodev,uid=1000,mode=700"});
+                        json!({"Id":r.helper,"Image":r.image,"Config":{"Labels":label,"User":"1000:1000"},"HostConfig":helper_host,"Mounts":[],"NetworkSettings":{"Networks":{private:{"NetworkID":r.network},outer:{"NetworkID":r.outer}}}})
+                    }
+                } else {
+                    assert_eq!(args[2], r.container);
+                    let mut row = json!({"State":{"Running":true,"StartedAt":"prepared-stage-epoch"},"RestartCount":0,"Id":r.container,"Image":r.image,"Config":{"Labels":label,"User":"1000:1000","Entrypoint":["node"],"Cmd":["/opt/workflow-factory/keeper.mjs"]},"HostConfig":host(536870912,128),"Mounts":[],"NetworkSettings":{"Networks":{private:{"NetworkID":r.network}}}});
+                    if let Some(name) = &r.workspace {
+                        row["HostConfig"]["Tmpfs"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("/workspace");
+                        row["HostConfig"]["Mounts"] = json!([{"Type":"volume","Source":name,"Target":"/workspace","VolumeOptions":{"NoCopy":true}}]);
+                        row["Mounts"] = json!([{"Type":"volume","Name":name,"Driver":"local","Destination":"/workspace","RW":true}]);
+                    }
+                    row
+                };
+                Ok((0, serde_json::to_vec(&json!([value])).unwrap(), vec![]))
+            }
+        }
+        let mut bindings = Vec::new();
+        for (index, lease) in [&first, &second].into_iter().enumerate() {
+            let captured = workflow_engine::runs::history::HistoryReader::open(dir.path())
+                .unwrap()
+                .run_detail(DEFINITION, &captures[index].0)
+                .unwrap();
+            assert_eq!(lease.owner, captured.id);
+            let resources = workflow_engine::sandbox::Resources {
+                owner: captured.id.clone(),
+                image: format!("sha256:{}", "f".repeat(64)),
+                network: format!("{:064x}", index * 4 + 1),
+                outer: format!("{:064x}", index * 4 + 2),
+                helper: format!("{:064x}", index * 4 + 3),
+                container: format!("{:064x}", index * 4 + 4),
+                workspace: (mode == "perBlock").then(|| format!("wf-workspace-{}", captured.id)),
+                peer: None,
+                started_at: Some("prepared-stage-epoch".into()),
+                retired: None,
+            };
+            let cache=serde_json::to_vec(&serde_json::json!({"auth_mode":"chatgpt","tokens":{"login_owner_id":format!("synthetic-owner-{index}"),"access_token":format!("synthetic-access-{index}"),"refresh_token":format!("synthetic-refresh-{index}"),"id_token":"a.b.c","account_id":"synthetic","oauth_provenance":{"issuer":"https://auth.openai.com","client_id":"synthetic-client"}}})).unwrap();
+            let mut secure = Seed {
+                slot: lease.slot.clone(),
+                bytes: cache.clone(),
+                reads: 0,
+            };
+            let mut sandbox = workflow_engine::sandbox::Sandbox {
+                pipe: Stage {
+                    r: resources.clone(),
+                    bytes: cache.clone(),
+                    staged: Vec::new(),
+                },
+            };
+            assert_eq!(
+                sandbox
+                    .stage_owned(
+                        lease,
+                        &resources,
+                        &mut secure,
+                        &workflow_engine::sandbox::Cancel::default()
+                    )
+                    .unwrap(),
+                cache
+            );
+            assert_eq!(secure.reads, 1);
+            assert_eq!(
+                sandbox.pipe.staged,
+                vec![(resources.container.clone(), cache.clone())]
+            );
+            bindings.push((
+                captured.id,
+                lease.slot.clone(),
+                lease.generation,
+                resources.container,
+                resources.workspace,
+                cache,
+            ));
+        }
+        assert_ne!(bindings[0].0, bindings[1].0);
+        assert_ne!(bindings[0].1, bindings[1].1);
+        assert_ne!(bindings[0].3, bindings[1].3);
+        assert_ne!(bindings[0].5, bindings[1].5);
+        if mode == "perBlock" {
+            assert_ne!(bindings[0].4, bindings[1].4);
+        }
+
         assert!(store.reserve_next_run().unwrap().is_none());
     }
     {

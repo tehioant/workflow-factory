@@ -117,13 +117,228 @@ mod stop_tests {
             drop(next);
         });
         drop(second_permit);
+        for scenario in [
+            "selected",
+            "no-permit",
+            "duplicate",
+            "wrong-selected",
+            "declined",
+            "nonterminal",
+            "cleanup-hold",
+        ] {
+            let active = super::ActiveRuns::default();
+            let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+            let held = if scenario == "no-permit" {
+                Some(permits.clone().try_acquire_owned().unwrap())
+            } else {
+                None
+            };
+            let duplicate = if scenario == "duplicate" {
+                active.register("selected", permits.clone()).unwrap()
+            } else {
+                None
+            };
+            let count = std::cell::Cell::new(0);
+            let confirmed = std::cell::Cell::new(0);
+            let reservation = workflow_engine::sessions::Lease {
+                slot: "exact-slot".into(),
+                owner: "selected".into(),
+                generation: 11,
+            };
+            super::reservation_dispatch(
+                || Ok(None),
+                || {
+                    Ok(vec![workflow_engine::runs::queue::QueueEntry {
+                        id: "selected".into(),
+                        definition_id: "prepared".into(),
+                        state: if scenario == "nonterminal" {
+                            workflow_engine::runs::RunState::Running
+                        } else {
+                            workflow_engine::runs::RunState::AuthorizationRequired
+                        },
+                        diagnostic: if scenario == "declined" {
+                            "Native confirmation declined".into()
+                        } else {
+                            String::new()
+                        },
+                        cleanup_pending: scenario == "cleanup-hold",
+                    }])
+                },
+                if scenario == "declined" {
+                    None
+                } else {
+                    Some(if scenario == "wrong-selected" {
+                        "other"
+                    } else {
+                        "selected"
+                    })
+                },
+                &active,
+                permits.clone(),
+                |id| {
+                    assert_eq!(id, "selected");
+                    Ok(Some(reservation.clone()))
+                },
+                |id, cancel, permit, lease| {
+                    count.set(count.get() + 1);
+                    assert_eq!(
+                        (
+                            id.as_str(),
+                            lease.owner.as_str(),
+                            lease.slot.as_str(),
+                            lease.generation
+                        ),
+                        ("selected", "selected", "exact-slot", 11)
+                    );
+                    super::run_host::execute_confirmed(
+                        &cancel,
+                        || {
+                            confirmed.set(confirmed.get() + 1);
+                            Ok(())
+                        },
+                        || Ok(false),
+                        || panic!("no workflow execution"),
+                    )?;
+                    active.worker_return(&id, permit, || {});
+                    Ok(())
+                },
+            )
+            .unwrap();
+            let expected = usize::from(matches!(scenario, "selected" | "cleanup-hold"));
+            assert_eq!(count.get(), expected, "{scenario}");
+            assert_eq!(confirmed.get(), expected, "{scenario}");
+            drop((held, duplicate));
+        }
+        // Prepared queue records only: the real dispatcher consumes readiness both
+        // before a waiter exists and after a waiter has already failed to reserve.
+        for before_wait in [true, false] {
+            for sign_in in [true, false] {
+                for ready in [true, false] {
+                    let available = std::cell::Cell::new(false);
+                    let queued = std::cell::Cell::new(false);
+                    let occupied = std::cell::Cell::new(false);
+                    let calls = std::cell::Cell::new(0);
+                    let active = super::ActiveRuns::default();
+                    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+                    let dispatch = || {
+                        super::reservation_dispatch(
+                            || {
+                                if queued.get() && available.get() && !occupied.replace(true) {
+                                    Ok(Some("waiter".into()))
+                                } else {
+                                    Ok(None)
+                                }
+                            },
+                            || {
+                                Ok(if queued.get() {
+                                    vec![workflow_engine::runs::queue::QueueEntry {
+                                        id: "waiter".into(),
+                                        definition_id: "prepared".into(),
+                                        state: if occupied.get() {
+                                            workflow_engine::runs::RunState::AuthorizationRequired
+                                        } else {
+                                            workflow_engine::runs::RunState::Queued
+                                        },
+                                        diagnostic: String::new(),
+                                        cleanup_pending: false,
+                                    }]
+                                } else {
+                                    vec![]
+                                })
+                            },
+                            None,
+                            &active,
+                            permits.clone(),
+                            |id| {
+                                assert_eq!(id, "waiter");
+                                Ok(Some(workflow_engine::sessions::Lease {
+                                    slot: "wake-slot".into(),
+                                    owner: id.into(),
+                                    generation: 7,
+                                }))
+                            },
+                            |id, cancel, permit, lease| {
+                                assert_eq!(
+                                    (
+                                        id.as_str(),
+                                        lease.owner.as_str(),
+                                        lease.slot.as_str(),
+                                        lease.generation
+                                    ),
+                                    ("waiter", "waiter", "wake-slot", 7)
+                                );
+                                super::run_host::execute_confirmed(
+                                    &cancel,
+                                    || {
+                                        calls.set(calls.get() + 1);
+                                        Ok(())
+                                    },
+                                    || Ok(false),
+                                    || panic!("no execution"),
+                                )?;
+                                active.worker_return(&id, permit, || {});
+                                Ok(())
+                            },
+                        )
+                    };
+                    let observation = || {
+                        let signin = workflow_engine::sessions::SignInStatus {
+                            state: if ready { "available" } else { "declined" }.into(),
+                            url: None,
+                            code: None,
+                            message: String::new(),
+                        };
+                        let completion=serde_json::from_value(serde_json::json!({"id":"prior","requestId":"request","state":if ready {"succeeded"}else{"running"},"finalResponse":null,"diagnostic":"","cleanupPending":false,"blocks":[]})).unwrap();
+                        super::observed_dispatch(
+                            if sign_in {
+                                super::DispatchObservation::SignIn(&signin)
+                            } else {
+                                super::DispatchObservation::Completion(&completion)
+                            },
+                            || {
+                                available.set(true);
+                                dispatch()
+                            },
+                        )
+                        .unwrap();
+                    };
+                    if before_wait {
+                        observation();
+                        assert_eq!(calls.get(), 0);
+                        queued.set(true);
+                        dispatch().unwrap();
+                    } else {
+                        queued.set(true);
+                        dispatch().unwrap();
+                        assert_eq!(calls.get(), 0);
+                        observation();
+                    }
+                    assert_eq!(calls.get(), usize::from(ready));
+                    assert_eq!(occupied.get(), ready);
+                }
+            }
+        }
+        for state in [
+            "succeeded",
+            "failed",
+            "stopped",
+            "authorizationRequired",
+            "running",
+        ] {
+            let status=serde_json::from_value(serde_json::json!({"id":"selected","requestId":"request","state":state,"finalResponse":null,"diagnostic":"","cleanupPending":true,"blocks":[]})).unwrap();
+            super::observed_dispatch(super::DispatchObservation::Completion(&status), || {
+                panic!("cleanup holds never dispatch")
+            })
+            .unwrap();
+        }
+
         use std::cell::{Cell, RefCell};
         for ready_before_dispatch in [true, false] {
             let ready = Cell::new(ready_before_dispatch);
             let queued = Cell::new(true);
             let events = RefCell::new(Vec::new());
             let dispatch = || {
-                super::reservation_dispatch(
+                super::reserve_before_projection(
                     || {
                         events.borrow_mut().push("reservation");
                         Ok(if ready.get() && queued.replace(false) {
@@ -254,7 +469,7 @@ async fn auth_readiness(app: tauri::AppHandle) -> Result<workflow_engine::AuthRe
 }
 
 struct WorkerPermits(Arc<tokio::sync::Semaphore>);
-fn reservation_dispatch<T>(
+fn reserve_before_projection<T>(
     mut reserve: impl FnMut() -> Result<Option<String>, Error>,
     dispatch: impl FnOnce() -> Result<T, Error>,
 ) -> Result<T, Error> {
@@ -265,13 +480,75 @@ fn reservation_dispatch<T>(
     }
     dispatch()
 }
+fn reservation_dispatch(
+    reserve: impl FnMut() -> Result<Option<String>, Error>,
+    entries: impl FnOnce() -> Result<Vec<workflow_engine::runs::queue::QueueEntry>, Error>,
+    selected: Option<&str>,
+    active: &ActiveRuns,
+    permits: Arc<tokio::sync::Semaphore>,
+    mut lease: impl FnMut(&str) -> Result<Option<workflow_engine::sessions::Lease>, Error>,
+    mut submit: impl FnMut(
+        String,
+        workflow_engine::sandbox::Cancel,
+        tokio::sync::OwnedSemaphorePermit,
+        workflow_engine::sessions::Lease,
+    ) -> Result<(), Error>,
+) -> Result<(), Error> {
+    for entry in reserve_before_projection(reserve, entries)? {
+        if entry.state != workflow_engine::runs::RunState::AuthorizationRequired
+            || selected.is_some_and(|id| id != entry.id)
+            || (selected.is_none() && entry.diagnostic.starts_with("Native confirmation declined"))
+        {
+            continue;
+        }
+        let Some((cancel, permit)) = active.register(&entry.id, permits.clone())? else {
+            continue;
+        };
+        let lease = match lease(&entry.id) {
+            Ok(Some(lease)) => lease,
+            result => {
+                active.worker_return(&entry.id, permit, || {});
+                result?;
+                continue;
+            }
+        };
+        submit(entry.id, cancel, permit, lease)?;
+    }
+    Ok(())
+}
+enum DispatchObservation<'a> {
+    SignIn(&'a workflow_engine::sessions::SignInStatus),
+    Completion(&'a workflow_engine::runs::RunStatus),
+}
+fn observed_dispatch(
+    observation: DispatchObservation<'_>,
+    dispatch: impl FnOnce() -> Result<(), Error>,
+) -> Result<(), Error> {
+    let ready = match observation {
+        DispatchObservation::SignIn(s) => s.state == "available",
+        DispatchObservation::Completion(s) => {
+            !s.cleanup_pending
+                && matches!(
+                    s.state,
+                    workflow_engine::runs::RunState::Succeeded
+                        | workflow_engine::runs::RunState::Failed
+                        | workflow_engine::runs::RunState::Stopped
+                )
+        }
+    };
+    if ready {
+        dispatch()?;
+    }
+    Ok(())
+}
 fn dispatch_reserved(
     app: &tauri::AppHandle,
     directory: PathBuf,
     selected: Option<String>,
 ) -> Result<(), Error> {
     let store = Store::open(&directory)?;
-    let entries = reservation_dispatch(
+    let active = app.state::<Arc<ActiveRuns>>().inner().clone();
+    reservation_dispatch(
         || store.reserve_next_run(),
         || {
             Ok(
@@ -280,40 +557,23 @@ fn dispatch_reserved(
                     .entries,
             )
         },
-    )?;
-    let active = app.state::<Arc<ActiveRuns>>().inner().clone();
-    for entry in entries {
-        if entry.state != workflow_engine::runs::RunState::AuthorizationRequired {
-            continue;
-        }
-        if let Some(ref id) = selected {
-            if id != &entry.id {
-                continue;
-            }
-        } else if entry.diagnostic.starts_with("Native confirmation declined") {
-            continue;
-        }
-        let Some((cancel, permit)) =
-            active.register(&entry.id, app.state::<WorkerPermits>().0.clone())?
-        else {
-            continue;
-        };
-        let app = app.clone();
-        let directory = directory.clone();
-        let active = active.clone();
-        let id = entry.id;
-        tauri::async_runtime::spawn_blocking(move || {
-            let _permit = permit;
-            let _ = (|| -> Result<(), Error> {
-                let store = Store::open(&directory)?;
-                let Some(lease) = store.execution_reservation(&id)? else {
-                    return Ok(());
-                };
-                let request = store.run_status(&id)?.request_id;
-                let reader = workflow_engine::runs::history::HistoryReader::open(&directory)?;
-                let workflow = reader.workflow(&id)?;
-                let captured = reader.run_detail(&workflow, &id)?;
-                let scope = format!(
+        selected.as_deref(),
+        &active,
+        app.state::<WorkerPermits>().0.clone(),
+        |id| store.execution_reservation(id),
+        |id, cancel, permit, lease| {
+            let app = app.clone();
+            let directory = directory.clone();
+            let active = active.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _permit = permit;
+                let _ = (|| -> Result<(), Error> {
+                    let store = Store::open(&directory)?;
+                    let request = store.run_status(&id)?.request_id;
+                    let reader = workflow_engine::runs::history::HistoryReader::open(&directory)?;
+                    let workflow = reader.workflow(&id)?;
+                    let captured = reader.run_detail(&workflow, &id)?;
+                    let scope = format!(
                     "Definition: {} revision {}\nIsolation: {:?}\nImage: {}\nConfigurations: {:?}",
                     workflow,
                     captured.definition.revision,
@@ -328,40 +588,32 @@ fn dispatch_reserved(
                             .map(|c| (&c.config.id, c.revision)))
                         .collect::<Vec<_>>()
                 );
-                let result = run_host::execute_confirmed(
-                    &cancel,
-                    || {
-                        run_host::confirm(&format!("Data: {}\nRequest: {request}\nRun: {id}\nSession: {} generation {}\n{scope}\nOne execution only; no failover or automatic retry.",directory.display(),lease.slot,lease.generation))
-                    },
-                    || store.authorize_reserved_run(&lease),
-                    || run_host::execute(directory.clone(), id.clone(), cancel.clone()),
-                );
-                if result.is_err() {
-                    store.defer_run_authorization(&lease)?;
-                }
-                Ok(())
-            })();
-            // Worker return releases only the in-app permit. SQLite completion alone
-            // controls whether another execution reservation exists.
-            active.worker_return(&id, _permit, || {
-                let clean_completion = Store::open(&directory)
-                    .and_then(|s| s.run_status(&id))
-                    .is_ok_and(|s| {
-                        !s.cleanup_pending
-                            && matches!(
-                                s.state,
-                                workflow_engine::runs::RunState::Succeeded
-                                    | workflow_engine::runs::RunState::Failed
-                                    | workflow_engine::runs::RunState::Stopped
-                            )
-                    });
-                if clean_completion {
-                    let _ = dispatch_reserved(&app, directory, None);
-                }
+                    let result = run_host::execute_confirmed(
+                        &cancel,
+                        || {
+                            run_host::confirm(&format!("Data: {}\nRequest: {request}\nRun: {id}\nSession: {} generation {}\n{scope}\nOne execution only; no failover or automatic retry.",directory.display(),lease.slot,lease.generation))
+                        },
+                        || store.authorize_reserved_run(&lease),
+                        || run_host::execute(directory.clone(), id.clone(), cancel.clone()),
+                    );
+                    if result.is_err() {
+                        store.defer_run_authorization(&lease)?;
+                    }
+                    Ok(())
+                })();
+                // Worker return releases only the in-app permit. SQLite completion alone
+                // controls whether another execution reservation exists.
+                active.worker_return(&id, _permit, || {
+                    if let Ok(status) = Store::open(&directory).and_then(|s| s.run_status(&id)) {
+                        let _ = observed_dispatch(DispatchObservation::Completion(&status), || {
+                            dispatch_reserved(&app, directory, None)
+                        });
+                    }
+                });
             });
-        });
-    }
-    Ok(())
+            Ok(())
+        },
+    )
 }
 #[tauri::command]
 async fn authorize_run(
@@ -619,9 +871,9 @@ async fn read_session_sign_in(
     let signin = app.state::<Arc<signin_host::SignIn>>().inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let status = signin_host::read(&directory, &signin)?;
-        if status.state == "available" {
-            dispatch_reserved(&app, directory, None)?;
-        }
+        observed_dispatch(DispatchObservation::SignIn(&status), || {
+            dispatch_reserved(&app, directory, None)
+        })?;
         Ok(status)
     })
     .await

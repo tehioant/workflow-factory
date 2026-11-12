@@ -748,6 +748,18 @@ impl<P: Pipe> Sandbox<P> {
         }
         Ok(())
     }
+    pub fn stage_owned(
+        &mut self,
+        lease: &crate::sessions::Lease,
+        r: &Resources,
+        secure: &mut impl crate::sessions::SecureStore,
+        cancel: &Cancel,
+    ) -> Result<Vec<u8>, Error> {
+        let seed = secure.read(&lease.slot)?;
+        cancel.check()?;
+        self.stage(r, &seed, cancel)?;
+        Ok(seed)
+    }
     pub fn stage(&mut self, r: &Resources, cache: &[u8], cancel: &Cancel) -> Result<(), Error> {
         crate::sessions::validate_cache(cache)?;
         self.inspect_work(r)?;
