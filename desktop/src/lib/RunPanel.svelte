@@ -23,12 +23,15 @@
  async function stop(){if(!run||busy)return;const id=run.id;const request=++version;busy=true;try{const result=await commands.stopRun(id);if(alive&&version===request&&run?.id===id)onstatus(result);}catch(e){if(alive&&version===request)error=errorMessage(e);}finally{if(alive)busy=false;}}
 </script>
 <section class="notice" aria-label="Run status">
- <h2>Single-block run</h2>
+ <h2>Sequential run</h2>
  {#if run}
  <p role="status">{run.state} · {run.id}</p>
  {#if run.diagnostic}<p>{run.diagnostic}</p>{/if}
  {#if run.cleanupPending}<p role="alert">Cleanup or session ownership is uncertain. Further execution is withheld.</p>{/if}
- {#if run.finalResponse!==null}<h3>Final response</h3><pre>{run.finalResponse}</pre>{/if}
+ {#each run.blocks??[] as block (block.blockId)}
+ <section aria-label={`Block ${block.blockId}`}><h3>{block.blockId} · {block.state}</h3><h4>Resolved prompt</h4><pre>{block.resolvedPrompt}</pre>{#if block.finalResponse!==null}<h4>Final response</h4><pre>{block.finalResponse}</pre>{/if}</section>
+ {/each}
+ {#if !run.blocks?.length&&run.finalResponse!==null}<h3>Final response</h3><pre>{run.finalResponse}</pre>{/if}
  <button disabled={busy||!['admitted','running','held'].includes(run.state)} onclick={stop}>Stop this run</button>
  <button onclick={recheck}>Recheck status / retry retained output storage</button>
  {:else}<p>No retained run.</p>{/if}

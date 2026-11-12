@@ -1,4 +1,4 @@
-//! Durable one-block admission. External effects never occur inside a transaction.
+//! Durable sequential admission. External effects never occur inside a transaction.
 use crate::{
     params, read_configuration, resolve_inputs, storage, stored_definition, validation, Error,
     OptionalExtension, Store, TransactionBehavior,
@@ -13,6 +13,8 @@ pub struct StartRun {
     pub definition_id: String,
     pub expected_revision: u32,
     pub expected_configuration_revision: u32,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub expected_configuration_revisions: BTreeMap<String, u32>,
     pub supplied: BTreeMap<String, String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
@@ -35,6 +37,22 @@ pub struct RunStatus {
     pub final_response: Option<String>,
     pub diagnostic: String,
     pub cleanup_pending: bool,
+    #[serde(default)]
+    pub blocks: Vec<BlockResult>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockResult {
+    pub block_id: String,
+    pub state: RunState,
+    pub resolved_prompt: String,
+    pub final_response: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BlockPlan {
+    pub block_id: String,
+    pub segments: Vec<crate::prompts::Segment>,
+    pub configuration: crate::SavedConfiguration,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +61,8 @@ pub struct Snapshot {
     pub configuration: crate::SavedConfiguration,
     pub inputs: crate::PreparedInputs,
     pub image_id: String,
+    #[serde(default)]
+    pub plans: Vec<BlockPlan>,
 }
 /// Backend-only observations, never deserialized from IPC.
 pub struct Admission {
@@ -50,6 +70,134 @@ pub struct Admission {
     pub blocker: Option<String>,
 }
 impl Store {
+    /// Reserve one eligible block before invoking the existing adapter.
+    /// Borrow the same resources and lease; never stage or clean up here.
+    pub fn execute_next_block<R>(
+        &self,
+        id: &str,
+        lease: &crate::sessions::Lease,
+        resources: &R,
+        cancel: &crate::sandbox::Cancel,
+        invoke: impl FnOnce(&R, &BlockPlan, &str) -> Result<String, Error>,
+    ) -> Result<bool, Error> {
+        cancel.check()?;
+        let mut c = rusqlite::Connection::open(&self.path).map_err(storage)?;
+        let tx = c
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let (body, snapshot): (String, String) = tx
+            .query_row(
+                "SELECT status,snapshot FROM runs WHERE id=?1 AND active=1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(storage)?;
+        let mut status: RunStatus = serde_json::from_str(&body).map_err(storage)?;
+        let snapshot: Snapshot = serde_json::from_str(&snapshot).map_err(storage)?;
+        let owned: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM managed_sessions WHERE id=?1 AND owner=?2 AND generation=?3 AND state='leased')", params![lease.slot,id,lease.generation], |r| r.get(0)).map_err(storage)?;
+        if status.id != id
+            || lease.owner != id
+            || !owned
+            || status.state != RunState::Running
+            || status.cleanup_pending
+            || status
+                .blocks
+                .iter()
+                .any(|b| b.state != RunState::Succeeded || b.final_response.is_none())
+        {
+            return Err(validation(
+                "Run is stopped, held, or its predecessor is not durably successful.",
+            ));
+        }
+        let Some(plan) = snapshot.plans.get(status.blocks.len()) else {
+            return Ok(false);
+        };
+        if status
+            .blocks
+            .iter()
+            .zip(&snapshot.plans)
+            .any(|(b, p)| b.block_id != p.block_id)
+        {
+            return Err(storage("block identity"));
+        }
+        let outputs = status
+            .blocks
+            .iter()
+            .map(|b| (b.block_id.clone(), b.final_response.clone().unwrap()))
+            .collect();
+        let prompt = crate::prompts::resolve(&plan.segments, &outputs)?;
+        status.blocks.push(BlockResult {
+            block_id: plan.block_id.clone(),
+            state: RunState::Running,
+            resolved_prompt: prompt.clone(),
+            final_response: None,
+        });
+        cancel.check()?;
+        tx.execute(
+            "UPDATE runs SET status=?1 WHERE id=?2",
+            params![serde_json::to_string(&status).map_err(storage)?, id],
+        )
+        .map_err(storage)?;
+        tx.commit().map_err(storage)?;
+        cancel.check()?;
+        if self.run_status(id)?.state != RunState::Running {
+            return Err(validation("Run stopped before block invocation."));
+        }
+        match invoke(resources, plan, &prompt) {
+            Ok(text) => self.retain_block_output(id, &plan.block_id, &text)?,
+            Err(error) => {
+                self.update_block(id, &plan.block_id, None)?;
+                return Err(error);
+            }
+        }
+        Ok(true)
+    }
+    pub fn retain_block_output(&self, id: &str, block: &str, text: &str) -> Result<(), Error> {
+        self.update_block(id, block, Some(text))
+    }
+    fn update_block(&self, id: &str, block: &str, text: Option<&str>) -> Result<(), Error> {
+        let mut c = rusqlite::Connection::open(&self.path).map_err(storage)?;
+        let tx = c
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let body: String = tx
+            .query_row(
+                "SELECT status FROM runs WHERE id=?1 AND active=1",
+                [id],
+                |r| r.get(0),
+            )
+            .map_err(storage)?;
+        let mut status: RunStatus = serde_json::from_str(&body).map_err(storage)?;
+        let result = status
+            .blocks
+            .iter_mut()
+            .find(|b| b.block_id == block)
+            .ok_or_else(|| storage("block identity"))?;
+        if result.state == RunState::Succeeded
+            && text.is_some()
+            && result.final_response.as_deref() == text
+        {
+            return Ok(());
+        }
+        if result.state != RunState::Running {
+            return Err(validation("Block result is immutable; no execution retry."));
+        }
+        result.final_response = text.map(str::to_string);
+        result.state = if text.is_some() {
+            RunState::Succeeded
+        } else {
+            RunState::Failed
+        };
+        if let Some(text) = text {
+            status.final_response = Some(text.into());
+        }
+        tx.execute(
+            "UPDATE runs SET status=?1 WHERE id=?2",
+            params![serde_json::to_string(&status).map_err(storage)?, id],
+        )
+        .map_err(storage)?;
+        tx.commit().map_err(storage)
+    }
     /// Retain validated, redacted output without declaring cleanup or completion.
     pub fn retain_run_output(&self, id: &str, text: &str) -> Result<(), Error> {
         let mut c = rusqlite::Connection::open(&self.path).map_err(storage)?;
@@ -248,27 +396,52 @@ impl Store {
             ));
         }
         let definition = stored_definition(&request.definition_id, revision, &body)?;
-        if definition.definition.blocks.len() != 1 || !definition.definition.connections.is_empty()
-        {
-            return Err(validation("This version runs exactly one AI block."));
-        }
-        let config_id = definition.definition.blocks[0]
-            .configuration_id
-            .as_deref()
-            .ok_or_else(|| validation("Select a Codex configuration."))?;
-        let configuration = read_configuration(&tx, config_id)?
-            .ok_or_else(|| validation("Configuration missing."))?;
-        if configuration.revision != request.expected_configuration_revision {
-            return Err(validation(
-                "Configuration changed. Refresh before starting.",
-            ));
-        }
         let inputs = resolve_inputs(&definition.definition, request.supplied.clone())?;
+        let order = crate::prompts::ordered_ids(&definition.definition)?;
+        if order.is_empty() {
+            return Err(validation("Add an AI block before starting."));
+        }
+        let mut plans = Vec::new();
+        for id in order {
+            let block = definition
+                .definition
+                .blocks
+                .iter()
+                .find(|b| b.id == id)
+                .unwrap();
+            let config_id = block
+                .configuration_id
+                .as_deref()
+                .ok_or_else(|| validation("Select a Codex configuration for every block."))?;
+            let configuration = read_configuration(&tx, config_id)?
+                .ok_or_else(|| validation("Configuration missing."))?;
+            let expected = request
+                .expected_configuration_revisions
+                .get(config_id)
+                .copied()
+                .or_else(|| {
+                    (definition.definition.blocks.len() == 1
+                        && request.expected_configuration_revisions.is_empty())
+                    .then_some(request.expected_configuration_revision)
+                });
+            if expected != Some(configuration.revision) {
+                return Err(validation(
+                    "Configuration changed. Refresh before starting.",
+                ));
+            }
+            plans.push(BlockPlan {
+                block_id: id.clone(),
+                segments: crate::prompts::compile(&definition.definition, &id, &inputs.values)?,
+                configuration,
+            });
+        }
+        let configuration = plans[0].configuration.clone();
         let snapshot = Snapshot {
             definition,
             configuration,
             inputs,
             image_id: admission.image_id,
+            plans,
         };
         let blocked = admission.blocker.is_some();
         let status = RunStatus {
@@ -282,6 +455,7 @@ impl Store {
             final_response: None,
             diagnostic: admission.blocker.unwrap_or_default(),
             cleanup_pending: false,
+            blocks: Vec::new(),
         };
         if !blocked {
             let slot: String = tx
