@@ -154,7 +154,10 @@ impl Pipe for Prepared {
             }
             ["rm", "-f", id] | ["network", "rm", id] | ["volume", "rm", id] => {
                 assert_eq!(limit, 131072);
-                assert!(self.events.borrow().iter().any(|s| s == "readback"));
+                assert!(
+                    self.scenario == "partial"
+                        || self.events.borrow().iter().any(|s| s == "readback")
+                );
                 self.events.borrow_mut().push(format!("rm:{id}"));
                 assert!(self.present.remove(*id));
                 if self.scenario == "lost-ack" && *id == self.r.container {
@@ -341,6 +344,8 @@ pub fn check() {
     for block in [false, true] {
         for scenario in [
             "success",
+            "partial",
+            "handoff",
             "write",
             "lost-ack",
             "owner",
@@ -475,6 +480,28 @@ pub fn check() {
             if scenario == "missing-proof" {
                 sandbox.pipe.present.remove(&r.container);
             }
+            if scenario == "handoff" && block {
+                let retired = "e".repeat(64);
+                let next = Resources {
+                    peer: Some(retired.clone()),
+                    ..r.clone()
+                };
+                store
+                    .retain_recovery_resources(&lease, Some(&next))
+                    .unwrap();
+                store.recovery_phase(&lease, "handoff").unwrap();
+                for (kind, id) in [
+                    ("agent-start-0", &r.container),
+                    ("agent-remove-9", &retired),
+                ] {
+                    store.resource_intent(OWNER, kind, None).unwrap();
+                    store.resource_intent(OWNER, kind, Some(id)).unwrap();
+                }
+                context = CleanupContext::new(
+                    store.interrupted_recovery(OWNER).unwrap().1,
+                    lease.clone(),
+                );
+            }
             let mut secure = Secure {
                 bytes: {
                     let mut seed: serde_json::Value = serde_json::from_slice(CACHE).unwrap();
@@ -485,8 +512,21 @@ pub fn check() {
                 events: events.clone(),
                 written: false,
             };
+            if scenario == "partial" {
+                store.retain_recovery_resources(&lease, None).unwrap();
+                assert!(sandbox
+                    .finish_unstaged_cleanup(&store, &lease)
+                    .unwrap()
+                    .is_some());
+                assert!(sandbox.pipe.present.is_empty());
+                assert!(!events
+                    .borrow()
+                    .iter()
+                    .any(|s| s == "write" || s == "export" || s == "readback"));
+                continue;
+            }
             let result = sandbox.finish_cleanup(&store, &lease, &mut context, &mut secure, false);
-            if scenario == "success" {
+            if scenario == "success" || scenario == "handoff" {
                 assert!(result.is_ok());
                 assert!(sandbox.pipe.present.is_empty());
                 let exports = events.borrow().iter().filter(|s| *s == "export").count();
@@ -501,6 +541,10 @@ pub fn check() {
                 assert!(result.is_err(), "{scenario}");
                 if scenario == "lost-ack" {
                     assert!(!sandbox.pipe.present.contains(&r.container));
+                    context = CleanupContext::new(
+                        store.interrupted_recovery(OWNER).unwrap().1,
+                        lease.clone(),
+                    );
                     assert!(sandbox
                         .finish_cleanup(&store, &lease, &mut context, &mut secure, false)
                         .is_ok());

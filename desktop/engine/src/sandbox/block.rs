@@ -195,7 +195,59 @@ impl<P: Pipe> Sandbox<P> {
     }
     /// Prepared boundary only: caller has durably stored successful output and
     /// positively stopped writers/exported CURRENT cache. No executor lives here.
+    #[allow(clippy::too_many_arguments)]
+    pub fn switch_block_environment_recoverable(
+        &mut self,
+        store: &crate::Store,
+        lease: &crate::sessions::Lease,
+        old: &Resources,
+        ordinal: usize,
+        cancel: &Cancel,
+        checkpoint: impl FnOnce() -> Result<Vec<u8>, Error>,
+        receipt: impl FnMut(&str, Option<&str>) -> Result<(), Error>,
+        qualify: impl FnOnce() -> Result<(), Error>,
+    ) -> Result<Resources, Error> {
+        self.switch_block_environment_inner(
+            old,
+            ordinal,
+            cancel,
+            checkpoint,
+            receipt,
+            qualify,
+            |next| {
+                store.retain_recovery_resources(lease, Some(next))?;
+                store.recovery_phase(
+                    lease,
+                    if next.peer.is_some() {
+                        "handoff"
+                    } else {
+                        "staging"
+                    },
+                )
+            },
+        )
+    }
     pub fn switch_block_environment(
+        &mut self,
+        old: &Resources,
+        ordinal: usize,
+        cancel: &Cancel,
+        checkpoint: impl FnOnce() -> Result<Vec<u8>, Error>,
+        receipt: impl FnMut(&str, Option<&str>) -> Result<(), Error>,
+        qualify: impl FnOnce() -> Result<(), Error>,
+    ) -> Result<Resources, Error> {
+        self.switch_block_environment_inner(
+            old,
+            ordinal,
+            cancel,
+            checkpoint,
+            receipt,
+            qualify,
+            |_| Ok(()),
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn switch_block_environment_inner(
         &mut self,
         old: &Resources,
         ordinal: usize,
@@ -203,6 +255,7 @@ impl<P: Pipe> Sandbox<P> {
         checkpoint: impl FnOnce() -> Result<Vec<u8>, Error>,
         mut receipt: impl FnMut(&str, Option<&str>) -> Result<(), Error>,
         qualify: impl FnOnce() -> Result<(), Error>,
+        mut publish: impl FnMut(&Resources) -> Result<(), Error>,
     ) -> Result<Resources, Error> {
         if old.workspace.is_none() {
             return Ok(old.clone());
@@ -250,6 +303,7 @@ impl<P: Pipe> Sandbox<P> {
         self.work_success(&strings(&["exec",&id,"node","-e","const fs=require('node:fs');if(fs.readdirSync('/run/wf-codex').length||fs.readdirSync('/tmp').length)process.exit(1)"]),&[],1024,cancel)?;
         cancel.check()?;
         receipt(&start, Some(&id))?;
+        publish(&next)?;
         let overlap = format!("agent-overlap-{ordinal}");
         receipt(&overlap, None)?;
         cancel.check()?;
@@ -270,6 +324,7 @@ impl<P: Pipe> Sandbox<P> {
         qualify()?;
         cancel.check()?;
         self.absent_container(&old.container, cancel)?;
+        publish(&next)?;
         self.stage(&next, &cache, cancel)?;
         Ok(next)
     }

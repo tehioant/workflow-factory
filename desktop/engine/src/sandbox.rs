@@ -428,10 +428,15 @@ impl<P: Pipe> Sandbox<P> {
             cancel,
         )?;
         self.inspect_phase(&r, false)?;
+        receipt("helper-start", None)?;
         self.work_success(&strings(&["start", &r.helper]), &[], 131072, cancel)?;
+        receipt("helper-start", Some(&r.helper))?;
         if r.workspace.is_some() {
             cancel.check()?;
             receipt("agent-start-0", None)?;
+        }
+        if r.workspace.is_none() {
+            receipt("work-start", None)?;
         }
         self.work_success(&strings(&["start", &r.container]), &[], 131072, cancel)?;
         r.started_at = Some(self.live_epoch(&r)?);
@@ -439,6 +444,9 @@ impl<P: Pipe> Sandbox<P> {
         if r.workspace.is_some() {
             cancel.check()?;
             receipt("agent-start-0", Some(&r.container))?;
+        }
+        if r.workspace.is_none() {
+            receipt("work-start", Some(&r.container))?;
         }
         Ok(r)
     }

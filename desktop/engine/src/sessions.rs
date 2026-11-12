@@ -420,14 +420,44 @@ impl Store {
         }
         drop(_publication);
         cleanup()?;
+        let tx = c
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let c = &tx;
         if reusable && c.execute("UPDATE managed_sessions SET state='available',owner=NULL,generation=generation+1 WHERE id=?1 AND owner=?2 AND generation=?3 AND state='quarantined'",params![slot,owner,generation]).map_err(storage)?!=1{return Err(validation("Session completion ownership changed."));}
         let matches:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM managed_sessions WHERE id=?1 AND ((?4 AND state='available' AND owner IS NULL AND generation=?3+1) OR (NOT ?4 AND state='quarantined' AND owner=?2 AND generation=?3)))",params![slot,owner,generation,reusable],|r|r.get(0)).map_err(storage)?;
         if !matches {
             return Err(validation("Session completion ownership changed."));
         }
-        Ok(CompletionReceipt {
+        let receipt = CompletionReceipt {
             lease: lease.clone(),
             reusable,
-        })
+        };
+        // Publish completion and session disposition atomically: a crash after
+        // release must never lose the storage-only final receipt.
+        let body: Option<String> = c.query_row("SELECT CASE WHEN finality IS NULL OR length(CAST(finality AS BLOB))<=270336 THEN finality ELSE 'invalid' END FROM run_recovery WHERE run_id=?1 AND slot=?2 AND generation=?3",params![owner,slot,generation],|r|r.get(0)).optional().map_err(storage)?.flatten();
+        if let Some(body) = body {
+            let mut chosen: crate::runs::settlement::FinalSettlement =
+                serde_json::from_str(&body).map_err(|_| validation("Invalid durable finality."))?;
+            if chosen.lease.owner != owner
+                || chosen.lease.slot != slot
+                || chosen.lease.generation != generation
+                || chosen.success != reusable
+            {
+                return Err(validation("Completion disposition changed."));
+            }
+            chosen.receipt = Some(receipt.clone());
+            let body = serde_json::to_string(&chosen).map_err(storage)?;
+            if body.len() > 270336 {
+                return Err(validation("Final settlement bound exceeded."));
+            }
+            c.execute(
+                "UPDATE run_recovery SET finality=?4 WHERE run_id=?1 AND slot=?2 AND generation=?3",
+                params![owner, slot, generation, body],
+            )
+            .map_err(storage)?;
+        }
+        tx.commit().map_err(storage)?;
+        Ok(receipt)
     }
 }
