@@ -40,6 +40,24 @@ pub fn retry_outputs(store: &workflow_engine::Store) -> Result<(), workflow_engi
         Err(output_hold())
     }
 }
+
+pub fn execute_confirmed(
+    cancel: &workflow_engine::sandbox::Cancel,
+    confirm: impl FnOnce() -> Result<(), workflow_engine::Error>,
+    authorize: impl FnOnce() -> Result<bool, workflow_engine::Error>,
+    execute: impl FnOnce(),
+) -> Result<bool, workflow_engine::Error> {
+    cancel.check()?;
+    confirm()?;
+    cancel.check()?;
+    if !authorize()? {
+        return Ok(false);
+    }
+    cancel.check()?;
+    execute();
+    Ok(true)
+}
+
 pub fn execute(
     directory: std::path::PathBuf,
     id: String,
@@ -224,12 +242,11 @@ pub fn execute(
             )?;
             Ok(())
         });
-        store.finish_session(
-            &lease.slot,
-            &id,
-            lease.generation,
+        store.finish_owned_session(
+            &lease,
             &latest_cache,
             &mut secure,
+            final_result.is_ok(),
             || {
                 if resources.workspace.is_some() {
                     sandbox.cleanup_block_resources(&resources, |kind, resource| {
@@ -245,7 +262,7 @@ pub fn execute(
         } else {
             "Completed; artifacts unavailable or incomplete; cache persisted and resources removed."
         };
-        match final_result {Ok(text)=>store.finish_run(&id,Some(text),artifact_message,true,true),Err(_)=>store.finish_run(&id,None,"Codex output failed validation or was interrupted. Cache persisted and resources removed.",true,false)}
+        match final_result {Ok(text)=>store.finish_run(&id,Some(text),artifact_message,true,true),Err(_)=>store.finish_run(&id,None,"Provider execution or output validation failed. Current cache persisted and resources removed; session quarantined. Explicit reauthentication required; no retry or failover.",false,false)}
     })();
     if result.is_err() {
         let _ = store.quarantine_session(&lease);
@@ -351,6 +368,12 @@ fn native_prerequisites() -> Result<(), String> {
 /// No IPC approval Boolean: the host owns the question, text and direct native
 /// user response. Approval is consumed by this exact caller, never cached/reused.
 pub fn confirm(scope: &str) -> Result<(), workflow_engine::Error> {
+    static CONFIRMATION: Mutex<()> = Mutex::new(());
+    let _dialog = CONFIRMATION
+        .lock()
+        .map_err(|_| workflow_engine::Error::Busy {
+            message: "Native confirmation unavailable; no authorization granted.".into(),
+        })?;
     #[cfg(target_os = "macos")]
     return crate::mac_security::confirm(scope);
     #[cfg(not(target_os = "macos"))]
@@ -382,6 +405,41 @@ mod tests {
     }
     #[test]
     fn c11_native_security_policy_has_supported_positive_and_specific_refusals() {
+        use std::cell::Cell;
+        for outcome in ["approved", "declined", "reservation-changed", "cancelled"] {
+            let cancel = workflow_engine::sandbox::Cancel::default();
+            let confirmations = Cell::new(0);
+            let authorizations = Cell::new(0);
+            let executions = Cell::new(0);
+            let result = super::execute_confirmed(
+                &cancel,
+                || {
+                    confirmations.set(confirmations.get() + 1);
+                    if outcome == "cancelled" {
+                        cancel.request();
+                    }
+                    if outcome == "declined" {
+                        return Err(super::output_hold());
+                    }
+                    Ok(())
+                },
+                || {
+                    authorizations.set(authorizations.get() + 1);
+                    Ok(outcome != "reservation-changed")
+                },
+                || executions.set(executions.get() + 1),
+            );
+            assert_eq!(confirmations.get(), 1);
+            assert_eq!(executions.get(), u32::from(outcome == "approved"));
+            assert_eq!(
+                authorizations.get(),
+                u32::from(matches!(outcome, "approved" | "reservation-changed"))
+            );
+            assert_eq!(
+                result.is_ok(),
+                matches!(outcome, "approved" | "reservation-changed")
+            );
+        }
         let docker = r#"{"OperatingSystem":"Docker Desktop","OSType":"linux"}"#;
         assert!(crate::mac_security::observations(
             "FileVault is On.\n",

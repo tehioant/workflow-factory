@@ -491,7 +491,7 @@ impl Store {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(storage)?;
         let tables: u32 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", [], |r| r.get(0)).map_err(storage)?;
-        if version > 3 || (version == 0 && tables != 0) {
+        if version > 4 || (version == 0 && tables != 0) {
             let backup = directory.join(format!("backup-{}.sqlite3", uuid::Uuid::new_v4()));
             let mut options = std::fs::OpenOptions::new();
             options.write(true).create_new(true);
@@ -522,6 +522,9 @@ impl Store {
         }
         if version <= 2 {
             connection.execute_batch("BEGIN IMMEDIATE; CREATE TABLE runs(id TEXT PRIMARY KEY,request_id TEXT UNIQUE NOT NULL,request TEXT NOT NULL,snapshot TEXT NOT NULL,status TEXT NOT NULL,active INTEGER NOT NULL); CREATE UNIQUE INDEX one_active_run ON runs(active) WHERE active=1; CREATE TABLE managed_sessions(id TEXT PRIMARY KEY,state TEXT NOT NULL,generation INTEGER NOT NULL,owner TEXT); PRAGMA user_version=3; COMMIT;").map_err(storage)?;
+        }
+        if version <= 3 {
+            connection.execute_batch("BEGIN IMMEDIATE; CREATE TABLE queue_settings(id INTEGER PRIMARY KEY CHECK(id=1),active INTEGER NOT NULL CHECK(active BETWEEN 1 AND 8),waiting INTEGER NOT NULL CHECK(waiting BETWEEN 0 AND 64)); INSERT INTO queue_settings VALUES(1,2,16); CREATE TABLE run_queue(sequence INTEGER PRIMARY KEY AUTOINCREMENT,run_id TEXT UNIQUE NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('waiting','occupied','settled','withheld')),slot TEXT,generation INTEGER); INSERT INTO run_queue(run_id,phase,slot,generation) SELECT id,CASE WHEN active=1 THEN 'occupied' ELSE 'settled' END,(SELECT s.id FROM managed_sessions s WHERE s.owner=runs.id LIMIT 1),(SELECT s.generation FROM managed_sessions s WHERE s.owner=runs.id LIMIT 1) FROM runs ORDER BY rowid; DROP INDEX IF EXISTS one_active_run; PRAGMA user_version=4; COMMIT;").map_err(storage)?;
         }
         connection.execute_batch("CREATE TABLE IF NOT EXISTS run_resources(run_id TEXT NOT NULL,kind TEXT NOT NULL,resource_id TEXT,PRIMARY KEY(run_id,kind));").map_err(storage)?;
         Ok(Self { path })

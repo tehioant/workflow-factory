@@ -88,6 +88,9 @@ impl HistoryReader {
         }
         Ok(&self.c)
     }
+    pub fn queue_status(&self) -> Result<super::queue::QueueStatus, Error> {
+        super::queue::projection(self.checked()?)
+    }
     pub fn workflow(&self, id: &str) -> Result<String, Error> {
         identity(id)?;
         let c = self.checked()?;
@@ -130,7 +133,7 @@ impl HistoryReader {
         let version: u32 = c
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(storage)?;
-        if version != 3 {
+        if !(3..=4).contains(&version) {
             return Err(unavailable());
         }
         // Confirm SQLite's resolved name still identifies the checked descriptor.

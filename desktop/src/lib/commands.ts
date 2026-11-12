@@ -3,6 +3,10 @@ import { Channel } from '@tauri-apps/api/core';
 export type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 export function createCommands(invoke: Invoke) {
   return {
+    queueStatus:()=>invoke<import('./transport.ts').QueueStatus>('queue_status'),
+    queueSettings:()=>invoke<import('./transport.ts').QueueSettings>('queue_settings'),
+    saveQueueSettings:(settings:import('./transport.ts').QueueSettings)=>invoke<import('./transport.ts').QueueSettings>('save_queue_settings',{settings}),
+    authorizeRun:(id:string)=>invoke<void>('authorize_run',{id}),
     inspectWorkflow:(run:string)=>invoke<string>('inspect_workflow',{run}),
     inspectSubscribe:(definitionId:string,run:string,onmessage:(notice:import('./transport.ts').Notice)=>void)=>{const channel=new Channel<import('./transport.ts').Notice>();channel.onmessage=onmessage;return invoke<import('./transport.ts').InspectionPage>('inspect_subscribe',{definitionId,run,channel});},
     inspectPage:(definitionId:string,run:string,subscription:string,cursor:string|null)=>invoke<import('./transport.ts').InspectionPage>('inspect_page',{definitionId,run,subscription,cursor}),

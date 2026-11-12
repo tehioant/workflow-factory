@@ -3,6 +3,45 @@ use crate::{params, storage, validation, Error, OptionalExtension, Store, Transa
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 pub const CACHE_LIMIT: usize = 65536;
+fn cache_publication_guard() -> Result<std::sync::MutexGuard<'static, ()>, Error> {
+    static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    GATE.lock().map_err(|_| {
+        validation("Managed cache publication uncertain; explicit reconciliation required.")
+    })
+}
+fn refuse_duplicate(
+    c: &rusqlite::Connection,
+    slot: &str,
+    cache: &[u8],
+    secure: &mut impl SecureStore,
+) -> Result<(), Error> {
+    let candidate: serde_json::Value =
+        serde_json::from_slice(cache).map_err(|_| validation("Managed cache invalid."))?;
+    let mut q = c
+        .prepare("SELECT id FROM managed_sessions WHERE id!=?1 AND state!='acquiring' LIMIT 9")
+        .map_err(storage)?;
+    let slots = q
+        .query_map([slot], |r| r.get::<_, String>(0))
+        .map_err(storage)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage)?;
+    if slots.len() > 7 {
+        return Err(validation("Managed session bound exceeded."));
+    }
+    for other in slots {
+        let bytes = secure.read(&other)?;
+        validate_cache(&bytes)?;
+        let retained: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|_| validation("Stored managed cache invalid."))?;
+        if candidate["tokens"]["login_owner_id"] == retained["tokens"]["login_owner_id"]
+            || candidate["tokens"]["refresh_token"] == retained["tokens"]["refresh_token"]
+        {
+            return Err(validation("Known duplicate managed login ownership or refresh material; affected operation withheld. Explicit reauthentication required; no slot failover."));
+        }
+    }
+    Ok(())
+}
+
 pub fn valid_slot(id: &str) -> Result<(), Error> {
     if id.len() != 36 || uuid::Uuid::parse_str(id).is_err() {
         Err(validation("Invalid managed slot identity."))
@@ -148,8 +187,15 @@ impl Store {
         let count: u32 = tx
             .query_row("SELECT COUNT(*) FROM managed_sessions", [], |r| r.get(0))
             .map_err(storage)?;
-        if count != 0 {
-            return Err(validation("This version supports one independently acquired slot. Existing or quarantined slots require explicit reconciliation; no clone or replacement."));
+        let pending: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM managed_sessions WHERE state='acquiring' OR (state='quarantined' AND owner=id))",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(storage)?;
+        if count >= 8 || pending {
+            return Err(validation("At most eight independently acquired app-owned slots and one pending acquisition are supported. No clone, replacement or automatic reauthentication."));
         }
         let slot = uuid::Uuid::new_v4().to_string();
         tx.execute(
@@ -171,13 +217,16 @@ impl Store {
         secure: &mut impl SecureStore,
         cleanup: impl FnOnce() -> Result<(), Error>,
     ) -> Result<(), Error> {
+        let _publication = cache_publication_guard()?;
         validate_cache(cache)?;
         let c = rusqlite::Connection::open(&self.path).map_err(storage)?;
         if c.execute("UPDATE managed_sessions SET state='quarantined' WHERE id=?1 AND owner=?2 AND generation=?3 AND state='acquiring'",params![lease.slot,lease.owner,lease.generation]).map_err(storage)?!=1{return Err(validation("Setup ownership changed."));}
+        refuse_duplicate(&c, &lease.slot, cache, secure)?;
         secure.write(&lease.slot, cache)?;
         if secure.read(&lease.slot)? != cache {
             return Err(validation("Native secure-store readback failed."));
         }
+        drop(_publication);
         cleanup()?;
         c.execute("UPDATE managed_sessions SET state='available',owner=NULL WHERE id=?1 AND owner=?2 AND generation=?3 AND state='quarantined'",params![lease.slot,lease.owner,lease.generation]).map_err(storage)?;
         Ok(())
@@ -236,6 +285,7 @@ impl Store {
         let (slot, owner, generation) =
             (lease.slot.as_str(), lease.owner.as_str(), lease.generation);
         cancel.check()?;
+        let _publication = cache_publication_guard()?;
         validate_cache(cache)?;
         let mut c = rusqlite::Connection::open(&self.path).map_err(storage)?;
         let tx = c
@@ -268,6 +318,7 @@ impl Store {
             ));
         }
         cancel.check()?;
+        refuse_duplicate(&c, slot, cache, secure)?;
         secure.write(slot, cache)?;
         if secure.read(slot)? != cache {
             return Err(validation(
@@ -289,6 +340,29 @@ impl Store {
         secure: &mut impl SecureStore,
         cleanup: impl FnOnce() -> Result<(), Error>,
     ) -> Result<(), Error> {
+        self.finish_owned_session(
+            &Lease {
+                slot: slot.into(),
+                owner: owner.into(),
+                generation,
+            },
+            cache,
+            secure,
+            true,
+            cleanup,
+        )
+    }
+    pub fn finish_owned_session(
+        &self,
+        lease: &Lease,
+        cache: &[u8],
+        secure: &mut impl SecureStore,
+        reusable: bool,
+        cleanup: impl FnOnce() -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let (slot, owner, generation) =
+            (lease.slot.as_str(), lease.owner.as_str(), lease.generation);
+        let _publication = cache_publication_guard()?;
         validate_cache(cache)?;
         let mut c = rusqlite::Connection::open(&self.path).map_err(storage)?;
         let tx = c
@@ -319,14 +393,16 @@ impl Store {
                 "Managed login identity changed; session quarantined.",
             ));
         }
+        refuse_duplicate(&c, slot, cache, secure)?;
         secure.write(slot, cache)?;
         if secure.read(slot)? != cache {
             return Err(validation(
                 "Secure store readback failed; session quarantined.",
             ));
         }
+        drop(_publication);
         cleanup()?;
-        c.execute("UPDATE managed_sessions SET state='available',owner=NULL,generation=generation+1 WHERE id=?1 AND owner=?2 AND generation=?3 AND state='quarantined'",params![slot,owner,generation]).map_err(storage)?;
+        if reusable && c.execute("UPDATE managed_sessions SET state='available',owner=NULL,generation=generation+1 WHERE id=?1 AND owner=?2 AND generation=?3 AND state='quarantined'",params![slot,owner,generation]).map_err(storage)?!=1{return Err(validation("Session completion ownership changed."));}
         Ok(())
     }
 }
