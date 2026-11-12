@@ -10,22 +10,33 @@ newer system libraries is not evidence of Ubuntu 24.04 compatibility; a configur
 macOS minimum version is not an executed compatibility check. No universal binary,
 Windows, other Linux distribution or cross-compiled DMG is promised.
 
-At the source checkpoint `f47a67aae2c588dc82d98021cedf64ae41ff2371`, CI declares
-Ubuntu 24.04, `macos-15` and `macos-15-intel`, pinned action SHAs, Node 24,
-Rust 1.99.1, focused checks and **debug** native packaging. It neither launches nor
-uploads packages. A matrix declaration is not a successful remote run. README's
-older case counts/launch statements are historical; use candidate-bound receipts.
+Delivered baseline `95f40257c21bfd64c56f9f2b474436652142d1ea` passed all three
+native CI jobs: [run 43222113370](https://github.com/tehioant/workflow-factory/actions/runs/43222113370)
+on Ubuntu 24.04, `macos-15` and `macos-15-intel`. These ran focused checks and
+**debug** native packaging with pinned action SHAs, Node 24 and Rust 1.99.1;
+they neither launched nor uploaded packages. They are baseline compilation/package
+evidence, not #38 candidate CI, release artifacts or installed usability receipts.
+README's older case counts/launch statements are historical; use candidate-bound
+receipts.
 
-Available development host: Ubuntu **26.04 x86_64**, not the approved baseline.
-D01 debug bundles exist locally. The parent also built an actual **foundation**
-release at `0af716cc9f32d460d99c04268b746955558ff9d2`: local uninstalled
+Available local build host: Ubuntu **26.04.1 LTS x86_64**, not Ubuntu 24.04.
+Local #38 **release** packaging on this host is a non-target build check only;
+retain its exact command/exit, source/asset fingerprints, artifact hash and package
+contents/notice receipt separately. It cannot qualify the Ubuntu 24.04 ABI. No
+local macOS native build host is available in this Linux lane; both macOS release
+DMGs remain **UNRUN** here. Hosted native debug CI is distinct from a local release
+artifact. Installed Ubuntu 24.04 and both macOS targets' launch, rendering and
+interaction remain **UNRUN**, as do live auth/isolation qualification. Do not infer
+these passes or ticket completion from a package build.
+
+**Historical foundation only:** an actual release at
+`0af716cc9f32d460d99c04268b746955558ff9d2` produced the local uninstalled
 `Workflow Factory Desktop_0.1.0_amd64.deb`, 4,189,964 bytes, SHA-256
 `76367fff0653e993ffd24d72dc16a1523a6ca52c5878b8346c9d00cdf856ad83`,
-Declared Installed-Size 13531 KiB. This predates the final canvas/configuration
-candidate. The parent's `checks-and-foundation-native.md` and
-`native-foundation/observation.json` are external historical receipts, not bundled
-release artifacts. No Ubuntu 24.04/macOS native host, installed-package launch or
-final-candidate package acceptance is verified here. Neither ticket is closed.
+declared Installed-Size 13531 KiB. This predates the final feature baseline and is
+not current acceptance evidence. The parent's `checks-and-foundation-native.md`
+and `native-foundation/observation.json` remain historical external receipts;
+archive bytes and declared Installed-Size are not measured installed footprint.
 
 ## Build explicitly, on a native host
 
@@ -130,19 +141,50 @@ browser-app data, host Codex data, Docker images/volumes or workspaces. No impor
 old-app retirement, updater, tray/background service or destructive migration is
 part of distribution.
 
-Editing/persistence do not require Docker or authentication. Future execution
-requires a separately and explicitly installed trusted rootful Linux Docker
-Engine 28+ (macOS Docker Desktop's Linux VM), selected local socket/CLI, reviewed
-pinned runtime image and supported subscription authentication. See
-[runtime.md](runtime.md) and `../AUTH_READINESS.md`. The current runtime module is
-read-only/planning-only, not a launcher; execution remains disabled pending an
-approved authentication route. No API-key fallback or Hermes credential reuse.
+Editing/persistence do not require Docker or authentication. The delivered
+executor has a **conditional Linux source path**, not unconditional execution or
+live qualification. It requires separately installed trusted rootful Linux Docker
+Engine **28+**, `/usr/bin/docker`, `unix:///var/run/docker.sock`, the reviewed
+Codex **0.166.0** runtime image captured by immutable ID, app-managed subscription
+sessions, native **Secret Service** secure-store write/readback and
+`/usr/bin/zenity` for a fresh host-owned acquisition/run confirmation. A missing
+secure store or dialog has no plaintext/IPC-approval fallback. No host Codex grant
+import, API-key fallback or Hermes credential reuse is allowed.
 
-Both **planned** isolation contracts must eventually be documented and measured:
-(1) one agent container per run, sharing its environment across sequential blocks;
-(2) a fresh agent container per block, preserving only that run's workspace and
-captured outputs. Neither shares workspaces across runs. Both also require a
-separate trusted per-run egress helper, fail-closed enforced outer-network policy,
-and hardened agents. These are not implemented execution claims. Container/VM,
-image, helper and credential-staging costs are separate from installing the editor;
-no implicit setup is allowed to conceal them. See [resources.md](resources.md).
+The executor rechecks same-host root dockerd identity, no active host swap, core
+capture restrictions, actual cgroup-v2 swap=0 before login/staging, exact owned
+resources, image identity and enforced containment. It changes no host swap or
+services. The user must confirm trusted/private infrastructure and inputs; do not
+hibernate or snapshot memory while credentials are active. Trusted OS/keyring/admins
+remain a boundary, not a claim of protection against privileged memory capture.
+The separate [runtime-readiness module](runtime.md) still only probes/plans and
+always returns `executionReady=false`; that is not the executor's authorization
+path. See [execution and managed-auth gates](single-block-run.md#supported-source-path-and-operational-limits)
+and [auth readiness](../AUTH_READINESS.md).
+
+macOS editor packaging is separate from execution support. Docker Desktop's Linux
+VM/default socket is a runtime prerequisite there, not evidence of secure execution:
+the current macOS execution security gate **fails closed**. Native Keychain
+integration or a successful DMG build does not qualify that gate.
+
+Both isolation variants have concrete gated source implementations, captured at
+admission from the saved definition:
+
+- **`perRun`** (default): one agent container and its private tmpfs environment
+  across sequential blocks of that run.
+- **`perBlock`**: a fresh agent container per block, retaining only that run's
+  workspace through an explicitly owned local-driver tmpfs volume and captured
+  durable outputs. Current-cache write/readback under the same lease and a
+  credential-free keeper's verified overlapping live mount precede old-container
+  removal and next staging. No transcript, home directory or `/tmp` is copied.
+
+Neither shares workspaces across runs. Both use a separate trusted per-run egress
+helper without workspace/credential mounts, enforced private networks and hardened
+agents. Unknown cache, continuity, ownership or removal outcomes hold resources
+and quarantine the session; no successor or old-grant rollback is authorized.
+See [runtime isolation](runtime.md#workflow-agent-isolation) and
+[executor isolation](single-block-run.md#workflow-agent-isolation). Prepared
+fake-boundary checks are not live tmpfs-continuity, secure-auth or containment
+qualification; these remain **UNRUN**. Container/VM, image, helper, overlapping
+keeper and credential-staging costs are separate from installing the editor;
+no implicit setup conceals them. See [resources.md](resources.md).
