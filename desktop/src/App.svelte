@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RunHistory from './lib/RunHistory.svelte';
   import { onMount } from 'svelte';
   import IsolationSelect from './lib/IsolationSelect.svelte';
   import RunPanel from './lib/RunPanel.svelte';
@@ -177,6 +178,7 @@
       {#if runError}<p role="alert">{runError}</p>{/if}
     </section>
     {#key run?.id}<RunPanel {commands} {run} onstatus={(value)=>{run=value;}}/>{/key}
+    {#if editor.working}{#key editor.working.id}<RunHistory {commands} definitionId={editor.working.id}/>{/key}{/if}
     <RuntimeSettings {commands}/>
     <AuthReadinessPanel {commands}/>
     {#if configError}<p role="alert">{configError}</p>{/if}

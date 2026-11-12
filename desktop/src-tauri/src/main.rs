@@ -246,6 +246,26 @@ async fn run_status(
     .await
 }
 #[tauri::command]
+async fn list_run_history(
+    state: tauri::State<'_, Database>,
+    definition_id: String,
+    cursor: Option<String>,
+    limit: u32,
+) -> Result<workflow_engine::runs::history::HistoryPage, Error> {
+    database(&state, move |s| {
+        s.list_run_history(&definition_id, cursor.as_deref(), limit)
+    })
+    .await
+}
+#[tauri::command]
+async fn run_detail(
+    state: tauri::State<'_, Database>,
+    definition_id: String,
+    id: String,
+) -> Result<workflow_engine::runs::history::RunDetail, Error> {
+    database(&state, move |s| s.run_detail(&definition_id, &id)).await
+}
+#[tauri::command]
 async fn stop_run(
     app: tauri::AppHandle,
     state: tauri::State<'_, Database>,
@@ -433,6 +453,8 @@ fn main() {
             runtime_setup_plan,
             start_run,
             run_status,
+            list_run_history,
+            run_detail,
             stop_run,
             managed_session_status,
             open_session_sign_in,

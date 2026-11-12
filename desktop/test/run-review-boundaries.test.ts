@@ -97,3 +97,44 @@ test('f2 mounted workflow isolation selection changes only the working copy', as
   const app=await readFile(new URL('../src/App.svelte',import.meta.url),'utf8');assert.match(app,/<IsolationSelect value={editor.working.isolation}/);assert.match(app,/working:{\.\.\.editor.working,isolation},dirty:true/);
  }finally{if(component)await unmount(component);await rm(directory,{recursive:true,force:true});window.happyDOM.abort();}
 });
+
+
+test('fhistory mounted selected capture rejects stale identities and renders only escaped text', async()=>{
+ const window=new Window();
+ for(const key of ['document','Node','Element','HTMLElement','Text','Comment','Event','MouseEvent','HTMLMediaElement'])Object.defineProperty(globalThis,key,{configurable:true,value:(window as any)[key]});
+ Object.defineProperty(globalThis,'window',{configurable:true,value:window});Object.defineProperty(globalThis,'navigator',{configurable:true,value:window.navigator});
+ const {mount,unmount,flushSync}=await import(new URL('../node_modules/svelte/src/index-client.js',import.meta.url).href);
+ const {createCommands}=await import('../src/lib/commands.ts');
+ const filename=new URL('../src/lib/RunHistory.svelte',import.meta.url);
+ const compiled=compile(await readFile(filename,'utf8'),{filename:filename.pathname,generate:'client'}).js.code;
+ const code=compiled.replace(/import (['"])([^'"]+)\1/g,(_a,_q,s)=>`import ${JSON.stringify(import.meta.resolve(s))}`).replace(/from (['"])([^'"]+)\1/g,(_a,_q,s)=>`from ${JSON.stringify(s==='svelte'?new URL('../node_modules/svelte/src/index-client.js',import.meta.url).href:s.startsWith('.')?new URL(s,filename).href:import.meta.resolve(s))}`);
+ const directory=await mkdtemp(join(tmpdir(),'run-history-'));let component:any;
+ try{
+  const modulePath=join(directory,'component.mjs');await writeFile(modulePath,code);const Component=(await import(pathToFileURL(modulePath).href)).default;
+  const target=window.document.createElement('main');window.document.body.append(target);
+  const pending:any[]=[];
+  const commands=createCommands(((command:string,args:any)=>new Promise((resolve,reject)=>pending.push({command,args,resolve,reject}))) as any);
+  const settle=async()=>{await Promise.resolve();await Promise.resolve();flushSync();};
+  const page=(cursor:string|null=null)=>({definitionId:'workflow',cursor,entries:['a','b'].map(id=>({id,state:'held',inputSummary:'雪 <img src=x>',unavailable:false})),nextCursor:cursor?null:'b'});
+  const capture=(id:string)=>({id,definitionId:'workflow',definition:{revision:8,definition:{id:'workflow',name:'Captured <img src=x>',isolation:'perBlock',blocks:[{id:'first',name:'Captured first',prompt:'Own <script>bad</script>'}],connections:[],inputs:[]}},inputs:{values:{topic:'Captured input'},prompts:{first:'Prepared <img>'}},imageId:'retained-image',state:'held',cleanupPending:true,diagnostic:'held <script>',finalResponse:'Durable <img onerror=bad>',legacy:false,legacyConfiguration:null,blocks:[{blockId:'first',configuration:{revision:4,config:{name:'Settings <img>',model:'captured-model',reasoning:'high'}},result:{state:'succeeded',resolvedPrompt:'Actual <script>',finalResponse:'Predecessor durable'}},{blockId:'successor',configuration:null,result:null}]});
+  const click=(text:string)=>{const button=Array.from(target.querySelectorAll('button')).find(b=>b.textContent.includes(text));assert.ok(button,text);button.click();flushSync();};
+  flushSync(()=>{component=mount(Component,{target,props:{commands,definitionId:'workflow'}});});
+  assert.deepEqual(pending[0].args,{definitionId:'workflow',cursor:null,limit:20});assert.equal(pending[0].command,'list_run_history');pending[0].resolve(page());await settle();
+  click('Run a');assert.equal(pending[1].command,'run_detail');assert.deepEqual(pending[1].args,{definitionId:'workflow',id:'a'});
+  click('Run b');pending[1].resolve(capture('a'));await settle();assert.ok(target.textContent.includes('Loading captured details'));assert.ok(!target.textContent.includes('captured-model'));
+  pending[2].resolve(capture('b'));await settle();
+  assert.ok(target.textContent.includes('captured-model / high'));assert.ok(target.textContent.includes('revision 8'));assert.ok(target.textContent.includes('Actual <script>'));assert.ok(target.textContent.includes('Predecessor durable'));assert.ok(target.textContent.includes('Not executed'));assert.equal(target.querySelectorAll('script,img').length,0);assert.ok(target.textContent.includes('Durable <img onerror=bad>'));
+  assert.ok(!Array.from(target.querySelectorAll('button')).some(b=>/Stop|Start|execute/i.test(b.textContent)));
+  click('Run a');const obsolete=pending.at(-1);click('Run b');const current=pending.at(-1);obsolete.reject(Error('obsolete secret'));await settle();assert.ok(target.textContent.includes('Loading captured details'));assert.ok(!target.textContent.includes('unavailable. Retry'));
+  current.resolve(capture('a'));await settle();assert.ok(target.textContent.includes('Captured run unavailable'));assert.ok(!target.textContent.includes('captured-model'));
+  click('Retry captured');pending.at(-1).reject(Error('current private failure'));await settle();assert.ok(target.textContent.includes('Captured run unavailable'));assert.ok(!target.textContent.includes('private failure'));
+  click('Run a');const oldDetail=pending.at(-1);click('Older runs');const older=pending.at(-1);assert.deepEqual(older.args,{definitionId:'workflow',cursor:'b',limit:20});oldDetail.resolve(capture('a'));await settle();assert.ok(!target.textContent.includes('Captured run a'));
+  older.resolve(page('b'));await settle();click('Newest page');const newest=pending.at(-1);newest.resolve(page());await settle();
+  click('Refresh history');const oldPage=pending.at(-1); // Stale list finalizers must not hide a newer busy state.
+  // The accessible control is disabled while loading; a workflow remount invalidates all requests.
+  await unmount(component);component=null;oldPage.resolve(page());await settle();assert.equal(target.textContent,'');
+  flushSync(()=>{component=mount(Component,{target,props:{commands,definitionId:'workflow'}});});pending.at(-1).resolve({...page(),definitionId:'other'});await settle();assert.ok(target.textContent.includes('Retained run list unavailable'));
+  click('Refresh history');pending.at(-1).resolve(page());await settle();click('Run a');const unmounted=pending.at(-1);await unmount(component);component=null;unmounted.resolve(capture('a'));await settle();assert.equal(target.textContent,'');
+  const app=await readFile(new URL('../src/App.svelte',import.meta.url),'utf8');assert.match(app,/<RunHistory \{commands\} definitionId=\{editor.working.id\}/);
+ }finally{if(component)await unmount(component);await rm(directory,{recursive:true,force:true});window.happyDOM.abort();}
+});

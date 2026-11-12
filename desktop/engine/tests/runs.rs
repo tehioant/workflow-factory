@@ -482,3 +482,193 @@ fn c13_quarantine_retirement_requires_positive_resource_and_secure_item_absence(
         }
     }
 }
+
+#[test]
+fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let c = Connection::open(dir.path().join("definitions.sqlite3")).unwrap();
+    let config = serde_json::json!({"config":{"id":CONFIG,"name":"Captured <img>","model":"captured-model","reasoning":"high"},"revision":2});
+    let definition = serde_json::json!({"definition":{"schemaVersion":1,"id":DEFINITION,"name":"Captured workflow","blocks":[{"id":"a","name":"A","prompt":"Hello {{input.topic}}","position":{"x":0,"y":0},"configurationId":CONFIG}],"inputs":[{"name":"topic","required":true,"default":null}]},"revision":1});
+    let mut request = request();
+    request.supplied.insert("topic".into(), "雪".repeat(100));
+    let inputs = serde_json::json!({"values":{"topic":"雪".repeat(100)},"prompts":{"a":format!("Hello {}","雪".repeat(100))}});
+    let snapshot = serde_json::json!({"definition":definition,"configuration":config,"inputs":inputs,"imageId":"captured-image","credentialExtra":"DO_NOT_EXPOSE"});
+    for n in 1..=4 {
+        let id = format!("10000000-0000-0000-0000-{n:012}");
+        request.request_id = format!("20000000-0000-0000-0000-{n:012}");
+        let status = serde_json::json!({"id":id,"requestId":request.request_id,"state":"held","finalResponse":"durable <script>text</script>","diagnostic":"cleanup held","cleanupPending":true,"secretExtra":"DO_NOT_EXPOSE"});
+        c.execute(
+            "INSERT INTO runs VALUES(?1,?2,?3,?4,?5,0)",
+            params![
+                id,
+                request.request_id,
+                serde_json::to_string(&request).unwrap(),
+                snapshot.to_string(),
+                status.to_string()
+            ],
+        )
+        .unwrap();
+    }
+    let before: Vec<String> = c
+        .prepare("SELECT request||snapshot||status FROM runs ORDER BY rowid")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let page = store.list_run_history(DEFINITION, None, 2).unwrap();
+    assert_eq!(page.entries.len(), 2);
+    assert!(page.entries[0].id.ends_with('4'));
+    assert!(page.entries[0].input_summary.len() <= 240);
+    assert!(!page.entries[0].unavailable);
+    let next = store
+        .list_run_history(DEFINITION, page.next_cursor.as_deref(), 2)
+        .unwrap();
+    assert!(next.entries[0].id.ends_with('2'));
+    assert!(next.next_cursor.is_none());
+    let id = &page.entries[0].id;
+    let detail = store.run_detail(DEFINITION, id).unwrap();
+    assert!(detail.legacy);
+    assert_eq!(
+        detail.definition.definition.isolation,
+        workflow_engine::IsolationMode::PerRun
+    );
+    assert!(detail.blocks[0].result.is_none());
+    assert_eq!(
+        detail.legacy_configuration.unwrap().config.model,
+        "captured-model"
+    );
+    assert_eq!(
+        detail.final_response.as_deref(),
+        Some("durable <script>text</script>")
+    );
+    let serialized = serde_json::to_string(&store.run_detail(DEFINITION, id).unwrap()).unwrap();
+    assert!(!serialized.contains("DO_NOT_EXPOSE"));
+    assert!(!serialized.contains("requestId"));
+    assert!(!serialized.contains("snapshot"));
+    assert!(store.run_detail(CONFIG, id).is_err());
+    assert!(store.list_run_history(CONFIG, Some(id), 2).is_err());
+    assert!(store.list_run_history(DEFINITION, None, 51).is_err());
+    let after: Vec<String> = c
+        .prepare("SELECT request||snapshot||status FROM runs ORDER BY rowid")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(before, after);
+    // Same captured projection invariant, now with explicit multiblock evidence and refusals.
+    let mut multi = snapshot.clone();
+    multi["definition"]["definition"]["blocks"][0]["prompt"] = serde_json::json!("A own");
+    let mut b = multi["definition"]["definition"]["blocks"][0].clone();
+    b["id"] = serde_json::json!("b");
+    b["prompt"] = serde_json::json!("B {{output.a.finalResponse}}");
+    let mut second_config = config.clone();
+    second_config["config"]["id"] = serde_json::json!("30000000-0000-0000-0000-000000000005");
+    second_config["config"]["model"] = serde_json::json!("second-model");
+    second_config["revision"] = serde_json::json!(3);
+    b["configurationId"] = second_config["config"]["id"].clone();
+    request
+        .expected_configuration_revisions
+        .insert("30000000-0000-0000-0000-000000000005".into(), 3);
+    // This compatibility field need not match the first execution plan when the map is present.
+    request.expected_configuration_revision = 3;
+    multi["definition"]["definition"]["blocks"]
+        .as_array_mut()
+        .unwrap()
+        .push(b);
+    multi["definition"]["definition"]["connections"] =
+        serde_json::json!([{"source":"a","target":"b"}]);
+    multi["inputs"]["prompts"] =
+        serde_json::json!({"a":"A own","b":"B {{output.a.finalResponse}}"});
+    multi["plans"] = serde_json::json!([{"block_id":"a","segments":[{"Literal":"A own"}],"configuration":config},{"block_id":"b","segments":[{"Literal":"B "},{"Output":"a"},{"Literal":""}],"configuration":second_config}]);
+    request
+        .expected_configuration_revisions
+        .insert(CONFIG.into(), 2);
+    request.request_id = "20000000-0000-0000-0000-000000000004".into();
+    let status = serde_json::json!({"id":id,"requestId":request.request_id,"state":"failed","finalResponse":"A durable","diagnostic":"B failed","cleanupPending":true,"blocks":[{"blockId":"a","state":"succeeded","resolvedPrompt":"A own","finalResponse":"A durable"}]});
+    c.execute(
+        "UPDATE runs SET request=?1,snapshot=?2,status=?3 WHERE id=?4",
+        params![
+            serde_json::to_string(&request).unwrap(),
+            multi.to_string(),
+            status.to_string(),
+            id
+        ],
+    )
+    .unwrap();
+    let detail = store.run_detail(DEFINITION, id).unwrap();
+    assert!(!detail.legacy);
+    assert!(detail.blocks[1].result.is_none());
+    assert_eq!(
+        detail.blocks[1]
+            .configuration
+            .as_ref()
+            .unwrap()
+            .config
+            .model,
+        "second-model"
+    );
+    assert_eq!(
+        detail.blocks[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .final_response
+            .as_deref(),
+        Some("A durable")
+    );
+    let mut failed_status = status.clone();
+    failed_status["blocks"].as_array_mut().unwrap().push(serde_json::json!({"blockId":"b","state":"failed","resolvedPrompt":"B A durable","finalResponse":null}));
+    c.execute(
+        "UPDATE runs SET status=?1 WHERE id=?2",
+        params![failed_status.to_string(), id],
+    )
+    .unwrap();
+    let failed = store.run_detail(DEFINITION, id).unwrap();
+    assert_eq!(
+        failed.blocks[1].result.as_ref().unwrap().resolved_prompt,
+        "B A durable"
+    );
+    assert_eq!(
+        failed.blocks[0]
+            .result
+            .as_ref()
+            .unwrap()
+            .final_response
+            .as_deref(),
+        Some("A durable")
+    );
+    for corruption in [
+        "status-id",
+        "request-id",
+        "revision",
+        "schema",
+        "duplicate-block",
+        "oversized",
+    ] {
+        let mut bad = multi.clone();
+        let mut bad_status = status.clone();
+        match corruption {
+            "status-id" => bad_status["id"] = serde_json::json!(CONFIG),
+            "request-id" => bad_status["requestId"] = serde_json::json!(CONFIG),
+            "revision" => bad["definition"]["revision"] = serde_json::json!(0),
+            "schema" => bad["definition"]["definition"]["schemaVersion"] = serde_json::json!(99),
+            "duplicate-block" => {
+                let duplicate = bad_status["blocks"][0].clone();
+                bad_status["blocks"].as_array_mut().unwrap().push(duplicate);
+            }
+            _ => bad_status["diagnostic"] = serde_json::json!("x".repeat(2 * 1024 * 1024)),
+        }
+        c.execute(
+            "UPDATE runs SET snapshot=?1,status=?2 WHERE id=?3",
+            params![bad.to_string(), bad_status.to_string(), id],
+        )
+        .unwrap();
+        assert!(store.run_detail(DEFINITION, id).is_err(), "{corruption}");
+        let page = store.list_run_history(DEFINITION, None, 2).unwrap();
+        assert!(page.entries[0].unavailable, "{corruption}");
+        assert!(!page.entries[1].unavailable);
+    }
+}
