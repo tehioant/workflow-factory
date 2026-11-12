@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-shutdown-finish"
+description = "Enables the shutdown_finish command without any pre-configured scope."
+commands.allow = ["shutdown_finish"]
+
+[[permission]]
+identifier = "deny-shutdown-finish"
+description = "Denies the shutdown_finish command without any pre-configured scope."
+commands.deny = ["shutdown_finish"]

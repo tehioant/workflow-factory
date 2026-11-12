@@ -716,6 +716,19 @@ pub fn confirm(scope: &str) -> Result<(), workflow_engine::Error> {
         Err(workflow_engine::Error::Validation{message:"Native confirmation declined/unavailable. Install the supported Linux zenity dialog; no authorization was granted.".into()})
     }
 }
+pub fn shutdown_pending() -> Result<bool, workflow_engine::Error> {
+    // These registries retain failed chosen settlements even if hold storage failed.
+    Ok(!outputs().try_lock().map_err(|_| output_hold())?.is_empty()
+        || !final_claims()
+            .try_lock()
+            .map_err(|_| output_hold())?
+            .is_empty()
+        || !recoveries()
+            .try_lock()
+            .map_err(|_| cleanup_hold())?
+            .is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

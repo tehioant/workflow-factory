@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-shutdown-preview"
+description = "Enables the shutdown_preview command without any pre-configured scope."
+commands.allow = ["shutdown_preview"]
+
+[[permission]]
+identifier = "deny-shutdown-preview"
+description = "Denies the shutdown_preview command without any pre-configured scope."
+commands.deny = ["shutdown_preview"]

@@ -3,6 +3,9 @@ import { Channel } from '@tauri-apps/api/core';
 export type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 export function createCommands(invoke: Invoke) {
   return {
+    shutdownPreview:()=>invoke<import('./transport.ts').ShutdownPreview>('shutdown_preview'),
+    shutdownConfirm:(token:string,cancelWork:boolean)=>invoke<void>('shutdown_confirm',{token,cancelWork}),
+    shutdownFinish:()=>invoke<void>('shutdown_finish'),
     queueStatus:()=>invoke<import('./transport.ts').QueueStatus>('queue_status'),
     queueSettings:()=>invoke<import('./transport.ts').QueueSettings>('queue_settings'),
     saveQueueSettings:(settings:import('./transport.ts').QueueSettings)=>invoke<import('./transport.ts').QueueSettings>('save_queue_settings',{settings}),

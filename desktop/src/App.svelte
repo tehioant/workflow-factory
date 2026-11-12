@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ShutdownDialog from './lib/ShutdownDialog.svelte';
+  import {listen} from '@tauri-apps/api/event';
   import RunHistory from './lib/RunHistory.svelte';
   import QueuePanel from './lib/QueuePanel.svelte';
   import { onMount } from 'svelte';
@@ -19,12 +21,19 @@
   import { emptyEditor, saveEditor, openEditor, errorMessage } from './lib/editor.ts';
   import type { SavedConfiguration, SavedDefinition } from './lib/transport.ts';
   const commands = createCommands(invoke);
+  let shutdownVisible=$state(false),shutdownFrozen=$state(false);
+  let configurationManager=$state<ConfigurationManager>();
+  let configDraft=$derived(configurationManager?.shutdownState()??{dirty:false,busy:false,identity:''});
+  async function saveShutdownDrafts(){if(busy||configDraft.busy)return false;if(editor.dirty)await save();if(editor.dirty)return false;return await configurationManager?.saveDraft()??true;}
+  onMount(()=>{let alive=true;let stop:(()=>void)|undefined;void listen('shutdown-requested',()=>{shutdownVisible=true;}).then(value=>{if(alive)stop=value;else value();});return()=>{alive=false;stop?.();};});
   let editor = $state(emptyEditor());
   let configurations = $state<SavedConfiguration[]>([]);
   let configError = $state('');
   async function refreshConfigurations(){configurations=await commands.listConfigurations();}
   let definitions = $state<SavedDefinition[]>([]);
   let busy = $state(false);
+  let shutdownIdentity=$derived(JSON.stringify([editor,configDraft.identity,busy]));
+
   let selected = $state('');
   let source = $state('');
   let inputChoice = $state('');
@@ -100,21 +109,22 @@
 </script>
 
 <svelte:window onbeforeunload={(event) => { if (editor.dirty) event.preventDefault(); }} />
-<div class="app-shell">
+{#if shutdownVisible}<ShutdownDialog {commands} dirty={editor.dirty||configDraft.dirty} busy={busy||configDraft.busy} identity={shutdownIdentity} save={saveShutdownDrafts} onstay={()=>{shutdownVisible=false;}} onfreeze={()=>{shutdownFrozen=true;}}/>{/if}
+<div class="app-shell" inert={shutdownVisible&&!shutdownFrozen}>
   <aside aria-label="Saved workflows">
     <p class="eyebrow">WORKFLOW FACTORY</p>
     <h1>Workflows</h1>
-    <Button disabled={busy} onclick={() => navigate(null)}>New workflow</Button>
-    <Button variant="secondary" disabled={busy} onclick={async () => { busy = true; try { await refresh(); } finally { busy = false; } }}>Refresh list</Button>
+    <Button disabled={shutdownFrozen||busy} onclick={() => navigate(null)}>New workflow</Button>
+    <Button variant="secondary" disabled={shutdownFrozen||busy} onclick={async () => { busy = true; try { await refresh(); } finally { busy = false; } }}>Refresh list</Button>
     {#if listError}<p role="alert">{listError}</p>{/if}
     <ul>{#each definitions as saved (saved.definition.id)}
-      <li><button class="workflow-link" disabled={busy} aria-current={editor.working?.id === saved.definition.id ? 'page' : undefined} onclick={() => navigate(saved.definition.id)}>{saved.definition.name}<small>Revision {saved.revision}</small></button></li>
+      <li><button class="workflow-link" disabled={shutdownFrozen||busy} aria-current={editor.working?.id === saved.definition.id ? 'page' : undefined} onclick={() => navigate(saved.definition.id)}>{saved.definition.name}<small>Revision {saved.revision}</small></button></li>
     {:else}<li class="muted">No saved desktop workflows.</li>{/each}</ul>
     <section aria-label="Block palette"><h2>Block palette</h2>
-      <Button disabled={busy||!editor.working} onclick={()=>{const id=crypto.randomUUID();editor=editGraph(editor,{type:'add',id});selected=id;}}>Add AI block</Button>
+      <Button disabled={shutdownFrozen||busy||!editor.working} onclick={()=>{const id=crypto.randomUUID();editor=editGraph(editor,{type:'add',id});selected=id;}}>Add AI block</Button>
       <p class="muted">AI blocks only. Connect them in workflow properties; edit each prompt in the inspector.</p>
     </section>
-    <ConfigurationManager {configurations} {commands} onchanged={refreshConfigurations}/>
+    <ConfigurationManager bind:this={configurationManager} locked={shutdownFrozen} {configurations} {commands} onchanged={refreshConfigurations}/>
     <p class="muted">Private desktop storage · separate from browser data</p>
   </aside>
   <main aria-busy={busy}>
@@ -122,66 +132,66 @@
     {#if confirmDiscard}
       <section class="notice" aria-label="Unsaved changes">
         <h2>Keep your edits?</h2><p>Save first, stay here, or explicitly discard this working copy.</p>
-        <Button disabled={busy} onclick={() => { confirmDiscard = false; }}>Stay</Button>
-        <Button variant="secondary" disabled={busy} onclick={() => navigate(pendingId, true)}>Discard and continue</Button>
+        <Button disabled={shutdownFrozen||busy} onclick={() => { confirmDiscard = false; }}>Stay</Button>
+        <Button variant="secondary" disabled={shutdownFrozen||busy} onclick={() => navigate(pendingId, true)}>Discard and continue</Button>
       </section>
     {/if}
     {#if editor.working}
       <section class="editor">
         <label for="workflow-name">Workflow name</label>
-        <input id="workflow-name" maxlength="200" disabled={busy} value={editor.working.name} oninput={(event) => { if (editor.working) editor = { ...editor, working: { ...editor.working, name: event.currentTarget.value }, dirty: true, error: '' }; }} />
+        <input id="workflow-name" maxlength="200" disabled={shutdownFrozen||busy} value={editor.working.name} oninput={(event) => { if (editor.working) editor = { ...editor, working: { ...editor.working, name: event.currentTarget.value }, dirty: true, error: '' }; }} />
         <h2>Workflow properties</h2>
-        <IsolationSelect value={editor.working.isolation} disabled={busy} onchange={(isolation)=>{if(editor.working)editor={...editor,working:{...editor.working,isolation},dirty:true,error:''};}}/>
+        <IsolationSelect value={editor.working.isolation} disabled={shutdownFrozen||busy} onchange={(isolation)=>{if(editor.working)editor={...editor,working:{...editor.working,isolation},dirty:true,error:''};}}/>
         <h3>Named text inputs</h3>
         {#each editor.working.inputs as input,i}
-         <label for={`input-name-${i}`}>Input name</label><input id={`input-name-${i}`} disabled={busy} value={input.name} oninput={(e)=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:editor.working.inputs.map((v,n)=>n===i?{...v,name:e.currentTarget.value}:v)},dirty:true};}} />
-         <label><input type="checkbox" disabled={busy} checked={input.required} onchange={(e)=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:editor.working.inputs.map((v,n)=>n===i?{...v,required:e.currentTarget.checked}:v)},dirty:true};}} /> Required</label>
-         <label for={`input-default-${i}`}>Default (empty means no default)</label><textarea id={`input-default-${i}`} disabled={busy} value={input.default??''} oninput={(e)=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:editor.working.inputs.map((v,n)=>n===i?{...v,default:e.currentTarget.value||null}:v)},dirty:true};}}></textarea>
-         <button disabled={busy} onclick={()=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:editor.working.inputs.filter((_,n)=>n!==i)},dirty:true};}}>Remove input {i+1}</button>
+         <label for={`input-name-${i}`}>Input name</label><input id={`input-name-${i}`} disabled={shutdownFrozen||busy} value={input.name} oninput={(e)=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:editor.working.inputs.map((v,n)=>n===i?{...v,name:e.currentTarget.value}:v)},dirty:true};}} />
+         <label><input type="checkbox" disabled={shutdownFrozen||busy} checked={input.required} onchange={(e)=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:editor.working.inputs.map((v,n)=>n===i?{...v,required:e.currentTarget.checked}:v)},dirty:true};}} /> Required</label>
+         <label for={`input-default-${i}`}>Default (empty means no default)</label><textarea id={`input-default-${i}`} disabled={shutdownFrozen||busy} value={input.default??''} oninput={(e)=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:editor.working.inputs.map((v,n)=>n===i?{...v,default:e.currentTarget.value||null}:v)},dirty:true};}}></textarea>
+         <button disabled={shutdownFrozen||busy} onclick={()=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:editor.working.inputs.filter((_,n)=>n!==i)},dirty:true};}}>Remove input {i+1}</button>
         {/each}
-        <Button disabled={busy} onclick={()=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:[...editor.working.inputs,{name:`input_${editor.working.inputs.length+1}`,required:true,default:null}]},dirty:true};}}>Add text input</Button>
+        <Button disabled={shutdownFrozen||busy} onclick={()=>{if(editor.working)editor={...editor,working:{...editor.working,inputs:[...editor.working.inputs,{name:`input_${editor.working.inputs.length+1}`,required:true,default:null}]},dirty:true};}}>Add text input</Button>
         <InputForm definition={editor.working} {commands} onvalues={(values)=>{supplied=values;}}/>
 
 
-        <label for="block-select">Select block</label><select id="block-select" disabled={busy} bind:value={selected}><option value="">Choose a block</option>{#each editor.working.blocks as b}<option value={b.id}>{b.name}</option>{/each}</select>
-        <label for="source">Connect from</label><select id="source" disabled={busy} bind:value={source}><option value="">Source block</option>{#each editor.working.blocks as b}<option value={b.id}>{b.name}</option>{/each}</select>
-        <label for="target">Connect to</label><select id="target" disabled={busy} bind:value={target}><option value="">Target block</option>{#each editor.working.blocks as b}<option value={b.id}>{b.name}</option>{/each}</select>
-        <Button disabled={busy||!source||!target} onclick={()=>{editor=editGraph(editor,{type:'connect',source,target});}}>Connect blocks</Button>
-        {#each editor.working.connections as c,i}<p>{editor.working.blocks.find(b=>b.id===c.source)?.name} → {editor.working.blocks.find(b=>b.id===c.target)?.name} <button disabled={busy} onclick={()=>{if(editor.working) editor={...editor,working:{...editor.working,connections:editor.working.connections.filter((_,index)=>index!==i)},dirty:true};}}>Remove connection {i+1}</button></p>{/each}
-        <Button disabled={busy || !editor.dirty} onclick={save}>Save workflow</Button>
+        <label for="block-select">Select block</label><select id="block-select" disabled={shutdownFrozen||busy} bind:value={selected}><option value="">Choose a block</option>{#each editor.working.blocks as b}<option value={b.id}>{b.name}</option>{/each}</select>
+        <label for="source">Connect from</label><select id="source" disabled={shutdownFrozen||busy} bind:value={source}><option value="">Source block</option>{#each editor.working.blocks as b}<option value={b.id}>{b.name}</option>{/each}</select>
+        <label for="target">Connect to</label><select id="target" disabled={shutdownFrozen||busy} bind:value={target}><option value="">Target block</option>{#each editor.working.blocks as b}<option value={b.id}>{b.name}</option>{/each}</select>
+        <Button disabled={shutdownFrozen||busy||!source||!target} onclick={()=>{editor=editGraph(editor,{type:'connect',source,target});}}>Connect blocks</Button>
+        {#each editor.working.connections as c,i}<p>{editor.working.blocks.find(b=>b.id===c.source)?.name} → {editor.working.blocks.find(b=>b.id===c.target)?.name} <button disabled={shutdownFrozen||busy} onclick={()=>{if(editor.working) editor={...editor,working:{...editor.working,connections:editor.working.connections.filter((_,index)=>index!==i)},dirty:true};}}>Remove connection {i+1}</button></p>{/each}
+        <Button disabled={shutdownFrozen||busy || !editor.dirty} onclick={save}>Save workflow</Button>
         {#if editor.error}<p role="alert">{editor.error}</p>{/if}
         <p class="muted">To resolve a revision conflict, keep/copy your name or explicitly discard and reopen the saved workflow from the list. Saving never forces an overwrite.</p>
       </section>
-      <Canvas definition={editor.working} disabled={busy} onchange={(d)=>{if(!busy) editor={...editor,working:d,dirty:true,error:''};}} onselect={(id)=>{if(!busy) selected=id;}}/>
+      <Canvas definition={editor.working} disabled={shutdownFrozen||busy} onchange={(d)=>{if(!busy) editor={...editor,working:d,dirty:true,error:''};}} onselect={(id)=>{if(!busy) selected=id;}}/>
       <section class="inspector" aria-label="Block inspector">
        <h2>Block inspector</h2>
        {#if block}
-        <label for="block-name">Block name</label><input id="block-name" disabled={busy} value={block.name} oninput={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{name:e.currentTarget.value}})} />
-        <label for="prompt">Own prompt</label><textarea bind:this={promptField} id="prompt" rows="12" disabled={busy} value={block.prompt} oninput={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{prompt:e.currentTarget.value}})}></textarea>
-        <OutputReferencePicker definition={editor.working} blockId={selected} field={promptField} disabled={busy} onprompt={(prompt)=>{editor=editGraph(editor,{type:'update',id:selected,patch:{prompt}});}}/>
-        <label for="block-config">Codex configuration</label><select id="block-config" disabled={busy} value={block.configurationId??''} onchange={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{configurationId:e.currentTarget.value||null}})}><option value="">Not configured</option>{#each configurations as saved}<option value={saved.config.id}>{saved.config.name} · {saved.config.model} / {saved.config.reasoning}</option>{/each}</select>
+        <label for="block-name">Block name</label><input id="block-name" disabled={shutdownFrozen||busy} value={block.name} oninput={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{name:e.currentTarget.value}})} />
+        <label for="prompt">Own prompt</label><textarea bind:this={promptField} id="prompt" rows="12" disabled={shutdownFrozen||busy} value={block.prompt} oninput={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{prompt:e.currentTarget.value}})}></textarea>
+        <OutputReferencePicker definition={editor.working} blockId={selected} field={promptField} disabled={shutdownFrozen||busy} onprompt={(prompt)=>{editor=editGraph(editor,{type:'update',id:selected,patch:{prompt}});}}/>
+        <label for="block-config">Codex configuration</label><select id="block-config" disabled={shutdownFrozen||busy} value={block.configurationId??''} onchange={(e)=>editor=editGraph(editor,{type:'update',id:selected,patch:{configurationId:e.currentTarget.value||null}})}><option value="">Not configured</option>{#each configurations as saved}<option value={saved.config.id}>{saved.config.name} · {saved.config.model} / {saved.config.reasoning}</option>{/each}</select>
         {#if block.configurationId&&!configurations.some(c=>c.config.id===block?.configurationId)}<p role="alert">Missing configuration. Select an existing one or clear this reference.</p>{/if}
-        <label for="input-reference">Insert named input</label><select id="input-reference" disabled={busy} bind:value={inputChoice}><option value="">Choose input</option>{#each editor.working.inputs as input}<option value={input.name}>{input.name}</option>{/each}</select>
-        <Button disabled={busy||!inputChoice} onclick={()=>{if(block){editor=editGraph(editor,{type:'update',id:selected,patch:{prompt:insertInputReference(block.prompt,promptField?.selectionStart??block.prompt.length,promptField?.selectionEnd??block.prompt.length,inputChoice)}});promptField?.focus();}}}>Insert reference</Button>
-        <label for="position-x">X position</label><input id="position-x" type="number" disabled={busy} value={block.position.x} oninput={(e)=>{if(block)editor=editGraph(editor,{type:'update',id:selected,patch:{position:{...block.position,x:e.currentTarget.valueAsNumber}}});}} />
-        <label for="position-y">Y position</label><input id="position-y" type="number" disabled={busy} value={block.position.y} oninput={(e)=>{if(block)editor=editGraph(editor,{type:'update',id:selected,patch:{position:{...block.position,y:e.currentTarget.valueAsNumber}}});}} />
-        <Button disabled={busy} onclick={()=>{editor=editGraph(editor,{type:'remove',id:selected});selected='';}}>Remove AI block</Button>
+        <label for="input-reference">Insert named input</label><select id="input-reference" disabled={shutdownFrozen||busy} bind:value={inputChoice}><option value="">Choose input</option>{#each editor.working.inputs as input}<option value={input.name}>{input.name}</option>{/each}</select>
+        <Button disabled={shutdownFrozen||busy||!inputChoice} onclick={()=>{if(block){editor=editGraph(editor,{type:'update',id:selected,patch:{prompt:insertInputReference(block.prompt,promptField?.selectionStart??block.prompt.length,promptField?.selectionEnd??block.prompt.length,inputChoice)}});promptField?.focus();}}}>Insert reference</Button>
+        <label for="position-x">X position</label><input id="position-x" type="number" disabled={shutdownFrozen||busy} value={block.position.x} oninput={(e)=>{if(block)editor=editGraph(editor,{type:'update',id:selected,patch:{position:{...block.position,x:e.currentTarget.valueAsNumber}}});}} />
+        <label for="position-y">Y position</label><input id="position-y" type="number" disabled={shutdownFrozen||busy} value={block.position.y} oninput={(e)=>{if(block)editor=editGraph(editor,{type:'update',id:selected,patch:{position:{...block.position,y:e.currentTarget.valueAsNumber}}});}} />
+        <Button disabled={shutdownFrozen||busy} onclick={()=>{editor=editGraph(editor,{type:'remove',id:selected});selected='';}}>Remove AI block</Button>
        {:else}<p>Select a block on the canvas or in properties.</p>{/if}
       </section>
     {:else}
       <section class="editor"><h2>Your workflows, saved locally.</h2><p>Create a workflow or open one from the sidebar.</p></section>
     {/if}
     <section class="notice" aria-label="Start run">
-      <button disabled={busy||!runReady||!editor.working||pendingStart!==null} onclick={()=>{if(editor.dirty)dirtyStart=true;else void begin('saved');}}>Start saved workflow</button>
-      <button disabled={busy} onclick={()=>{void commands.openSessionSignIn().catch(error=>{runError=errorMessage(error);});}}>Open native managed sign-in</button>
+      <button disabled={shutdownFrozen||busy||!runReady||!editor.working||pendingStart!==null} onclick={()=>{if(editor.dirty)dirtyStart=true;else void begin('saved');}}>Start saved workflow</button>
+      <button disabled={shutdownFrozen||busy} onclick={()=>{void commands.openSessionSignIn().catch(error=>{runError=errorMessage(error);});}}>Open native managed sign-in</button>
       <p>Trusted private workloads only. Native secure staging, managed login and containment must be qualified before execution.</p>
       {#if dirtyStart}
       <h2>Unsaved changes</h2><p>Save and start, explicitly use the last saved revision without discarding edits, or stay.</p>
-      <button disabled={busy||pendingStart!==null} onclick={()=>begin('save')}>Save and start</button>
-      <button disabled={busy||pendingStart!==null||!editor.revision} onclick={()=>begin('saved')}>Start last saved revision</button>
-      <button disabled={busy||pendingStart!==null} onclick={()=>{dirtyStart=false;}}>Stay</button>
+      <button disabled={shutdownFrozen||busy||pendingStart!==null} onclick={()=>begin('save')}>Save and start</button>
+      <button disabled={shutdownFrozen||busy||pendingStart!==null||!editor.revision} onclick={()=>begin('saved')}>Start last saved revision</button>
+      <button disabled={shutdownFrozen||busy||pendingStart!==null} onclick={()=>{dirtyStart=false;}}>Stay</button>
       {/if}
-      {#if pendingStart}<p>Admission outcome may be unknown. Retry the same immutable request, not a new start.</p><button disabled={busy} onclick={()=>begin('retry')}>Retry same request</button>{/if}
+      {#if pendingStart}<p>Admission outcome may be unknown. Retry the same immutable request, not a new start.</p><button disabled={shutdownFrozen||busy} onclick={()=>begin('retry')}>Retry same request</button>{/if}
       {#if runError}<p role="alert">{runError}</p>{/if}
     </section>
     <QueuePanel {commands} onselect={selectQueued} admissionError={runError}/>

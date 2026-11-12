@@ -464,6 +464,7 @@ fn enforce_capacity(connection: &Connection, table: &str) -> Result<(), Error> {
     }
     Ok(())
 }
+pub mod lifecycle;
 pub struct Store {
     path: PathBuf,
 }
@@ -527,6 +528,7 @@ impl Store {
             connection.execute_batch("BEGIN IMMEDIATE; CREATE TABLE queue_settings(id INTEGER PRIMARY KEY CHECK(id=1),active INTEGER NOT NULL CHECK(active BETWEEN 1 AND 8),waiting INTEGER NOT NULL CHECK(waiting BETWEEN 0 AND 64)); INSERT INTO queue_settings VALUES(1,2,16); CREATE TABLE run_queue(sequence INTEGER PRIMARY KEY AUTOINCREMENT,run_id TEXT UNIQUE NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('waiting','occupied','settled','withheld')),slot TEXT,generation INTEGER); INSERT INTO run_queue(run_id,phase,slot,generation) SELECT id,CASE WHEN active=1 THEN 'occupied' ELSE 'settled' END,(SELECT s.id FROM managed_sessions s WHERE s.owner=runs.id LIMIT 1),(SELECT s.generation FROM managed_sessions s WHERE s.owner=runs.id LIMIT 1) FROM runs ORDER BY rowid; DROP INDEX IF EXISTS one_active_run; PRAGMA user_version=4; COMMIT;").map_err(storage)?;
         }
         connection.execute_batch("CREATE TABLE IF NOT EXISTS run_resources(run_id TEXT NOT NULL,kind TEXT NOT NULL,resource_id TEXT,PRIMARY KEY(run_id,kind));").map_err(storage)?;
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS desktop_lifecycle(id INTEGER PRIMARY KEY CHECK(id=1),frozen INTEGER NOT NULL); INSERT OR IGNORE INTO desktop_lifecycle VALUES(1,0);").map_err(storage)?;
         Ok(Self { path })
     }
 
