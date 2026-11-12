@@ -9,17 +9,24 @@ fn outputs() -> &'static Mutex<BTreeMap<String, String>> {
 fn output_hold() -> workflow_engine::Error {
     workflow_engine::Error::Storage { message: "Completed redacted output retained in app memory; storage failed. Ownership remains held. Keep the app open and Recheck status to retry storage; no execution retry.".into() }
 }
-#[cfg(test)]
-fn retain_output(
-    id: &str,
-    text: String,
-    persist: impl FnOnce(&str, &str) -> Result<(), workflow_engine::Error>,
-) -> Result<(), workflow_engine::Error> {
-    let mut pending = outputs().lock().map_err(|_| output_hold())?;
-    pending.insert(id.into(), text);
-    persist(id, &pending[id]).map_err(|_| output_hold())?;
-    pending.remove(id);
-    Ok(())
+struct PendingOutput(String);
+fn retain_output(id: &str, text: String) -> Result<PendingOutput, workflow_engine::Error> {
+    outputs()
+        .lock()
+        .map_err(|_| output_hold())?
+        .insert(id.into(), text);
+    Ok(PendingOutput(id.into()))
+}
+impl PendingOutput {
+    fn settle(
+        self,
+        persisted: Result<bool, workflow_engine::Error>,
+    ) -> Result<bool, workflow_engine::Error> {
+        if matches!(persisted, Ok(true)) {
+            outputs().lock().map_err(|_| output_hold())?.remove(&self.0);
+        }
+        persisted
+    }
 }
 pub fn retry_outputs(store: &workflow_engine::Store) -> Result<(), workflow_engine::Error> {
     let mut pending = outputs().lock().map_err(|_| output_hold())?;
@@ -71,7 +78,7 @@ pub fn execute(
         let mut cache_ready = false;
         let mut secrets = Vec::new();
         let final_result = loop {
-            let mut key = String::new();
+            let mut pending_output = None;
             let step = store.execute_next_block(
                 &id,
                 &lease,
@@ -79,7 +86,7 @@ pub fn execute(
                 &cancel,
                 |resources, plan, prompt| {
                     cache_ready = false;
-                    key = format!("{id}/{}", plan.block_id);
+                    let key = format!("{id}/{}", plan.block_id);
                     native_prerequisites()
                         .map_err(|message| workflow_engine::Error::Validation { message })?;
                     cancel.check()?;
@@ -122,18 +129,17 @@ pub fn execute(
                     });
                     cache_ready = true;
                     if let Ok(text) = &final_result {
-                        outputs()
-                            .lock()
-                            .map_err(|_| output_hold())?
-                            .insert(key.clone(), text.clone());
+                        pending_output = Some(retain_output(&key, text.clone())?);
                     }
                     final_result
                 },
             );
+            let step = match pending_output {
+                Some(pending) => pending.settle(step),
+                None => step,
+            };
             match step {
-                Ok(true) => {
-                    outputs().lock().map_err(|_| output_hold())?.remove(&key);
-                }
+                Ok(true) => {}
                 Ok(false) => break Ok(store.run_status(&id)?.final_response.unwrap_or_default()),
                 Err(error @ workflow_engine::Error::Storage { .. }) => return Err(error),
                 Err(error) => {
@@ -277,17 +283,14 @@ mod tests {
     fn c16_redacted_output_storage_failure_retains_exact_retry_payload() {
         let id = "prepared-output-test";
         let text = "validated [REDACTED] response";
-        assert!(super::retain_output(id, text.into(), |_, _| Err(super::output_hold())).is_err());
+        let pending = super::retain_output(id, text.into()).unwrap();
+        assert!(pending.settle(Err(super::output_hold())).is_err());
         assert_eq!(
             super::outputs().lock().unwrap().get(id).map(String::as_str),
             Some(text)
         );
-        super::retain_output(id, text.into(), |actual, payload| {
-            assert_eq!(actual, id);
-            assert_eq!(payload, text);
-            Ok(())
-        })
-        .unwrap();
+        let pending = super::retain_output(id, text.into()).unwrap();
+        assert!(pending.settle(Ok(true)).unwrap());
         assert!(!super::outputs().lock().unwrap().contains_key(id));
     }
     #[test]
