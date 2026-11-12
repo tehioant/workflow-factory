@@ -279,6 +279,16 @@ impl Store {
             )
             .map_err(storage)?;
         }
+        let actual: Option<String> = c
+            .query_row(
+                "SELECT resource_id FROM run_resources WHERE run_id=?1 AND kind=?2",
+                params![id, kind],
+                |r| r.get(0),
+            )
+            .map_err(storage)?;
+        if actual.as_deref() != resource {
+            return Err(storage("resource receipt readback"));
+        }
         Ok(())
     }
     pub fn finish_run(

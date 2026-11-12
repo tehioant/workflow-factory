@@ -226,6 +226,57 @@ impl Store {
             .map_err(storage)?;
         Ok(ManagedSessionStatus{available,withheld,guidance:"App-owned managed login only; no host credential import or paid fallback. Native secure-store/paging and provider containment qualification required.".into()})
     }
+    pub fn checkpoint_session(
+        &self,
+        lease: &Lease,
+        cache: &[u8],
+        secure: &mut impl SecureStore,
+        cancel: &crate::sandbox::Cancel,
+    ) -> Result<Vec<u8>, Error> {
+        let (slot, owner, generation) =
+            (lease.slot.as_str(), lease.owner.as_str(), lease.generation);
+        cancel.check()?;
+        validate_cache(cache)?;
+        let mut c = rusqlite::Connection::open(&self.path).map_err(storage)?;
+        let tx = c
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let matches:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM managed_sessions WHERE id=?1 AND owner=?2 AND generation=?3 AND state='leased')",params![slot,owner,generation],|r|r.get(0)).map_err(storage)?;
+        if !matches {
+            return Err(validation("Session lease does not match."));
+        }
+        // Quarantine commits before any uncertain external persistence/cleanup operation.
+        tx.execute(
+            "UPDATE managed_sessions SET state='quarantined' WHERE id=?1",
+            [slot],
+        )
+        .map_err(storage)?;
+        tx.commit().map_err(storage)?;
+        let previous = secure.read(slot)?;
+        validate_cache(&previous)?;
+        let old: serde_json::Value = serde_json::from_slice(&previous)
+            .map_err(|_| validation("Stored managed cache invalid."))?;
+        let updated: serde_json::Value = serde_json::from_slice(cache)
+            .map_err(|_| validation("Rotated managed cache invalid."))?;
+        if old["tokens"]["login_owner_id"] != updated["tokens"]["login_owner_id"]
+            || old["tokens"]["account_id"] != updated["tokens"]["account_id"]
+            || old["tokens"]["oauth_provenance"] != updated["tokens"]["oauth_provenance"]
+        {
+            return Err(validation(
+                "Managed login identity changed; session quarantined.",
+            ));
+        }
+        cancel.check()?;
+        secure.write(slot, cache)?;
+        if secure.read(slot)? != cache {
+            return Err(validation(
+                "Secure store readback failed; session quarantined.",
+            ));
+        }
+        cancel.check()?;
+        if c.execute("UPDATE managed_sessions SET state='leased' WHERE id=?1 AND owner=?2 AND generation=?3 AND state='quarantined'",params![slot,owner,generation]).map_err(storage)? != 1 { return Err(validation("Checkpoint ownership changed.")); }
+        Ok(cache.to_vec())
+    }
     /// Persist and read back the rotated cache before confirming removal and releasing the lease.
     /// Cleanup callback must positively inspect the recorded resource ID, never a name.
     pub fn finish_session(

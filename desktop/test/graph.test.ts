@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { toFlow, fromFlow } from '../src/lib/graph.ts';
 import { editGraph } from '../src/lib/editor.ts';
-const definition = {schemaVersion:1,id:'workflow',name:'Graph',blocks:[{id:'a',name:'First',prompt:'Private prompt',position:{x:10,y:20}}],connections:[]};
+const definition = {schemaVersion:1, isolation: 'perRun' as const,id:'workflow',name:'Graph',blocks:[{id:'a',name:'First',prompt:'Private prompt',position:{x:10,y:20}}],connections:[]};
 const state={working:definition,revision:2,dirty:false,error:''};
 test('adding an AI block dirties only the working definition',()=>{const next=editGraph(state,{type:'add',id:'b'}); assert.equal(next.dirty,true); assert.equal(next.working!.blocks[1].name,'AI block'); assert.equal(state.working.blocks.length,1);});
 test('removing a block also removes its incident connections',()=>{const prepared={...state,working:{...state.working,connections:[{source:'a',target:'b'}]}}; const next=editGraph(prepared,{type:'remove',id:'a'}); assert.deepEqual(next.working!.blocks,[]); assert.deepEqual(next.working!.connections,[]);});

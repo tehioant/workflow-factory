@@ -31,6 +31,7 @@ fn main() {
         SavedConfiguration::decl(&config),
         SaveConfiguration::decl(&config),
         AuthReadiness::decl(&config),
+        workflow_engine::IsolationMode::decl(&config),
         Definition::decl(&config),
         SavedDefinition::decl(&config),
         SaveDefinition::decl(&config),

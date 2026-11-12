@@ -20,7 +20,7 @@ test('open refuses dirty navigation without invoking load', async () => {
   assert.match(result.error, /Save or discard/);
 });
 test('save accepts nested reactive proxies without aliasing the invoked JSON domain', async () => {
-  const source = { ...definition, blocks: [{ id: 'a', name: 'A', prompt: '', position: { x: 1, y: 2 }, configurationId: null }], connections: [], inputs: [] };
+  const source = { ...definition, isolation: 'perBlock' as const, blocks: [{ id: 'a', name: 'A', prompt: '', position: { x: 1, y: 2 }, configurationId: null }], connections: [], inputs: [] };
   let request: any;
   const commands = createCommands(async <T>(_command: string, args?: Record<string, unknown>) => {
     request = args?.request;
@@ -34,7 +34,7 @@ test('save accepts nested reactive proxies without aliasing the invoked JSON dom
   request.definition.blocks[0].position.x = 99;
   assert.equal(source.blocks[0].position.x, 1);
 });
-const definition = { schemaVersion: 1, id: 'ecbca0a8-d457-4c42-89d4-6727261747bc', name: 'Research', blocks: [], connections: [], inputs: [] };
+const definition = { schemaVersion: 1, isolation: 'perRun' as const, id: 'ecbca0a8-d457-4c42-89d4-6727261747bc', name: 'Research', blocks: [], connections: [], inputs: [] };
 
 test('save action invokes the registered command with the expected revision', async () => {
   let invocation: unknown;

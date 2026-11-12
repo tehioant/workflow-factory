@@ -227,6 +227,11 @@ fn seed_run(c: &Connection, s: &RunStatus, active: bool) {
 #[test]
 fn c01_admission_captures_saved_inputs_configuration_and_native_blocker() {
     let (_dir, store, c) = prepared();
+    c.execute(
+        "UPDATE revisions SET body=json_set(body,'$.isolation','perBlock')",
+        [],
+    )
+    .unwrap();
     let result = store.admit_run(request(), observation()).unwrap();
     assert_eq!(result.state, RunState::Blocked);
     let body: String = c
@@ -238,6 +243,10 @@ fn c01_admission_captures_saved_inputs_configuration_and_native_blocker() {
     assert_eq!(snapshot["inputs"]["prompts"]["a"], "Hello literal $HOME");
     assert_eq!(snapshot["configuration"]["revision"], 2);
     assert_eq!(snapshot["definition"]["revision"], 1);
+    assert_eq!(
+        snapshot["definition"]["definition"]["isolation"],
+        "perBlock"
+    );
 }
 #[test]
 fn c02_duplicate_request_reads_original_without_current_configuration() {
