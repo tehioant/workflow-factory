@@ -52,3 +52,41 @@ Generated command permissions and transport declarations are part of this seam.
 Local raw argv/exit/log and byte/mode evidence is retained by the delivery owner
 under `d09-build`, not represented as live/native UI qualification. Native runtime,
 login, container-removal and platform UI qualification are deliberately separate.
+
+## Interrupted run recovery (#37)
+
+The explicit selected **Retry owned cleanup** action can reconstruct the existing
+cleanup context from private, bounded `run_recovery` metadata. The worker records
+the exact lease and validated resource epoch before staging, in both isolation
+modes. Recovery uses acknowledged IDs and the existing resource journal; it does
+not consult current definitions, discover by label, resume execution or reset
+shutdown freeze. A surviving keeper still requires positive writer stop, current
+cache export, secure write/readback and exact owned removal. Failed sessions stay
+quarantined. Durable block results are retained; lost volatile output is labelled
+unavailable, never synthesized.
+
+The chosen settlement and actual completed cleanup receipt are retained for
+selected storage-only replay through the existing settlement validator. That
+replay performs no Docker, secure-store, confirmation or successor operations.
+History/status reads remain on the checked read-only reader.
+
+Acknowledged partial creation can be reconciled from its durable creating phase
+without secure-store access only when staging is positively excluded. Before a
+current-cache secure mutation, a digest is bound to the exact lease, resources
+and keeper epoch. Recovery after write/removal requires fresh matching native
+readback and exact-ID absence, not the original cache seed. Acknowledged handoff
+successor, peer, epoch and retirement records are correlated explicitly; resource
+names or ordinals never grant adoption authority.
+
+Unknown create/start effects, incomplete overlap/removal acknowledgements, and
+interruption before the started epoch is durably published remain held. So do a
+missing keeper without current-cache provenance, changed epochs, cache mismatch
+and unavailable cleanup/storage dependencies. Durable results and ownership holds
+remain until a positive explicit recheck; lost legacy volatile text is unavailable.
+
+Prepared-record checks cover the actual selected native reconciliation caller
+with strict process/secure-store fakes. A mounted RunPanel check exercises the
+real command transport for selected cleanup, errors, stale replies and storage-only
+replay despite edited/deleted definitions or unavailable runtime. These are focused
+source checks, not live crash/restart, Docker/keyring or installed-platform
+interaction qualification; those native observations remain **UNRUN**.

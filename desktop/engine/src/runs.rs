@@ -2,6 +2,7 @@
 pub mod history;
 pub mod inspection;
 pub mod queue;
+pub mod recovery;
 pub mod settlement;
 use crate::{
     params, read_configuration, resolve_inputs, storage, stored_definition, validation, Error,
@@ -281,7 +282,7 @@ impl Store {
             return Err(validation("Cleanup lease changed; ownership held."));
         }
         let mut q = c
-            .prepare("SELECT kind,resource_id FROM run_resources WHERE run_id=?1 LIMIT 1025")
+            .prepare("SELECT CASE WHEN length(CAST(kind AS BLOB))<=80 THEN kind ELSE 'invalid' END,CASE WHEN resource_id IS NULL OR length(CAST(resource_id AS BLOB))<=128 THEN resource_id ELSE 'invalid' END FROM run_resources WHERE run_id=?1 LIMIT 1025")
             .map_err(storage)?;
         let records = q
             .query_map([&lease.owner], |r| Ok((r.get(0)?, r.get(1)?)))

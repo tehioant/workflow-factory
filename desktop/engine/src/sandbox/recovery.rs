@@ -18,6 +18,109 @@ impl CleanupContext {
     }
 }
 impl<P: Pipe> Sandbox<P> {
+    pub fn finish_unstaged_cleanup(
+        &mut self,
+        store: &crate::Store,
+        lease: &Lease,
+    ) -> Result<Option<CompletionReceipt>, Error> {
+        let metadata = store.recovery_metadata(lease)?;
+        if metadata["phase"] != "creating" && metadata.get("owner").is_some() {
+            return Ok(None);
+        }
+        if metadata["phase"] != "creating" {
+            return Err(validation("Unstaged provenance unavailable."));
+        }
+        let records = store.cleanup_records(lease)?;
+        let mut resources = Vec::new();
+        for (kind, id) in &records {
+            let resource_kind = match kind.as_str() {
+                "work-container" | "work-container-0" | "egress-helper" => "container",
+                "private-network" | "egress-network" => "network",
+                "workspace-volume" => "volume",
+                "agent-start-0" | "helper-start" | "work-start" => {
+                    let expected = if kind == "helper-start" {
+                        "egress-helper"
+                    } else if kind == "work-start" {
+                        "work-container"
+                    } else {
+                        "work-container-0"
+                    };
+                    if id.is_none() || !records.iter().any(|(k, v)| k == expected && v == id) {
+                        return Err(validation("Unacknowledged start; ownership held."));
+                    }
+                    continue;
+                }
+                k if k.starts_with("unstaged-remove-") => continue,
+                _ => {
+                    return Err(validation(
+                        "Unknown partial-create journal; ownership held.",
+                    ))
+                }
+            };
+            let id = id
+                .as_deref()
+                .ok_or_else(|| validation("Unacknowledged creation; ownership held."))?;
+            if resource_kind != "volume" && !opaque(id) {
+                return Err(validation("Invalid owned ID."));
+            }
+            resources.push((resource_kind, kind.as_str(), id));
+        }
+        resources.sort_by_key(|(kind, _, _)| match *kind {
+            "container" => 0,
+            "volume" => 1,
+            _ => 2,
+        });
+        for (kind, tag, id) in resources {
+            let tag = format!("unstaged-remove-{tag}");
+            store.cleanup_resource_receipt(lease, &tag, None)?;
+            if self.listed(kind, id)? {
+                if kind == "volume" {
+                    self.inspect_workspace(id, &lease.owner)?;
+                    let used = self.success(
+                        &strings(&[
+                            "container",
+                            "ls",
+                            "-a",
+                            "--no-trunc",
+                            "--filter",
+                            &format!("volume={id}"),
+                            "--format",
+                            "{{.ID}}",
+                        ]),
+                        &[],
+                        131072,
+                    )?;
+                    if used.iter().any(|b| !b.is_ascii_whitespace()) {
+                        return Err(validation("Workspace still referenced."));
+                    }
+                } else {
+                    let row = self.owned(kind, id, &lease.owner)?;
+                    if kind == "network"
+                        && row["Containers"].as_object().is_none_or(|a| !a.is_empty())
+                    {
+                        return Err(validation("Network still referenced."));
+                    }
+                    if records
+                        .iter()
+                        .any(|(k, v)| k == "egress-helper" && v.as_deref() == Some(id))
+                    {
+                        self.helper_mounts(&row)?;
+                    }
+                }
+                let args = if kind == "container" {
+                    strings(&["rm", "-f", id])
+                } else {
+                    strings(&[kind, "rm", id])
+                };
+                self.success(&args, &[], 131072)?;
+            }
+            if self.listed(kind, id)? {
+                return Err(validation("Owned absence unconfirmed."));
+            }
+            store.cleanup_resource_receipt(lease, &tag, Some(id))?;
+        }
+        Ok(Some(store.unstaged_completion(lease)?))
+    }
     /// Real producer only: current export after positive writer stop and exact live epoch.
     pub fn checkpoint_cleanup(&mut self, context: &mut CleanupContext) -> Result<Vec<u8>, Error> {
         let r = &context.resources;
@@ -51,7 +154,21 @@ impl<P: Pipe> Sandbox<P> {
             return Err(validation("Cleanup context uncertain; ownership held."));
         }
         let records = store.cleanup_records(lease)?;
+        if store.recovery_metadata(lease)?["phase"] == "handoff" && r.retired.is_none() {
+            return Err(validation(
+                "Interrupted overlap correlation unavailable; ownership held.",
+            ));
+        }
         self.validate_cleanup_journal(&r, &records)?;
+        if let Some(retired) = &r.retired {
+            let correlated = records.iter().any(|(kind, id)| {
+                kind.starts_with("agent-remove-") && id.as_ref() == Some(retired)
+            });
+            if !correlated || retired == &r.container {
+                return Err(validation("Retired agent correlation unavailable."));
+            }
+            self.absent_container(retired, &Cancel::default())?;
+        }
         if self.listed("container", &r.container)? {
             if self.live_epoch(&r)? != r.started_at.as_deref().unwrap_or("") {
                 return Err(validation("Keeper epoch changed; cleanup held."));
@@ -59,14 +176,41 @@ impl<P: Pipe> Sandbox<P> {
             context.removing = false;
             self.checkpoint_cleanup(context)?;
         } else if !context.removing {
-            return Err(validation(
-                "Keeper absent without current-cache checkpoint proof.",
-            ));
+            let metadata = store.recovery_metadata(lease)?;
+            let digest = metadata["cacheDigest"]
+                .as_str()
+                .filter(|d| d.len() == 64)
+                .ok_or_else(|| validation("Keeper absent without durable current-cache intent."))?;
+            if metadata["phase"] != "cache-intent" {
+                return Err(validation("Current-cache phase unavailable."));
+            }
+            let cache = secure.read(&lease.slot)?;
+            crate::sessions::validate_cache(&cache)?;
+            if crate::runs::recovery::cache_digest(&cache) != digest {
+                return Err(validation(
+                    "Current-cache readback differs from durable intent.",
+                ));
+            }
+            context.checkpoint = Some(cache);
+            context.removing = true;
         }
         let cache = context
             .checkpoint
             .as_ref()
             .ok_or_else(|| validation("Current-cache proof unavailable; ownership held."))?;
+        let (_, retained) = store.interrupted_recovery(&lease.owner)?;
+        if retained.container != r.container
+            || retained.started_at != r.started_at
+            || retained.retired != r.retired
+            || retained.workspace != r.workspace
+            || retained.image != r.image
+            || retained.helper != r.helper
+            || retained.network != r.network
+            || retained.outer != r.outer
+        {
+            return Err(validation("Durable cache/resource correlation changed."));
+        }
+        store.cache_intent(lease, cache)?;
         store.finish_owned_session_receipt(lease, cache, secure, reusable, || {
             context.removing = true; // only after exact secure write/readback, before first removal
             self.continue_cleanup(&r, |kind, id| {
@@ -112,7 +256,9 @@ impl<P: Pipe> Sandbox<P> {
                 && !numbered
                 && !matches!(
                     kind.as_str(),
-                    "work-container"
+                    "helper-start"
+                        | "work-start"
+                        | "work-container"
                         | "egress-helper"
                         | "private-network"
                         | "egress-network"
@@ -122,11 +268,11 @@ impl<P: Pipe> Sandbox<P> {
                 return Err(validation("Unknown cleanup journal; ownership held."));
             }
             let expected = match kind.as_str() {
-                "egress-helper" | "helper-remove" => Some(r.helper.as_str()),
+                "egress-helper" | "helper-start" | "helper-remove" => Some(r.helper.as_str()),
                 "private-network" | "private-network-remove" => Some(r.network.as_str()),
                 "egress-network" | "egress-network-remove" => Some(r.outer.as_str()),
                 "workspace-volume" | "workspace-remove" => r.workspace.as_deref(),
-                "final-agent-remove" => Some(r.container.as_str()),
+                "work-start" | "final-agent-remove" => Some(r.container.as_str()),
                 _ => None,
             };
             if matches!(kind.as_str(), "workspace-volume" | "workspace-remove")

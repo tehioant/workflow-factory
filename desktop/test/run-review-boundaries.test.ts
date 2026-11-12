@@ -137,6 +137,72 @@ test('d12_selected_cancel_control', async()=>{
  } finally {globalThis.setTimeout=realSet;globalThis.clearTimeout=realClear;if(component)await unmount(component);target.remove();window.happyDOM.abort();}
 });
 
+test('d14_selected_interrupted_recovery_uses_capture_without_current_definition_or_runtime', async()=>{
+ const window=new Window();
+ for(const key of ['document','Node','Element','HTMLElement','Text','Comment','Event','MouseEvent','HTMLMediaElement'])Object.defineProperty(globalThis,key,{configurable:true,value:(window as any)[key]});
+ Object.defineProperty(globalThis,'window',{configurable:true,value:window});Object.defineProperty(globalThis,'navigator',{configurable:true,value:window.navigator});
+ const {mount,unmount,flushSync}=await import(new URL('../node_modules/svelte/src/index-client.js',import.meta.url).href);
+ const {createCommands}=await import('../src/lib/commands.ts');
+ const panel='data:text/javascript;base64,'+Buffer.from(await compileComponent(new URL('../src/lib/RunPanel.svelte',import.meta.url))).toString('base64');
+ const harness=compile(`<script>import Panel from 'selected-panel';let {commands,initial,onstatus}=$props();let run=$state(initial);export function select(value){run=value;}</script><Panel {commands} {run} {onstatus}/>`,{filename:'selected-interrupted-harness.svelte',generate:'client'}).js.code;
+ const code=harness.replace(/(from |import )(['"])([^'"]+)\2/g,(_a,p,_q,s)=>p+JSON.stringify(s==='selected-panel'?panel:s==='svelte'?new URL('../node_modules/svelte/src/index-client.js',import.meta.url).href:import.meta.resolve(s)));
+ const Component=(await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'))).default;
+ const target=window.document.createElement('main');window.document.body.append(target);
+ const realSet=globalThis.setTimeout,realClear=globalThis.clearTimeout;let tick:any,component:any;
+ const retained='Completed captured block <img src=x>';const diagnostic='Interrupted; exact owned recovery required. Unknown provenance remains held; lost volatile output is unavailable.';
+ const selected:any={id:'interrupted-captured',requestId:'captured-request',state:'held',cleanupPending:true,finalResponse:null,diagnostic,blocks:[{blockId:'captured-a',state:'succeeded',resolvedPrompt:'Captured revision 4 prompt',finalResponse:retained}]};
+ const sibling:any={id:'independent-interrupted',requestId:'independent-request',state:'held',cleanupPending:true,finalResponse:null,diagnostic:'Independent hold',blocks:[]};
+ const current:any={definition:{id:'current-edited',revision:99,blocks:[]},configurations:[{id:'replacement-config',revision:77}]};
+ const calls:any[]=[],pending:any[]=[],statuses:any[]=[];const observations=new Map([[selected.id,selected],[sibling.id,sibling]]);
+ const commands=createCommands(((command:string,args:any)=>{
+  calls.push({command,args:structuredClone(args)});
+  if(command==='inspect_workflow'){assert.deepEqual(args,{run:selected.id});return Promise.reject(Error('Captured definition deleted; inspection unavailable'));}
+  assert.ok(['run_status','retry_run_cleanup','retry_run_output'].includes(command),'unrelated dispatch forbidden: '+command);
+  assert.deepEqual(Object.keys(args),['id']);assert.ok(observations.has(args.id));
+  if(command==='run_status')return Promise.resolve(observations.get(args.id));
+  return new Promise((resolve,reject)=>pending.push({command,id:args.id,resolve,reject}));
+ }) as any);
+ const settle=async()=>{await Promise.resolve();await Promise.resolve();flushSync();};
+ const button=(text:string)=>Array.from(target.querySelectorAll('button')).find(b=>b.textContent.includes(text))!;
+ const recover=()=>{button('Retry owned cleanup').click();flushSync();return pending.at(-1);};
+ try{
+  globalThis.setTimeout=((fn:any)=>{tick=fn;return 1;}) as any;globalThis.clearTimeout=(()=>{}) as any;
+  flushSync(()=>{component=mount(Component,{target,props:{commands,initial:selected,onstatus:(s:any)=>statuses.push(s)}});});await settle();
+  assert.deepEqual(calls,[{command:'inspect_workflow',args:{run:selected.id}}]);assert.ok(target.textContent.includes(diagnostic));assert.ok(target.textContent.includes(retained));assert.equal(target.querySelectorAll('img').length,0);
+  assert.ok(!button('Retry owned cleanup').disabled);assert.ok(!button('Retry retained output storage').disabled);
+  const positive=recover();assert.equal(positive.id,selected.id);assert.equal(positive.command,'retry_run_cleanup');
+  const count=calls.length;button('Retry owned cleanup').click();button('Retry retained output storage').click();await tick();assert.equal(calls.length,count);assert.ok(button('Recheck').disabled);
+  const cleaned={...selected,cleanupPending:false,diagnostic:'Owned cleanup confirmed; completed output retained'};
+  positive.resolve(cleaned);await settle();assert.deepEqual(statuses,[cleaned]);assert.ok(target.textContent.includes(retained));
+  // Delete the mutable records after a successful selected action; no reload/save or configuration lookup is permitted.
+  current.definition=null;current.configurations=[];
+  const failed=recover();assert.equal(failed.id,selected.id);failed.reject({message:'Selected recovery unavailable; ownership remains held.'});await settle();
+  assert.ok(target.textContent.includes('Selected recovery unavailable'));await tick();await settle();assert.ok(target.textContent.includes('Selected recovery unavailable'));assert.ok(target.textContent.includes(retained));
+  const wrong=recover();const beforeWrong=statuses.length;wrong.resolve({...sibling,cleanupPending:false});await settle();assert.equal(statuses.length,beforeWrong);assert.ok(target.textContent.includes('response identity changed'));
+  const obsolete=recover();flushSync(()=>component.select(sibling));const newer=recover();const before=statuses.length;
+  obsolete.resolve(cleaned);await settle();assert.equal(statuses.length,before);assert.ok(button('Retry owned cleanup').disabled,'old success/finalizer cannot unlock new selection');
+  newer.reject({message:'Independent selected hold'});await settle();assert.ok(target.textContent.includes('Independent selected hold'));
+  const obsoleteError=recover();flushSync(()=>component.select(selected));const newest=recover();obsoleteError.reject({message:'Obsolete recovery error'});await settle();
+  assert.ok(!target.textContent.includes('Obsolete recovery error'));assert.ok(button('Retry owned cleanup').disabled,'old error/finalizer cannot unlock current action');
+  await unmount(component);component=null;newest.resolve(cleaned);await settle();assert.equal(statuses.length,before);assert.equal(target.textContent,'');
+  // Separate prepared storage-only record and transport: a missing runtime is not a prerequisite for storage replay.
+  const storage:any={id:'storage-only-interrupted',requestId:'stored-request',state:'held',cleanupPending:false,finalResponse:null,diagnostic:'Final persistence held; durable completed blocks retained.',blocks:[{blockId:'stored-a',state:'succeeded',resolvedPrompt:'Stored prompt',finalResponse:'Retained completed text'}]};
+  const runtime={available:false};const storageCalls:any[]=[],storagePending:any[]=[];
+  const storageCommands=createCommands(((command:string,args:any)=>{
+   storageCalls.push({command,args:structuredClone(args)});
+   if(command==='inspect_workflow'){assert.deepEqual(args,{run:storage.id});return Promise.reject(Error('Definition and configuration deleted'));}
+   assert.equal(command,'retry_run_output','storage replay must not request runtime, credentials, status cleanup or execution');assert.deepEqual(args,{id:storage.id});
+   return new Promise((resolve,reject)=>storagePending.push({resolve,reject}));
+  }) as any);
+  flushSync(()=>{component=mount(Component,{target,props:{commands:storageCommands,initial:storage,onstatus:(s:any)=>statuses.push(s)}});});await settle();
+  assert.equal(runtime.available,false);assert.equal(button('Retry owned cleanup'),undefined);assert.ok(target.textContent.includes('Retained completed text'));
+  button('Retry retained output storage').click();flushSync();const stored={...storage,state:'failed',diagnostic:'Interrupted outcome stored; no execution retry'};storagePending[0].resolve(stored);await settle();assert.deepEqual(statuses.at(-1),stored);assert.ok(target.textContent.includes('Retained completed text'));
+  assert.deepEqual(storageCalls,[{command:'inspect_workflow',args:{run:storage.id}},{command:'retry_run_output',args:{id:storage.id}}]);assert.deepEqual(current,{definition:null,configurations:[]});
+  button('Retry retained output storage').click();flushSync();const last=statuses.length;await unmount(component);component=null;storagePending[1].reject({message:'Unmounted storage failure'});await settle();assert.equal(statuses.length,last);assert.equal(target.textContent,'');
+  assert.ok(calls.every(c=>['inspect_workflow','run_status','retry_run_cleanup'].includes(c.command)));
+ }finally{globalThis.setTimeout=realSet;globalThis.clearTimeout=realClear;if(component)await unmount(component);target.remove();window.happyDOM.abort();}
+});
+
 test('f2 mounted workflow isolation selection changes only the working copy', async()=>{
  const window=new Window();
  for(const key of ['document','Node','Element','HTMLElement','Text','Comment','Event','MouseEvent','HTMLMediaElement'])Object.defineProperty(globalThis,key,{configurable:true,value:(window as any)[key]});

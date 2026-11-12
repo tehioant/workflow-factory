@@ -212,7 +212,7 @@ fn image(id: &str) -> bool {
     id.strip_prefix("sha256:").is_some_and(opaque)
 }
 pub type LoginObservation = (Option<i32>, Option<String>, Option<String>);
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Resources {
     pub owner: String,
     pub image: String,
@@ -428,19 +428,25 @@ impl<P: Pipe> Sandbox<P> {
             cancel,
         )?;
         self.inspect_phase(&r, false)?;
+        receipt("helper-start", None)?;
         self.work_success(&strings(&["start", &r.helper]), &[], 131072, cancel)?;
+        receipt("helper-start", Some(&r.helper))?;
         if r.workspace.is_some() {
             cancel.check()?;
             receipt("agent-start-0", None)?;
         }
-        self.work_success(&strings(&["start", &r.container]), &[], 131072, cancel)?;
-        if r.workspace.is_some() {
-            r.started_at = Some(self.live_epoch(&r)?);
+        if r.workspace.is_none() {
+            receipt("work-start", None)?;
         }
+        self.work_success(&strings(&["start", &r.container]), &[], 131072, cancel)?;
+        r.started_at = Some(self.live_epoch(&r)?);
         self.inspect_work(&r)?;
         if r.workspace.is_some() {
             cancel.check()?;
             receipt("agent-start-0", Some(&r.container))?;
+        }
+        if r.workspace.is_none() {
+            receipt("work-start", Some(&r.container))?;
         }
         Ok(r)
     }

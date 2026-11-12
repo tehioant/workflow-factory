@@ -2,7 +2,7 @@
 use super::{RunState, RunStatus};
 use crate::sessions::{CompletionReceipt, Lease};
 use crate::{params, storage, validation, Error, Store, TransactionBehavior};
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct FinalSettlement {
     pub lease: Lease,
     pub text: Option<String>,

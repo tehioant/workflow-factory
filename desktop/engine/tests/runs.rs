@@ -1098,6 +1098,15 @@ fn c05_writeback_failure_quarantines_and_never_destroys_tmpfs() {
             generation: 7,
         };
         let cache = FailingStore(false).read("slot").unwrap();
+        store
+            .retain_final_settlement(&workflow_engine::runs::settlement::FinalSettlement {
+                lease: lease.clone(),
+                text: Some("retained".into()),
+                diagnostic: "Prepared final outcome".into(),
+                success: reusable,
+                receipt: None,
+            })
+            .unwrap();
         let mut cleaned = false;
         let receipt = store.finish_owned_session_receipt(
             &lease,
