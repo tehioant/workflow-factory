@@ -107,14 +107,17 @@ fn d11_prepared_admission_bounds_snapshot_and_idempotency() {
             r: workflow_engine::sandbox::Resources,
             bytes: Vec<u8>,
             staged: Vec<(String, Vec<u8>)>,
+            observations: usize,
+            unsafe_guest: bool,
+            cancel_after_observation: bool,
         }
         impl workflow_engine::sandbox::Pipe for Stage {
             fn call(
                 &mut self,
                 args: &[String],
                 input: &[u8],
-                _: usize,
-                _: &workflow_engine::sandbox::Cancel,
+                limit: usize,
+                cancel: &workflow_engine::sandbox::Cancel,
             ) -> Result<(i32, Vec<u8>, Vec<u8>), workflow_engine::Error> {
                 use serde_json::json;
                 let r = &self.r;
@@ -137,7 +140,22 @@ fn d11_prepared_admission_bounds_snapshot_and_idempotency() {
                 }
                 assert!(input.is_empty());
                 if args[0] == "exec" {
-                    assert_eq!(args[1], r.container);
+                    let guest = ["exec", &r.container, "node", "-e", "const fs=require('node:fs');process.stdout.write(JSON.stringify({swaps:fs.readFileSync('/proc/swaps','utf8'),core:fs.readFileSync('/proc/sys/kernel/core_pattern','utf8')}))"].map(str::to_string);
+                    let cgroup = ["exec", &r.container, "node", "-e", "process.stdout.write(require('node:fs').readFileSync('/sys/fs/cgroup/memory.swap.max','utf8'))"].map(str::to_string);
+                    if args == guest {
+                        assert_eq!(limit, 16384);
+                        self.observations += 1;
+                        assert_eq!(self.observations, 1);
+                        if self.cancel_after_observation {
+                            cancel.0.store(true, std::sync::atomic::Ordering::Release);
+                        }
+                        return Ok((0, serde_json::to_vec(&json!({
+                            "swaps": "Filename\tType\tSize\tUsed\tPriority\n",
+                            "core": if self.unsafe_guest { "|unsafe-handler\n" } else { "core\n" }
+                        })).unwrap(), vec![]));
+                    }
+                    assert_eq!(args, cgroup, "unknown observation command");
+                    assert_eq!(limit, 1024);
                     return Ok((0, b"0\n".to_vec(), vec![]));
                 }
                 assert_eq!(args[1], "inspect");
@@ -204,6 +222,9 @@ fn d11_prepared_admission_bounds_snapshot_and_idempotency() {
                     r: resources.clone(),
                     bytes: cache.clone(),
                     staged: Vec::new(),
+                    observations: 0,
+                    unsafe_guest: false,
+                    cancel_after_observation: false,
                 },
             };
             assert_eq!(
@@ -222,6 +243,42 @@ fn d11_prepared_admission_bounds_snapshot_and_idempotency() {
                 sandbox.pipe.staged,
                 vec![(resources.container.clone(), cache.clone())]
             );
+            assert_eq!(
+                sandbox.pipe.observations,
+                usize::from(cfg!(target_os = "macos"))
+            );
+            #[cfg(target_os = "macos")]
+            for (unsafe_guest, cancel_after_observation) in [(true, false), (false, true)] {
+                let mut denied = workflow_engine::sandbox::Sandbox {
+                    pipe: Stage {
+                        r: resources.clone(),
+                        bytes: cache.clone(),
+                        staged: Vec::new(),
+                        observations: 0,
+                        unsafe_guest,
+                        cancel_after_observation,
+                    },
+                };
+                let cancel = workflow_engine::sandbox::Cancel::default();
+                let error = denied
+                    .stage_owned(lease, &resources, &mut secure, &cancel)
+                    .unwrap_err();
+                let message = format!("{error:?}");
+                assert!(
+                    message.contains(if unsafe_guest {
+                        "Docker Desktop guest swap/core policy unavailable"
+                    } else {
+                        "Scoped stop requested"
+                    }),
+                    "{message}"
+                );
+                assert_eq!(denied.pipe.observations, 1);
+                assert!(denied.pipe.staged.is_empty());
+                assert_eq!(
+                    cancel.0.load(std::sync::atomic::Ordering::Acquire),
+                    cancel_after_observation
+                );
+            }
             bindings.push((
                 captured.id,
                 lease.slot.clone(),
