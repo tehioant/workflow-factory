@@ -78,8 +78,9 @@ test('held and long-running panels remain refreshable and reject stale or unmoun
   await select({id:held.id,definitionId:'captured-workflow'});assert.equal(effects.at(-1),'run_status');
   const pending:((x:any)=>void)[]=[];
   commands.runStatus=()=>new Promise(resolve=>{pending.push(resolve);});
-  recheck.click();recheck.click();await Promise.resolve();
-  const prior=statuses.length;pending[1](held);await Promise.resolve();await Promise.resolve();pending[0](held);await Promise.resolve();await Promise.resolve();assert.equal(statuses.length,prior+1);
+  recheck.click();flushSync();assert.ok(recheck.disabled);recheck.click();await Promise.resolve();assert.equal(pending.length,1);
+  assert.ok(Array.from(target.querySelectorAll('button')).filter(b=>/Stop|Retry/.test(b.textContent)).every(b=>b.disabled));
+  const prior=statuses.length;pending[0](held);await Promise.resolve();await Promise.resolve();flushSync();assert.equal(statuses.length,prior+1);
   commands.runStatus=()=>new Promise(resolve=>{resolveRead=resolve;});recheck.click();await Promise.resolve();
   await unmount(component);component=null;const before=statuses.length;resolveRead!(held);await Promise.resolve();assert.equal(statuses.length,before);
   const queued={...held,id:'prepared-queued',state:'queued',cleanupPending:false,blocks:[]};const queuedCalls:string[]=[];
@@ -103,10 +104,10 @@ test('d12_selected_cancel_control', async()=>{
  const Component=(await import('data:text/javascript;base64,'+Buffer.from(harnessCode).toString('base64'))).default;
  const target=window.document.createElement('main');window.document.body.append(target);
  const realSet=globalThis.setTimeout,realClear=globalThis.clearTimeout;let tick:any;let component:any;
- const selected:any={id:'selected',requestId:'request',state:'running',cleanupPending:false,finalResponse:'Completed A',diagnostic:'',blocks:[]};
+ const selected:any={id:'selected',requestId:'request',state:'running',cleanupPending:true,finalResponse:'Completed A',diagnostic:'',blocks:[]};
  const sibling={...selected,id:'sibling'};const statuses:any[]=[];const calls:string[]=[];
  let finish:any,reject:any;
- const commands:any={inspectWorkflow:async()=>{throw Error('not captured');},stopRun:(id:string)=>{calls.push(id);return new Promise((resolve,no)=>{finish=resolve;reject=no;});},runStatus:async(id:string)=>{calls.push('read:'+id);return {...selected,id};},retryRunOutput:async()=>{throw Error('storage not selected');}};
+ const commands:any={inspectWorkflow:async()=>{throw Error('not captured');},stopRun:(id:string)=>{calls.push(id);return new Promise((resolve,no)=>{finish=resolve;reject=no;});},runStatus:async(id:string)=>{calls.push('read:'+id);return {...selected,id};},retryRunCleanup:(id:string)=>{calls.push('cleanup:'+id);return new Promise((resolve,no)=>{finish=resolve;reject=no;});},retryRunOutput:async()=>{throw Error('storage not selected');}};
  try {
   globalThis.setTimeout=((fn:any)=>{tick=fn;return 1;}) as any;globalThis.clearTimeout=(()=>{}) as any;
   const props:any={commands,initial:selected,onstatus:(s:any)=>statuses.push(s)};
@@ -118,9 +119,14 @@ test('d12_selected_cancel_control', async()=>{
   await tick();flushSync();assert.ok(target.textContent.includes('Selected stop storage failed'),'read-only poll must not erase Stop error');
   button('Stop this run').click();flushSync();finish({...selected,state:'cancelling',cleanupPending:true});await Promise.resolve();await Promise.resolve();flushSync();assert.equal(statuses.at(-1).state,'cancelling');assert.equal(statuses.at(-1).id,'selected');
   button('Stop this run').click();flushSync();flushSync(()=>component.select(sibling));
-  const before=statuses.length;finish({...selected,state:'stopped'});await Promise.resolve();await Promise.resolve();flushSync();assert.equal(statuses.length,before);assert.ok(target.textContent.includes('sibling'));
+  let before=statuses.length;finish({...selected,state:'stopped'});await Promise.resolve();await Promise.resolve();flushSync();assert.equal(statuses.length,before);assert.ok(target.textContent.includes('sibling'));
   button('Stop this run').click();flushSync();assert.equal(calls.at(-1),'sibling');finish({...selected,state:'stopped'});await Promise.resolve();await Promise.resolve();flushSync();assert.equal(statuses.length,before);assert.ok(target.textContent.includes('response identity changed'));
-  button('Stop this run').click();flushSync();await unmount(component);component=null;finish({...sibling,state:'stopped'});await Promise.resolve();await Promise.resolve();assert.equal(statuses.length,before);
+  button('Retry owned cleanup').click();flushSync();assert.equal(calls.at(-1),'cleanup:sibling');assert.ok(button('Stop this run').disabled);assert.ok(button('Recheck').disabled);assert.ok(button('Retry retained').disabled);const n=calls.length;await tick();assert.equal(calls.length,n);
+  reject(Error('Cleanup failed; keeper retained'));await Promise.resolve();await Promise.resolve();flushSync();await tick();flushSync();assert.ok(target.textContent.includes('Cleanup failed; keeper retained'));before=statuses.length;
+  button('Retry owned cleanup').click();flushSync();flushSync(()=>component.select(selected));const old=finish;button('Retry owned cleanup').click();flushSync();old({...sibling,cleanupPending:false});await Promise.resolve();await Promise.resolve();flushSync();assert.equal(statuses.length,before);assert.ok(button('Stop this run').disabled);
+  reject(Error('Current cleanup failure'));await Promise.resolve();await Promise.resolve();flushSync();assert.ok(target.textContent.includes('Current cleanup failure'));
+  button('Retry owned cleanup').click();flushSync();finish({...selected,id:'wrong'});await Promise.resolve();await Promise.resolve();flushSync();assert.ok(target.textContent.includes('response identity changed'));
+  button('Retry owned cleanup').click();flushSync();await unmount(component);component=null;finish({...selected,state:'stopped'});await Promise.resolve();await Promise.resolve();assert.equal(statuses.length,before);
  } finally {globalThis.setTimeout=realSet;globalThis.clearTimeout=realClear;if(component)await unmount(component);target.remove();window.happyDOM.abort();}
 });
 

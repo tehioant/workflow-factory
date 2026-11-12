@@ -43,6 +43,21 @@ impl ActiveRuns {
         Ok(Some((cancel, permit)))
     }
 
+    fn cleanup_claim(self: &Arc<Self>, id: &str) -> Result<CleanupClaim, Error> {
+        let mut runs = self.0.lock().map_err(|_| Error::Busy {
+            message: "Cleanup authority unavailable.".into(),
+        })?;
+        if runs.contains_key(id) {
+            return Err(Error::Busy {
+                message: "Selected worker or cleanup retry is still active.".into(),
+            });
+        }
+        runs.insert(id.into(), workflow_engine::sandbox::Cancel::default());
+        Ok(CleanupClaim {
+            active: self.clone(),
+            id: id.into(),
+        })
+    }
     fn worker_return(
         &self,
         id: &str,
@@ -65,10 +80,34 @@ impl ActiveRuns {
         Ok(())
     }
 }
+struct CleanupClaim {
+    active: Arc<ActiveRuns>,
+    id: String,
+}
+impl Drop for CleanupClaim {
+    fn drop(&mut self) {
+        if let Ok(mut runs) = self.active.0.lock() {
+            runs.remove(&self.id);
+        }
+    }
+}
 #[cfg(test)]
 mod stop_tests {
     #[test]
     fn c17_stop_signals_only_exact_worker_despite_storage_refusal() {
+        let authority = std::sync::Arc::new(super::ActiveRuns::default());
+        let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let (_, permit) = authority
+            .register("owned", permits.clone())
+            .unwrap()
+            .unwrap();
+        assert!(authority.cleanup_claim("owned").is_err());
+        authority.worker_return("owned", permit, || {});
+        let retry = authority.cleanup_claim("owned").unwrap();
+        assert!(authority.cleanup_claim("owned").is_err());
+        assert!(authority.register("owned", permits).unwrap().is_none());
+        drop(retry);
+        assert!(authority.cleanup_claim("owned").is_ok());
         let active = super::ActiveRuns::default();
         let selected = workflow_engine::sandbox::Cancel::default();
         let other = workflow_engine::sandbox::Cancel::default();
@@ -729,6 +768,32 @@ async fn run_status(
     history_database(&state, move |reader| reader.run_status(id.as_deref())).await
 }
 #[tauri::command]
+async fn retry_run_cleanup(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Database>,
+    id: String,
+) -> Result<workflow_engine::runs::RunStatus, Error> {
+    if window.label() != "main" {
+        return Err(Error::Validation {
+            message: "Use the local main window.".into(),
+        });
+    }
+    let active = app.state::<Arc<ActiveRuns>>().inner().clone();
+    let claim = active.cleanup_claim(&id)?;
+    let directory = state.directory.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _claim = claim;
+        let store = Store::open(&directory)?;
+        run_host::retry_cleanup(&store, &id)?;
+        store.run_status(&id)
+    })
+    .await
+    .map_err(|_| Error::Busy {
+        message: "Cleanup retry interrupted; ownership remains held.".into(),
+    })?
+}
+#[tauri::command]
 async fn retry_run_output(
     state: tauri::State<'_, Database>,
     id: String,
@@ -1005,6 +1070,7 @@ fn main() {
             start_run,
             run_status,
             retry_run_output,
+            retry_run_cleanup,
             list_run_history,
             run_detail,
             stop_run,

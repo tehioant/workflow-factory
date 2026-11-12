@@ -1071,8 +1071,11 @@ impl SecureStore for FailingStore {
         Ok(br#"{"auth_mode":"chatgpt","tokens":{"login_owner_id":"synthetic","access_token":"synthetic-a","refresh_token":"synthetic-r","id_token":"a.b.c","account_id":"synthetic-account","oauth_provenance":{"issuer":"https://auth.openai.com","client_id":"synthetic-client"}}}"#.to_vec())
     }
 }
+#[path = "support/cleanup.rs"]
+mod cleanup_fixture;
 #[test]
 fn c05_writeback_failure_quarantines_and_never_destroys_tmpfs() {
+    cleanup_fixture::check();
     use workflow_engine::sessions::Lease;
     // Prepared final persistence boundary: no worker, Docker, preflight or keyring.
     for (reusable, cleanup_ok) in [(true, true), (false, true), (false, false)] {

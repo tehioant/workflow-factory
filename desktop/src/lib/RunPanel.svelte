@@ -10,9 +10,10 @@
  let selectedId='';
  $effect(()=>{const id=run?.id??'';if(id!==selectedId){selectedId=id;version++;busy=false;error='';capturedWorkflow=null;}});
  async function recheck(){
-   const id=run?.id;if(!id||busy)return;const request=++version;
+   const id=run?.id;if(!id||busy)return;const request=++version;busy=true;
    try{const result=await commands.runStatus(id);if(alive&&version===request&&run?.id===id&&result?.id===id){onstatus(result);}}
    catch(e){if(alive&&version===request&&run?.id===id)error=errorMessage(e);}
+   finally{if(alive&&version===request&&run?.id===id)busy=false;}
  }
  onMount(()=>{
    const selected=run?.id;if(selected&&!definitionId&&commands.inspectWorkflow)void commands.inspectWorkflow(selected).then(value=>{if(alive&&run?.id===selected)capturedWorkflow=value;}).catch(()=>{});
@@ -27,6 +28,7 @@
  });
  async function action(invoke:(id:string)=>Promise<RunStatus>){if(!run||busy)return;const id=run.id;const request=++version;busy=true;const current=()=>alive&&version===request&&run?.id===id;try{const result=await invoke(id);if(current()){if(result.id!==id)throw Error('Selected run response identity changed.');error='';onstatus(result);}}catch(e){if(current())error=errorMessage(e);}finally{if(current())busy=false;}}
  async function stop(){await action(id=>commands.stopRun(id));}
+ async function retryCleanup(){await action(id=>commands.retryRunCleanup(id));}
  async function retryOutput(){await action(id=>commands.retryRunOutput(id));}
 </script>
 <section class="notice" aria-label="Run status">
@@ -43,6 +45,7 @@
  <button disabled={busy||!['queued','authorizationRequired','admitted','running','cancelling','held'].includes(run.state)} onclick={stop}>Stop this run</button>
  {#if run.state==='authorizationRequired'}<button disabled={busy} onclick={()=>action(async id=>{await commands.authorizeRun(id);const result=await commands.runStatus(id);if(!result)throw Error('Selected run unavailable.');return result;})}>Authorize exact reserved run (native)</button>{/if}
  <button disabled={busy} onclick={recheck}>Recheck status</button>
+ {#if run.cleanupPending}<button disabled={busy} onclick={retryCleanup}>Retry owned cleanup</button>{/if}
  <button disabled={busy} onclick={retryOutput}>Retry retained output storage</button>
  {:else}<p>No retained run.</p>{/if}
  {#if error}<p role="alert">{error}</p>{/if}

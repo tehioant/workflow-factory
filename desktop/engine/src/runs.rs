@@ -270,6 +270,56 @@ impl Store {
             },
         )))
     }
+    pub fn cleanup_records(
+        &self,
+        lease: &crate::sessions::Lease,
+    ) -> Result<Vec<(String, Option<String>)>, Error> {
+        let c = rusqlite::Connection::open(&self.path).map_err(storage)?;
+        let owned:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM managed_sessions s JOIN run_queue q ON q.run_id=s.owner JOIN runs r ON r.id=q.run_id WHERE s.id=?1 AND s.owner=?2 AND s.generation=?3 AND s.state IN ('leased','quarantined') AND q.phase='occupied' AND q.slot=s.id AND q.generation=s.generation AND r.active=1)",params![lease.slot,lease.owner,lease.generation],|r|r.get(0)).map_err(storage)?;
+        if !owned {
+            return Err(validation("Cleanup lease changed; ownership held."));
+        }
+        let mut q = c
+            .prepare("SELECT kind,resource_id FROM run_resources WHERE run_id=?1 LIMIT 1025")
+            .map_err(storage)?;
+        let records = q
+            .query_map([&lease.owner], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(storage)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage)?;
+        if records.len() > 1024 {
+            return Err(validation("Cleanup journal bound exceeded."));
+        }
+        Ok(records)
+    }
+    pub fn cleanup_resource_receipt(
+        &self,
+        lease: &crate::sessions::Lease,
+        kind: &str,
+        id: Option<&str>,
+    ) -> Result<(), Error> {
+        self.cleanup_records(lease)?;
+        let c = rusqlite::Connection::open(&self.path).map_err(storage)?;
+        c.execute(
+            "INSERT OR IGNORE INTO run_resources VALUES(?1,?2,NULL)",
+            params![lease.owner, kind],
+        )
+        .map_err(storage)?;
+        if let Some(id) = id {
+            c.execute("UPDATE run_resources SET resource_id=?1 WHERE run_id=?2 AND kind=?3 AND (resource_id IS NULL OR resource_id=?1)",params![id,lease.owner,kind]).map_err(storage)?;
+            let actual: String = c
+                .query_row(
+                    "SELECT resource_id FROM run_resources WHERE run_id=?1 AND kind=?2",
+                    params![lease.owner, kind],
+                    |r| r.get(0),
+                )
+                .map_err(storage)?;
+            if actual != id {
+                return Err(validation("Cleanup receipt identity changed."));
+            }
+        }
+        Ok(())
+    }
     pub fn resource_intent(
         &self,
         id: &str,

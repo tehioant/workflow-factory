@@ -19,6 +19,66 @@ fn final_claim(id: &str) -> Result<FinalClaim, workflow_engine::Error> {
     claims.insert(id.into(), claim.clone());
     Ok(claim)
 }
+fn recoveries() -> &'static Mutex<BTreeMap<String, workflow_engine::sandbox::CleanupContext>> {
+    static RECOVERY: OnceLock<Mutex<BTreeMap<String, workflow_engine::sandbox::CleanupContext>>> =
+        OnceLock::new();
+    RECOVERY.get_or_init(Mutex::default)
+}
+fn cleanup_hold() -> workflow_engine::Error {
+    workflow_engine::Error::Validation {message:"Selected current-cache cleanup context unavailable or uncertain. Ownership remains held; no execution, resource adoption or secure-cache seed fallback is authorized. Keep the app open.".into()}
+}
+pub fn retry_cleanup(
+    store: &workflow_engine::Store,
+    selected: &str,
+) -> Result<(), workflow_engine::Error> {
+    let claim = final_claims()
+        .lock()
+        .map_err(|_| cleanup_hold())?
+        .get(selected)
+        .cloned()
+        .ok_or_else(cleanup_hold)?;
+    let mut finality = claim.try_lock().map_err(|_| workflow_engine::Error::Busy {
+        message: "Selected final settlement or cleanup retry is active.".into(),
+    })?;
+    let chosen = finality.as_mut().ok_or_else(cleanup_hold)?;
+    if chosen.receipt.is_none() {
+        let mut context = recoveries()
+            .lock()
+            .map_err(|_| cleanup_hold())?
+            .remove(selected)
+            .ok_or_else(cleanup_hold)?;
+        let result = workflow_engine::sandbox::Sandbox {
+            pipe: workflow_engine::sandbox::NativePipe,
+        }
+        .finish_cleanup(
+            store,
+            &chosen.lease,
+            &mut context,
+            &mut crate::sessions_host::NativeSecureStore,
+            chosen.success,
+        );
+        recoveries()
+            .lock()
+            .map_err(|_| cleanup_hold())?
+            .insert(selected.into(), context);
+        chosen.receipt = Some(result?);
+    }
+    retry_selected_outputs(selected, |id, block, text| match block {
+        Some(block) => store.retain_block_output(id, block, text),
+        None => store.retain_run_output(id, text),
+    })?;
+    store.settle_run(chosen)?;
+    *finality = None;
+    recoveries()
+        .lock()
+        .map_err(|_| cleanup_hold())?
+        .remove(selected);
+    final_claims()
+        .lock()
+        .map_err(|_| cleanup_hold())?
+        .remove(selected);
+    Ok(())
+}
 fn outputs() -> &'static Mutex<BTreeMap<String, String>> {
     static OUTPUTS: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
     OUTPUTS.get_or_init(Mutex::default)
@@ -83,6 +143,10 @@ pub fn retry_outputs(
     if let Some(receipt) = finality.as_ref() {
         store.settle_run(receipt)?;
         *finality = None;
+        recoveries()
+            .lock()
+            .map_err(|_| output_hold())?
+            .remove(selected);
         final_claims()
             .lock()
             .map_err(|_| output_hold())?
@@ -162,6 +226,9 @@ pub fn execute(
     };
     let mut sandbox = Sandbox { pipe: NativePipe };
     let mut secure = crate::sessions_host::NativeSecureStore;
+    let mut recovery = None;
+    let mut resource_attempted = false;
+    let mut staging_attempted = false;
     let result = (|| {
         native_prerequisites().map_err(|message| workflow_engine::Error::Validation { message })?;
         cancel.check()?;
@@ -170,9 +237,17 @@ pub fn execute(
             &snapshot.image_id,
             snapshot.definition.definition.isolation,
             &cancel,
-            |kind, resource| store.resource_intent(&id, kind, resource),
+            |kind, resource| {
+                resource_attempted = true;
+                store.resource_intent(&id, kind, resource)
+            },
         )?;
+        recovery = Some(workflow_engine::sandbox::CleanupContext::new(
+            resources.clone(),
+            lease.clone(),
+        ));
         native_prerequisites().map_err(|message| workflow_engine::Error::Validation { message })?;
+        staging_attempted = true;
         let seed = sandbox.stage_owned(&lease, &resources, &mut secure, &cancel)?;
         cancel.check()?;
         if snapshot.plans.is_empty() {
@@ -200,6 +275,10 @@ pub fn execute(
                             .map_err(|message| workflow_engine::Error::Validation { message })
                     },
                 )?;
+                recovery = Some(workflow_engine::sandbox::CleanupContext::new(
+                    resources.clone(),
+                    lease.clone(),
+                ));
             }
             let mut pending_output = None;
             let mut current_valid_output = false;
@@ -223,7 +302,7 @@ pub fn execute(
                     }
                     let mut exported = None;
                     for _ in 0..10 {
-                        match sandbox.export(resources) {
+                        match sandbox.checkpoint_cleanup(recovery.as_mut().ok_or_else(output_hold)?) {
                             Ok(cache) => {
                                 exported = Some(cache);
                                 break;
@@ -365,20 +444,12 @@ pub fn execute(
             success,
             receipt: None,
         });
-        let receipt = store.finish_owned_session_receipt(
+        let receipt = sandbox.finish_cleanup(
+            &store,
             &lease,
-            &latest_cache,
+            recovery.as_mut().ok_or_else(output_hold)?,
             &mut secure,
             success,
-            || {
-                if resources.workspace.is_some() {
-                    sandbox.cleanup_block_resources(&resources, |kind, resource| {
-                        store.resource_intent(&id, kind, resource)
-                    })
-                } else {
-                    sandbox.cleanup(&resources)
-                }
-            },
         )?;
         finality.as_mut().unwrap().receipt = Some(receipt);
         // Replay pending text first. This grants storage authority only, never execution.
@@ -395,6 +466,25 @@ pub fn execute(
         Ok(())
     })();
     if result.is_err() {
+        // Preserve only actual current native context, never the secure-store seed.
+        if let Ok(mut finality) = claim.lock() {
+            if finality.is_none() {
+                *finality = Some(workflow_engine::runs::settlement::FinalSettlement {
+                    lease: lease.clone(),
+                    text: store.run_status(&id).ok().and_then(|s| s.final_response),
+                    diagnostic:
+                        "Execution failed; current-cache recovery completed; session quarantined."
+                            .into(),
+                    success: false,
+                    receipt: None,
+                });
+            }
+            if let Some(context) = recovery {
+                if let Ok(mut contexts) = recoveries().lock() {
+                    contexts.insert(id.clone(), context);
+                }
+            }
+        }
         if claim
             .lock()
             .is_ok_and(|finality| finality.as_ref().is_some_and(|f| f.receipt.is_some()))
@@ -402,7 +492,17 @@ pub fn execute(
             return;
         }
         let _ = store.quarantine_session(&lease);
-        let _=store.finish_run(&id,None,"Execution or secure-cache cleanup failed. Ownership and session remain withheld. No automatic retry.",false,false);
+        let scope = if staging_attempted {
+            "Credential staging attempted; current cache/writers must be positively recovered. Ownership remains held until verified cleanup. No execution retry."
+        } else if resource_attempted {
+            "No credential staging or provider execution attempted. Resource creation or handoff uncertain; unrecorded resources will not be adopted. Ownership held."
+        } else {
+            "No resource creation, credential staging or provider execution attempted. Current-cache cleanup context unavailable; ownership held without seed fallback."
+        };
+        let _ = store.finish_run(&id, None, scope, false, false);
+        // Mandatory bounded recovery is independent of the execution Stop token.
+        // The same chosen settlement and private context are used by explicit retry.
+        let _ = retry_cleanup(&store, &id);
     }
 }
 /// Supported secure mode: Linux, same-host rootful dockerd, no active swap,
@@ -613,6 +713,11 @@ mod tests {
         super::retain_output("native-selected/a", text.into()).unwrap();
         super::retain_output("native-sibling/a", "sibling untouched".into()).unwrap();
         let claim = super::final_claim("native-selected").unwrap();
+        {
+            let _held = claim.lock().unwrap();
+            assert!(super::retry_cleanup(&store, "native-selected").is_err());
+        }
+        assert!(super::retry_cleanup(&store, "native-missing-context").is_err());
         *claim.lock().unwrap() = Some(workflow_engine::runs::settlement::FinalSettlement {
             lease,
             text: Some(text.into()),
@@ -632,7 +737,7 @@ mod tests {
             Some(text)
         );
         db.execute_batch("DROP TRIGGER deny_final").unwrap();
-        super::retry_outputs(&store, "native-selected").unwrap();
+        super::retry_cleanup(&store, "native-selected").unwrap();
         assert_eq!(
             store.run_status("native-selected").unwrap().state,
             workflow_engine::runs::RunState::Succeeded

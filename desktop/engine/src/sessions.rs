@@ -385,7 +385,7 @@ impl Store {
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
-        let matches:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM managed_sessions WHERE id=?1 AND owner=?2 AND generation=?3 AND state='leased')",params![slot,owner,generation],|r|r.get(0)).map_err(storage)?;
+        let matches:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM managed_sessions WHERE id=?1 AND owner=?2 AND generation=?3 AND state IN ('leased','quarantined'))",params![slot,owner,generation],|r|r.get(0)).map_err(storage)?;
         if !matches {
             return Err(validation("Session lease does not match."));
         }
