@@ -43,6 +43,18 @@ impl ActiveRuns {
         Ok(Some((cancel, permit)))
     }
 
+    fn worker_return(
+        &self,
+        id: &str,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        wake: impl FnOnce(),
+    ) {
+        if let Ok(mut runs) = self.0.lock() {
+            runs.remove(id);
+        }
+        drop(permit);
+        wake();
+    }
     fn signal_stop(&self, id: &str) -> Result<(), Error> {
         let runs = self.0.lock().map_err(|_| Error::Busy {
             message: "Worker cancellation ownership unavailable; retry Stop.".into(),
@@ -93,11 +105,54 @@ mod stop_tests {
         assert!(first.check().is_err());
         assert!(second.check().is_ok());
         // A stop/database disposition alone does not release the live worker permit.
-        bounded.0.lock().unwrap().remove("first");
         assert_eq!(permits.available_permits(), 0);
-        drop(first_permit);
-        assert_eq!(permits.available_permits(), 1);
+        bounded.worker_return("first", first_permit, || {
+            assert!(!bounded.0.lock().unwrap().contains_key("first"));
+            assert_eq!(permits.available_permits(), 1);
+            let (_, next) = bounded
+                .register("waiting", permits.clone())
+                .unwrap()
+                .unwrap();
+            assert_eq!(permits.available_permits(), 0);
+            drop(next);
+        });
         drop(second_permit);
+        use std::cell::{Cell, RefCell};
+        for ready_before_dispatch in [true, false] {
+            let ready = Cell::new(ready_before_dispatch);
+            let queued = Cell::new(true);
+            let events = RefCell::new(Vec::new());
+            let dispatch = || {
+                super::reservation_dispatch(
+                    || {
+                        events.borrow_mut().push("reservation");
+                        Ok(if ready.get() && queued.replace(false) {
+                            Some("prepared-waiter".into())
+                        } else {
+                            None
+                        })
+                    },
+                    || {
+                        events
+                            .borrow_mut()
+                            .push(if queued.get() { "waiting" } else { "dispatch" });
+                        Ok(())
+                    },
+                )
+            };
+            dispatch().unwrap();
+            if !ready_before_dispatch {
+                assert_eq!(*events.borrow(), vec!["reservation", "waiting"]);
+                ready.set(true); // independently prepared cleanup/sign-in wakeup observation
+                dispatch().unwrap();
+            }
+            assert!(!queued.get());
+            assert_eq!(events.borrow().last(), Some(&"dispatch"));
+            assert_eq!(
+                events.borrow().iter().filter(|&&e| e == "dispatch").count(),
+                1
+            );
+        }
     }
 }
 struct Database {
@@ -199,20 +254,33 @@ async fn auth_readiness(app: tauri::AppHandle) -> Result<workflow_engine::AuthRe
 }
 
 struct WorkerPermits(Arc<tokio::sync::Semaphore>);
+fn reservation_dispatch<T>(
+    mut reserve: impl FnMut() -> Result<Option<String>, Error>,
+    dispatch: impl FnOnce() -> Result<T, Error>,
+) -> Result<T, Error> {
+    for _ in 0..8 {
+        if reserve()?.is_none() {
+            break;
+        }
+    }
+    dispatch()
+}
 fn dispatch_reserved(
     app: &tauri::AppHandle,
     directory: PathBuf,
     selected: Option<String>,
 ) -> Result<(), Error> {
     let store = Store::open(&directory)?;
-    for _ in 0..8 {
-        if store.reserve_next_run()?.is_none() {
-            break;
-        }
-    }
-    let entries = workflow_engine::runs::history::HistoryReader::open(&directory)?
-        .queue_status()?
-        .entries;
+    let entries = reservation_dispatch(
+        || store.reserve_next_run(),
+        || {
+            Ok(
+                workflow_engine::runs::history::HistoryReader::open(&directory)?
+                    .queue_status()?
+                    .entries,
+            )
+        },
+    )?;
     let active = app.state::<Arc<ActiveRuns>>().inner().clone();
     for entry in entries {
         if entry.state != workflow_engine::runs::RunState::AuthorizationRequired {
@@ -275,24 +343,22 @@ fn dispatch_reserved(
             })();
             // Worker return releases only the in-app permit. SQLite completion alone
             // controls whether another execution reservation exists.
-            if let Ok(mut runs) = active.0.lock() {
-                runs.remove(&id);
-            }
-            drop(_permit);
-            let clean_completion = Store::open(&directory)
-                .and_then(|s| s.run_status(&id))
-                .is_ok_and(|s| {
-                    !s.cleanup_pending
-                        && matches!(
-                            s.state,
-                            workflow_engine::runs::RunState::Succeeded
-                                | workflow_engine::runs::RunState::Failed
-                                | workflow_engine::runs::RunState::Stopped
-                        )
-                });
-            if clean_completion {
-                let _ = dispatch_reserved(&app, directory, None);
-            }
+            active.worker_return(&id, _permit, || {
+                let clean_completion = Store::open(&directory)
+                    .and_then(|s| s.run_status(&id))
+                    .is_ok_and(|s| {
+                        !s.cleanup_pending
+                            && matches!(
+                                s.state,
+                                workflow_engine::runs::RunState::Succeeded
+                                    | workflow_engine::runs::RunState::Failed
+                                    | workflow_engine::runs::RunState::Stopped
+                            )
+                    });
+                if clean_completion {
+                    let _ = dispatch_reserved(&app, directory, None);
+                }
+            });
         });
     }
     Ok(())
@@ -408,12 +474,27 @@ async fn run_status(
     state: tauri::State<'_, Database>,
     id: Option<String>,
 ) -> Result<Option<workflow_engine::runs::RunStatus>, Error> {
-    database(&state, move |s| {
-        run_host::retry_outputs(&s)?;
-        match id {
-            Some(id) => s.run_status(&id).map(Some),
-            None => s.latest_run(),
-        }
+    history_database(&state, move |reader| reader.run_status(id.as_deref())).await
+}
+#[tauri::command]
+async fn retry_run_output(
+    state: tauri::State<'_, Database>,
+    id: String,
+) -> Result<workflow_engine::runs::RunStatus, Error> {
+    let selected = id.clone();
+    history_database(&state, move |reader| reader.run_status(Some(&selected)))
+        .await?
+        .ok_or_else(|| Error::Validation {
+            message: "Captured run unavailable.".into(),
+        })?;
+    let directory = state.directory.clone();
+    database(&state, move |store| {
+        run_host::retry_outputs(&store, &id)?;
+        workflow_engine::runs::history::HistoryReader::open(&directory)?
+            .run_status(Some(&id))?
+            .ok_or_else(|| Error::Validation {
+                message: "Captured run unavailable.".into(),
+            })
     })
     .await
 }
@@ -671,6 +752,7 @@ fn main() {
             authorize_run,
             start_run,
             run_status,
+            retry_run_output,
             list_run_history,
             run_detail,
             stop_run,

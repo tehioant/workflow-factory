@@ -91,6 +91,27 @@ impl HistoryReader {
     pub fn queue_status(&self) -> Result<super::queue::QueueStatus, Error> {
         super::queue::projection(self.checked()?)
     }
+    pub fn run_status(&self, id: Option<&str>) -> Result<Option<RunStatus>, Error> {
+        if let Some(id) = id {
+            identity(id)?;
+        }
+        let tx = self.checked()?.unchecked_transaction().map_err(storage)?;
+        let sql = format!("SELECT {SAFE_ID}, {SCOPE} FROM runs WHERE (?1 IS NULL OR id=?1) ORDER BY rowid DESC LIMIT 1");
+        let row: Option<(Option<String>, Option<String>)> = tx
+            .query_row(&sql, [id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()
+            .map_err(storage)?;
+        let Some((Some(id), Some(workflow))) = row else {
+            return if row.is_none() && id.is_none() {
+                Ok(None)
+            } else {
+                Err(unavailable())
+            };
+        };
+        identity(&workflow)?;
+        let (_, status) = validated_capture(&tx, &workflow, &id)?;
+        Ok(Some(status))
+    }
     pub fn workflow(&self, id: &str) -> Result<String, Error> {
         identity(id)?;
         let c = self.checked()?;
@@ -170,7 +191,11 @@ impl HistoryReader {
 fn reader(store: &Store) -> Result<HistoryReader, Error> {
     HistoryReader::open(store.path.parent().ok_or_else(unavailable)?)
 }
-pub(crate) fn detail(c: &Connection, workflow: &str, id: &str) -> Result<RunDetail, Error> {
+fn validated_capture(
+    c: &Connection,
+    workflow: &str,
+    id: &str,
+) -> Result<(Snapshot, RunStatus), Error> {
     // Check bytes in SQL before materializing any stored JSON in Rust.
     let sql = format!("SELECT request_id,request,snapshot,status FROM runs WHERE id=?1 AND {SCOPE}=?2 AND length(CAST(request_id AS BLOB))=36 AND length(CAST(request AS BLOB))+length(CAST(snapshot AS BLOB))+length(CAST(status AS BLOB))<=?3");
     let row: Option<(String, String, String, String)> = c
@@ -316,6 +341,13 @@ pub(crate) fn detail(c: &Connection, workflow: &str, id: &str) -> Result<RunDeta
             );
         }
     }
+    Ok((snapshot, status))
+}
+pub(crate) fn detail(c: &Connection, workflow: &str, id: &str) -> Result<RunDetail, Error> {
+    let (snapshot, status) = validated_capture(c, workflow, id)?;
+    let order =
+        crate::prompts::ordered_ids(&snapshot.definition.definition).map_err(|_| unavailable())?;
+    let legacy = snapshot.plans.is_empty();
     let blocks = order
         .into_iter()
         .map(|block_id| CapturedBlock {

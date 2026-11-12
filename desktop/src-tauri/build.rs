@@ -23,6 +23,7 @@ fn main() {
             "authorize_run",
             "start_run",
             "run_status",
+            "retry_run_output",
             "list_run_history",
             "run_detail",
             "stop_run",

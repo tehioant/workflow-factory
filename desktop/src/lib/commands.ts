@@ -18,6 +18,7 @@ export function createCommands(invoke: Invoke) {
     openSessionSignIn: () => invoke<void>('open_session_sign_in'),
     startRun: (request: import('./transport.ts').StartRun) => invoke<import('./transport.ts').RunStatus>('start_run', {request}),
     runStatus: (id: string | null = null) => invoke<import('./transport.ts').RunStatus | null>('run_status', {id}),
+    retryRunOutput: (id: string) => invoke<import('./transport.ts').RunStatus>('retry_run_output', {id}),
     stopRun: (id: string) => invoke<import('./transport.ts').RunStatus>('stop_run', {id}),
     managedSessionStatus: () => invoke<import('./transport.ts').ManagedSessionStatus>('managed_session_status'),
     runtimeReadiness: () => invoke<Readiness>('runtime_readiness'),

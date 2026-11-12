@@ -61,18 +61,34 @@ test('held and long-running panels remain refreshable and reject stale or unmoun
   const modulePath=join(directory,'component.mjs');await writeFile(modulePath,code);const Component=(await import(pathToFileURL(modulePath).href)).default;
   const target=window.document.createElement('main');window.document.body.append(target);let reads=0;const statuses:any[]=[];let resolveRead:((x:any)=>void)|undefined;
   const held={id:'prepared-held',state:'held',cleanupPending:true,finalResponse:null,diagnostic:'',blocks:[{blockId:'a',state:'succeeded',resolvedPrompt:'Own A <script>A</script>',finalResponse:'A <img src=x onerror=bad>'},{blockId:'b',state:'failed',resolvedPrompt:'Own B',finalResponse:null}]};
-  const commands={runStatus:async()=>{reads++;return held;},stopRun:async()=>{throw Error('not a stop journey');}};
+  const effects:string[]=[];
+  const {createCommands}=await import('../src/lib/commands.ts');
+  const commands=createCommands((async(command:string,args:any)=>{effects.push(command);assert.equal(args.id,held.id);if(command==='run_status'){reads++;return held;}if(command==='retry_run_output')return {...held,finalResponse:'Durable selected output'};throw Error('unrelated dispatch forbidden');}) as any);
   globalThis.setTimeout=((fn:any)=>{tick=fn;return 1;}) as any;globalThis.clearTimeout=(()=>{}) as any;
   flushSync(()=>{component=mount(Component,{target,props:{commands,run:held,onstatus:(s:any)=>statuses.push(s)}});});
   assert.equal(target.querySelectorAll('script,img').length,0);assert.ok(target.textContent.includes('A <img src=x onerror=bad>'));assert.ok(target.textContent.indexOf('a · succeeded')<target.textContent.indexOf('b · failed'));assert.ok(target.textContent.includes('Own B'));
   for(let i=0;i<125;i++){assert.ok(tick);await tick!();}assert.equal(reads,125);
+  assert.deepEqual(effects,['inspect_workflow',...Array(125).fill('run_status')]);
+  const retry=Array.from(target.querySelectorAll('button')).find(b=>b.textContent.includes('Retry retained output storage'));assert.ok(retry);
+  retry.click();await Promise.resolve();await Promise.resolve();flushSync();assert.equal(effects.at(-1),'retry_run_output');assert.equal(statuses.at(-1).finalResponse,'Durable selected output');
   const recheck=Array.from(target.querySelectorAll('button')).find(b=>b.textContent.includes('Recheck'))!;assert.ok(recheck);
+  const app=await readFile(new URL('../src/App.svelte',import.meta.url),'utf8');
+  const selectBody=app.slice(app.indexOf('    const generation=++runSelection;'),app.indexOf('\n  async function begin('));
+  const select=new Function('commands',`let runSelection=0,run=null,activeInspectionWorkflow=null,runError='';const errorMessage=String;return async function(entry){${selectBody.slice(0,selectBody.lastIndexOf('  }'))}}`)(commands);
+  await select({id:held.id,definitionId:'captured-workflow'});assert.equal(effects.at(-1),'run_status');
   const pending:((x:any)=>void)[]=[];
   commands.runStatus=()=>new Promise(resolve=>{pending.push(resolve);});
   recheck.click();recheck.click();await Promise.resolve();
   const prior=statuses.length;pending[1](held);await Promise.resolve();await Promise.resolve();pending[0](held);await Promise.resolve();await Promise.resolve();assert.equal(statuses.length,prior+1);
   commands.runStatus=()=>new Promise(resolve=>{resolveRead=resolve;});recheck.click();await Promise.resolve();
   await unmount(component);component=null;const before=statuses.length;resolveRead!(held);await Promise.resolve();assert.equal(statuses.length,before);
+  const queued={...held,id:'prepared-queued',state:'queued',cleanupPending:false,blocks:[]};const queuedCalls:string[]=[];
+  const queuedCommands=createCommands((async(command:string,args:any)=>{if(command==='inspect_workflow')throw Error('prepared unavailable capture');assert.equal(args.id,queued.id);queuedCalls.push(command);if(command==='run_status')return queued;if(command==='retry_run_output')return {...queued,finalResponse:'Queued selected durable output'};throw Error('unrelated dispatch forbidden');}) as any);
+  flushSync(()=>{component=mount(Component,{target,props:{commands:queuedCommands,run:queued,onstatus:(s:any)=>statuses.push(s)}});});
+  await tick!();assert.deepEqual(queuedCalls,['run_status']);
+  Array.from(target.querySelectorAll('button')).find(b=>b.textContent.includes('Retry retained output storage'))!.click();await Promise.resolve();await Promise.resolve();flushSync();
+  assert.deepEqual(queuedCalls,['run_status','retry_run_output']);assert.equal(statuses.at(-1).id,queued.id);assert.equal(statuses.at(-1).finalResponse,'Queued selected durable output');
+  await unmount(component);component=null;
  }finally{globalThis.setTimeout=realSet;globalThis.clearTimeout=realClear;if(component)await unmount(component);await rm(directory,{recursive:true,force:true});window.happyDOM.abort();}
 });
 

@@ -9,6 +9,86 @@ const DEFINITION: &str = "00000000-0000-0000-0000-000000000001";
 #[test]
 fn d11_prepared_admission_bounds_snapshot_and_idempotency() {
     use workflow_engine::runs::queue::QueueSettings;
+    for mode in ["perRun", "perBlock"] {
+        let (dir, store, c) = prepared();
+        c.execute(
+            "UPDATE revisions SET body=json_set(body,'$.isolation',?1)",
+            [mode],
+        )
+        .unwrap();
+        let mut captures = Vec::new();
+        for topic in ["first own prompt", "second own prompt"] {
+            let mut request = request();
+            request.request_id = uuid::Uuid::new_v4().to_string();
+            request.supplied.insert("topic".into(), topic.into());
+            let accepted = store
+                .admit_run(
+                    request.clone(),
+                    Admission {
+                        image_id: "captured-image".into(),
+                        blocker: None,
+                    },
+                )
+                .unwrap();
+            // Seed observed results independently: no workflow execution chain.
+            c.execute(
+                "UPDATE runs SET status=json_set(status,'$.finalResponse',?1) WHERE id=?2",
+                params![format!("{topic} result"), accepted.id],
+            )
+            .unwrap();
+            let reader = workflow_engine::runs::history::HistoryReader::open(dir.path()).unwrap();
+            let captured = reader.run_detail(DEFINITION, &accepted.id).unwrap();
+            assert_eq!(captured.inputs.prompts["a"], format!("Hello {topic}"));
+            assert_eq!(
+                captured.final_response.as_deref(),
+                Some(format!("{topic} result").as_str())
+            );
+            assert_eq!(
+                reader
+                    .run_status(Some(&accepted.id))
+                    .unwrap()
+                    .unwrap()
+                    .request_id,
+                request.request_id
+            );
+            captures.push((
+                accepted.id.clone(),
+                workflow_engine::sandbox::resource_names(&accepted.id),
+            ));
+        }
+        assert_ne!(captures[0].0, captures[1].0);
+        for i in 0..3 {
+            assert_ne!(captures[0].1[i], captures[1].1[i]);
+        }
+        // Direct production reservation boundary, with independently prepared slots.
+        for generation in [7, 11] {
+            c.execute(
+                "INSERT INTO managed_sessions VALUES(?1,'available',?2,NULL)",
+                params![uuid::Uuid::new_v4().to_string(), generation],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            store.reserve_next_run().unwrap().as_deref(),
+            Some(captures[0].0.as_str())
+        );
+        assert_eq!(
+            store.reserve_next_run().unwrap().as_deref(),
+            Some(captures[1].0.as_str())
+        );
+        let first = store
+            .execution_reservation(&captures[0].0)
+            .unwrap()
+            .unwrap();
+        let second = store
+            .execution_reservation(&captures[1].0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.owner, captures[0].0);
+        assert_eq!(second.owner, captures[1].0);
+        assert_ne!(first.slot, second.slot);
+        assert!(store.reserve_next_run().unwrap().is_none());
+    }
     {
         let (dir, _store, c) = prepared();
         let held = status();
@@ -1067,6 +1147,11 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
         before_read,
         std::fs::read(dir.path().join("definitions.sqlite3")).unwrap()
     );
+    let selected = reader.run_status(Some(id)).unwrap().unwrap();
+    assert_eq!(selected.id, *id);
+    assert_eq!(selected.request_id, "20000000-0000-0000-0000-000000000004");
+    assert_eq!(reader.run_status(None).unwrap().unwrap().id, *id);
+    assert!(reader.run_status(Some(CONFIG)).is_err());
     use std::os::unix::fs::PermissionsExt;
     let db_path = dir.path().join("definitions.sqlite3");
     std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -1223,6 +1308,13 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
         .unwrap();
         let page = store.list_run_history(DEFINITION, None, 1).unwrap();
         assert!(page.unknown_scope_records);
+        c.execute_batch("CREATE TRIGGER forbid_status_write BEFORE UPDATE ON runs BEGIN SELECT RAISE(FAIL,'unrelated pending output write failure'); END;").unwrap();
+        let reader = workflow_engine::runs::history::HistoryReader::open(dir.path()).unwrap();
+        let before_status = std::fs::read(&db_path).unwrap();
+        assert_eq!(reader.run_status(Some(id)).unwrap().unwrap().id, *id);
+        assert!(reader.run_status(None).is_err());
+        assert_eq!(before_status, std::fs::read(&db_path).unwrap());
+        c.execute_batch("DROP TRIGGER forbid_status_write").unwrap();
         assert!(!page.unavailable_records);
         assert_eq!(page.entries.len(), 1);
         assert!(!page.entries[0].unavailable);

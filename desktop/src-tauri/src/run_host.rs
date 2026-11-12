@@ -7,7 +7,7 @@ fn outputs() -> &'static Mutex<BTreeMap<String, String>> {
     OUTPUTS.get_or_init(Mutex::default)
 }
 fn output_hold() -> workflow_engine::Error {
-    workflow_engine::Error::Storage { message: "Completed redacted output retained in app memory; storage failed. Ownership remains held. Keep the app open and Recheck status to retry storage; no execution retry.".into() }
+    workflow_engine::Error::Storage { message: "Completed redacted output retained in app memory; storage failed. Ownership remains held. Keep the app open and use Retry retained output storage; no execution retry.".into() }
 }
 struct PendingOutput(String);
 fn retain_output(id: &str, text: String) -> Result<PendingOutput, workflow_engine::Error> {
@@ -28,13 +28,33 @@ impl PendingOutput {
         persisted
     }
 }
-pub fn retry_outputs(store: &workflow_engine::Store) -> Result<(), workflow_engine::Error> {
+pub fn retry_outputs(
+    store: &workflow_engine::Store,
+    selected: &str,
+) -> Result<(), workflow_engine::Error> {
+    retry_selected_outputs(selected, |id, block, text| match block {
+        Some(block) => store.retain_block_output(id, block, text).map(|_| ()),
+        None => store.retain_run_output(id, text).map(|_| ()),
+    })
+}
+fn retry_selected_outputs(
+    selected: &str,
+    mut persist: impl FnMut(&str, Option<&str>, &str) -> Result<(), workflow_engine::Error>,
+) -> Result<(), workflow_engine::Error> {
     let mut pending = outputs().lock().map_err(|_| output_hold())?;
-    pending.retain(|key, text| match key.split_once('/') {
-        Some((id, block)) => store.retain_block_output(id, block, text).is_err(),
-        None => store.retain_run_output(key, text).is_err(),
+    let mut failed = false;
+    pending.retain(|key, text| {
+        let (id, block) = key
+            .split_once('/')
+            .map_or((key.as_str(), None), |(id, block)| (id, Some(block)));
+        if id != selected {
+            return true;
+        }
+        let keep = persist(id, block, text).is_err();
+        failed |= keep;
+        keep
     });
-    if pending.is_empty() {
+    if !failed {
         Ok(())
     } else {
         Err(output_hold())
@@ -402,6 +422,36 @@ mod tests {
         let pending = super::retain_output(id, text.into()).unwrap();
         assert!(pending.settle(Ok(true)).unwrap());
         assert!(!super::outputs().lock().unwrap().contains_key(id));
+        for (key, text) in [
+            ("selected/a", "A durable"),
+            ("selected/b", "B durable"),
+            ("unrelated/a", "unrelated pending"),
+        ] {
+            super::retain_output(key, text.into()).unwrap();
+        }
+        let mut calls = Vec::new();
+        super::retry_selected_outputs("selected", |run, block, text| {
+            calls.push((
+                run.to_string(),
+                block.unwrap().to_string(),
+                text.to_string(),
+            ));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            calls,
+            vec![
+                ("selected".into(), "a".into(), "A durable".into()),
+                ("selected".into(), "b".into(), "B durable".into())
+            ]
+        );
+        assert!(super::outputs().lock().unwrap().contains_key("unrelated/a"));
+        assert!(
+            super::retry_selected_outputs("unrelated", |_, _, _| Err(super::output_hold()))
+                .is_err()
+        );
+        super::outputs().lock().unwrap().remove("unrelated/a");
     }
     #[test]
     fn c11_native_security_policy_has_supported_positive_and_specific_refusals() {
