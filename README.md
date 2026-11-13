@@ -4,13 +4,18 @@ A local workflow definition editor for Linux and macOS. Create saved workflows,
 drag AI blocks onto a canvas, edit their names/prompts, and connect them in order.
 Connected Codex AI blocks execute in order inside constrained local agent containers.
 
-## Desktop design target
+## Desktop canvas workspace — local source candidate
 
-The [canvas-first redesign specification](docs/specs/canvas-first-redesign.md),
-[shared design system](DESIGN.md) and [three pinned design concepts](docs/design/canvas-first/README.md)
-define the next desktop UI. These are design requirements, not implemented screenshots;
-they retain the [desktop architecture and safety contracts](https://github.com/tehioant/workflow-factory/issues/23).
-The existing browser source instructions below remain unchanged.
+The desktop source now composes the canvas-first editor, contextual block/workflow
+inspector, saved-revision run preparation and captured-run workspace. Runs selected
+from history or the queue open the drawer; captured-canvas inspection is read-only
+and Return to editing restores the retained draft and selection.
+See [desktop workspace status](desktop/docs/canvas-workspace.md) for supported source
+paths, focused evidence and outstanding acceptance checks. This is not a released
+binary or live-readiness claim. The [redesign specification](docs/specs/canvas-first-redesign.md),
+[design system](DESIGN.md) and [three illustrative concepts](docs/design/canvas-first/README.md)
+remain the target contract, preserving the [desktop safety architecture](https://github.com/tehioant/workflow-factory/issues/23).
+The browser source instructions below describe the separate retained browser UI.
 
 ## Start from source
 
