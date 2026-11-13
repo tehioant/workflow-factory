@@ -1,73 +1,85 @@
-# Canvas workspace: local integrated source status
+# Canvas workspace: locally reviewed source
 
-This describes the desktop source candidate for spec #55, not a release, native
-interaction qualification or proof of supported execution authentication. The
-[behavior spec](../../docs/specs/canvas-first-redesign.md) and
-[DESIGN.md](../../DESIGN.md) remain the acceptance target. Concept images are
-illustrative data, not screenshots of this implementation.
+The desktop redesign for spec #55 is implemented and locally code-reviewed. This
+is a source candidate, not a released binary, native interaction qualification or
+proof of supported execution authentication. The [behavior spec](../../docs/specs/canvas-first-redesign.md)
+and [DESIGN.md](../../DESIGN.md) remain the acceptance contract. The three design
+concepts contain illustrative data, not application execution results.
 
-## Reachable source paths
+## Available behavior
 
-- App mounts the canvas-first shell, searchable workflow browser, contextual
-  properties/block inspector and real RunWorkspace. Draft edits remain explicit;
-  load/save failure retains them. Configurations stays mounted when hidden, so
-  configuration drafts and shutdown save/identity authority survive navigation.
-- Run preparation selects an exact saved definition, validates its inputs and
-  captures configuration revisions. An ambiguous admission keeps the original
-  request and only permits an exact retry; Settings/history navigation does not
-  clear it. Native readiness remains authoritative.
-- Admission, queue selection and validated history selection open the run drawer.
-  History supplies captured detail, not a fabricated requestId: App reads the
-  exact selected RunStatus before adopting it. Unavailable/mismatched status is
-  an error, not invented acceptance. Competing selections invalidate older reads.
-- Inspect on captured canvas renders the selected run's captured definition and
-  configuration summaries, with CapturedRunBlock's retained resolved prompt.
-  It never loads/replaces the editor draft or uses current configuration data.
-  Editing is disabled and guarded. Return to editing clears only snapshot view
-  state, retaining the exact in-memory draft and block selection. Shutdown Save
-  still acts on the retained workflow/configuration drafts, not the snapshot.
-- The drawer provides Output, Detail, Diagnostics, Inputs and Artifacts, explicit
-  selected cancellation/authorization/recovery and raw-state distinctions plus
-  cleanup holds. Closing disposes view subscriptions without stopping execution.
-  No duration, price or token estimates are manufactured.
-- Local FreeSans/FreeMono and complete notices are bundled; no remote font fetch.
+- Canvas-first shell, searchable workflow browser, contextual workflow/block
+  inspector, and a collapsible run drawer. Explicit edits remain separate from
+  saved definitions. Failed saves/loads retain the draft. Configuration drafts
+  remain mounted across destinations and retain their shutdown-save authority.
+- Run preparation chooses an exact saved revision. Changing that choice keeps
+  only declared input keys while preserving matching values literally. Unknown
+  admission outcomes retain the original immutable request for exact retry;
+  opening Settings or history does not create another request. Native readiness
+  remains authoritative.
+- Reference insertion uses stable input/block IDs and the selected prompt range.
+  Only connected predecessors are offered. Invalid syntax, unknown inputs,
+  invalid output references and unavailable configurations have adjacent,
+  semantically associated guidance. Cancel/Escape returns to the picker trigger;
+  insertion returns to the textarea caret.
+- Canvas keyboard handling excludes editable fields. Space-to-pan is scoped to
+  canvas focus rather than the graph library's global shortcut. The existing
+  keyboard movement/connection alternatives and guarded domain callbacks remain.
+- Admitted runs, validated history selection and queue selection open the drawer.
+  History never fabricates a request ID: App reads the exact selected RunStatus.
+  Mismatched/unavailable status is an error; competing selections invalidate
+  older reads.
+- Captured-canvas inspection uses the run's retained definition, configuration
+  summaries and resolved prompt. It is read-only and separate from the current
+  draft. Return to editing restores the retained draft and block selection.
+  Shutdown saving still targets retained editable drafts, not the snapshot.
+- Output, Detail, Diagnostics, Inputs and Artifacts retain existing raw states,
+  cleanup holds and explicit selected cancellation/authorization/recovery.
+  Closing the drawer disposes view subscriptions without cancelling execution.
+  No timing, token or price estimates are invented.
+- Settings owns the queue-capacity editor; Runs retains read-only queue browsing.
+  Configurations, readiness, native sign-in and safe shutdown remain reachable.
+- Local FreeSans/FreeMono assets and complete notices are bundled; fonts do not
+  require remote requests.
 
-## Verification boundary and remaining acceptance
+## Completed local verification
 
-The integration includes a registered mounted App snapshot/return regression,
-retained shell-navigation check and focused pending-admission/helper checks.
-The App check uses a prepared editor, fake command/native boundaries and a graph
-adapter recorder; it mounts the real run workspace and captured-block inspector.
-It checks a view-only snapshot/return transition, not a full execution journey or
-physical graph-pointer delivery. Test registrations remain within the aggregate
-200-case source inventory; source counts are not native harness discovery.
+The stabilized implementation received independent **Standards PASS** and
+**Spec source PASS**, after correcting all seven confirmed review findings.
+One optional ordering-helper duplication suggestion remains nonblocking.
 
-These checks do **not** complete A1–A9. Combined simplification and independent
-review remain pending. Exact remaining predicates include:
+- **21 unique registered focused cases passed** on the stabilized source, with
+  mocked external boundaries. Coverage includes actual App snapshot/return,
+  immutable pending retry, saved-revision values, picker caret/dismissal,
+  contextual guidance, Settings ownership, canvas callbacks and retained helpers.
+  No overlapping rerun is added to this count.
+- Separate prepared mounted probes verified drawer-close ownership of a late
+  inspection subscription, late success/error/finalizer isolation after selection
+  changes, and actual App adoption of a queued reply through the bound drawer.
+  These are one-off verification evidence, **not additional canonical coverage**.
+- Svelte check and the production frontend build passed. Check reports **0 errors
+  and 2 Canvas accessibility warnings**; the warnings are not suppressed.
+- Actual bundled App previews with explicit synthetic reads were inspected at
+  1920×1200, 1440×900, 1280×800 and 960×720. No document overflow or preview errors
+  were observed. The original fresh narrow captured-inspector focus issue was
+  rechecked: focus enters the panel, Escape closes it, and its trigger regains
+  focus. Browser component evidence is not native Tauri evidence.
+- Static inventory remains **200 registrations**, net zero: 96 root Node,
+  35 frontend and 69 Rust source registrations. Source inventory is not compiled
+  native harness discovery. Original meaningful assertions remain retained.
 
-- A1/A9: inspect integrated shell/drawer geometry and contained overflow at
-  1920×1200, 1440×900, 1280×800, 960×720 and true 200% zoom; check long holds/output.
-- A2: one failed workflow load retains draft/selection; Save-and-continue load
-  occurs only after confirmed persistence, with conflict/failure retaining edits.
-- A3/A4: mounted actual inspector Add/Move/Connect/Remove preserves unrelated
-  content; typing never triggers graph shortcuts; reference insertion replaces
-  only the prepared range and restores the caret/focus using stable-ID syntax.
-- A5: chosen saved inputs differ from dirty declarations; failed save/unready
-  state performs no admission; an admitted reply opens the real drawer without
-  altering a later pending request. Exact pending retry has focused coverage.
-- A6/A8: mounted validated history/queue callbacks select only exact real status
-  and open the drawer; mismatched/late/unmounted responses have no effect. Seed
-  these callbacks independently rather than executing preparation/admission.
-- A7: seed all backend states, terminal result plus hold, unavailable/incomplete/
-  truncated/empty data; verify selected action/poll exclusion and late-response,
-  clipboard-failure, artifact-generation and close/tab subscription disposal.
-- A9: focus traps/restoration, complete tab labels/relationships, keyboard-only
-  alternatives, measured text/control contrast, reduced motion and native
-  Linux/macOS interaction remain separately unqualified.
+## Remaining qualification and delivery gates
+
+These results do **not** declare every A1–A9 predicate fully qualified. True
+browser/native 200% zoom, native Linux/macOS keyboard/pointer/screen-reader
+interaction, long-content/state variants and an exhaustive accessibility pass
+remain unqualified. CSS zoom stress is not a substitute for native browser zoom.
+The two Canvas warnings remain visible limitations of the current check result.
+Real execution/authentication/runtime qualification is separate from this redesign.
 
 Canonical full-suite execution and PR publication remain **HOLD**: inherited
-multistage fixtures need a separately approved exception or conversion. No held
-journeys were run for this integration. The existing canonical runner and all
-inherited checks are retained; a focused local pass is not canonical/CI success.
-No push, PR, main merge, issue closure, service/container/auth/model call or native
-application launch is part of this local checkpoint.
+multistage fixtures need a separately approved exception or conversion. The
+canonical runner and inherited checks remain intact; focused local results are
+not canonical/CI success. No held journey, native application launch, real
+service/container/authentication/model call, implementation-branch publication,
+main merge, issue closure or release is claimed by this local delivery.
