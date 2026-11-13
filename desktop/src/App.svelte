@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
   import { invoke } from '@tauri-apps/api/core';
   import ShutdownDialog from './lib/ShutdownDialog.svelte';
@@ -11,12 +11,13 @@
   import RuntimeSettings from './lib/RuntimeSettings.svelte';
   import AuthReadinessPanel from './lib/AuthReadiness.svelte';
   import QueuePanel from './lib/QueuePanel.svelte';
-  import RunPanel from './lib/RunPanel.svelte';
+  import RunWorkspace from './lib/RunWorkspace.svelte';
+  import CapturedRunBlock from './lib/CapturedRunBlock.svelte';
   import RunHistory from './lib/RunHistory.svelte';
   import { createCommands } from './lib/commands.ts';
   import { emptyEditor, editGraph, saveEditor, openEditor, errorMessage } from './lib/editor.ts';
   import { focusScope } from './lib/editor-presentation.ts';
-  import type { Definition, SavedDefinition, SavedConfiguration, StartRun, RunStatus, QueueEntry } from './lib/transport.ts';
+  import type { Definition, SavedDefinition, SavedConfiguration, StartRun, RunStatus, QueueEntry, RunDetail } from './lib/transport.ts';
   const commands = createCommands(invoke);
   let editor = $state(emptyEditor()), configurations = $state<SavedConfiguration[]>([]), definitions = $state<SavedDefinition[]>([]);
   let busy = $state(false), listError = $state(''), configError = $state('');
@@ -33,10 +34,14 @@
   let dependentReferences = $derived(editor.working?.blocks.filter(item => item.id !== selected && item.prompt.includes(`{{output.${selected}.finalResponse}}`)) ?? []);
   let dependentConnections = $derived(editor.working?.connections.filter(edge => edge.source === selected || edge.target === selected).length ?? 0);
   let preparation = $state(false), run = $state<RunStatus | null>(null), runReady = $state(false), runError = $state('');
-  let pendingStart = $state<StartRun | null>(null), activeInspectionWorkflow = $state<string | null>(null), runOpen = $state(false);
+  let pendingStart = $state<StartRun | null>(null), activeInspectionWorkflow = $state<string | null>(null);
+  let runWorkspace = $state<RunWorkspace>();
+  let snapshot = $state<{ detail: RunDetail; blockId: string } | null>(null);
+  const capturedConfigurations = $derived(snapshot?.detail.blocks.flatMap(block => block.configuration ? [block.configuration] : []) ?? []);
   let runSelection = 0;
   $effect(() => { if (width < 1600 && inspector && editor.working) browser = false; });
   const locked = () => shutdownFrozen || busy;
+  const editingLocked = () => locked() || snapshot !== null;
   async function refresh() { try { definitions = await commands.list(); listError = ''; } catch (error) { listError = errorMessage(error); } }
   async function refreshConfigurations() { configurations = await commands.listConfigurations(); }
   onMount(() => {
@@ -44,7 +49,8 @@
     void listen('shutdown-requested', () => { if (alive) shutdownVisible = true; }).then(value => { if (alive) stop = value; else value(); }).catch(() => { if (alive) shutdownSubscriptionFailed = true; });
     busy = true;
     void (async () => { await refresh(); try { await refreshConfigurations(); configError = ''; } catch (error) { configError = errorMessage(error); } })().finally(() => { if (alive) busy = false; });
-    void commands.runStatus().then(value => { if (alive) { run = value; runReady = true; } }).catch(error => { if (alive) runError = errorMessage(error); });
+    const initialSelection = runSelection;
+    void commands.runStatus().then(value => { if (alive) { if (initialSelection === runSelection) run = value; runReady = true; } }).catch(error => { if (alive && initialSelection === runSelection) runError = errorMessage(error); });
     return () => { alive = false; stop?.(); };
   });
   async function save() {
@@ -61,14 +67,14 @@
     try {
       if (id) { const opened = await openEditor($state.snapshot(discard ? { ...editor, dirty: false } : editor), id, commands); editor = opened.error ? { ...editor, error: opened.error } : opened; if (opened.error) return; }
       else editor = { working: { schemaVersion: 1, id: crypto.randomUUID(), name: 'Untitled workflow', isolation: 'perRun', blocks: [], connections: [], inputs: [] }, revision: null, dirty: true, error: '' };
-      selected = ''; inspector = true; destination = 'workflows'; if (width < 1600) browser = false;
+      snapshot = null; selected = ''; inspector = true; destination = 'workflows'; if (width < 1600) browser = false;
     } finally { busy = false; }
   }
-  function changeDefinition(definition: Definition) { if (!locked()) editor = { ...editor, working: definition, dirty: true, error: '' }; }
-  function selectBlock(id: string) { if (!busy) { selected = id; inspector = true; if (width < 1600) browser = false; } }
-  function addBlock() { if (locked() || !editor.working) return; const id = crypto.randomUUID(); editor = editGraph(editor, { type: 'add', id }); editor = editGraph(editor, { type: 'update', id, patch: { position: { x: 80 + (editor.working!.blocks.length - 1) * 360, y: 160 } } }); selectBlock(id); }
+  function changeDefinition(definition: Definition) { if (!editingLocked()) editor = { ...editor, working: definition, dirty: true, error: '' }; }
+  function selectBlock(id: string) { if (!editingLocked()) { selected = id; inspector = true; if (width < 1600) browser = false; } }
+  function addBlock() { if (editingLocked() || !editor.working) return; const id = crypto.randomUUID(); editor = editGraph(editor, { type: 'add', id }); editor = editGraph(editor, { type: 'update', id, patch: { position: { x: 80 + (editor.working!.blocks.length - 1) * 360, y: 160 } } }); selectBlock(id); }
   function removeBlock() {
-    if (locked() || (dependentReferences.length && !removeReferences)) return;
+    if (editingLocked() || (dependentReferences.length && !removeReferences)) return;
     if (editor.working && removeReferences) changeDefinition({ ...editor.working, blocks: editor.working.blocks.map(item => ({ ...item, prompt: item.prompt.split(`{{output.${selected}.finalResponse}}`).join('') })) });
     editor = editGraph(editor, { type: 'remove', id: selected }); selected = ''; removing = false; removeReferences = false;
   }
@@ -83,13 +89,24 @@
         pendingStart = { requestId: crypto.randomUUID(), definitionId: saved.definition.id, expectedRevision: saved.revision, expectedConfigurationRevision: revisions[saved.definition.blocks[0].configurationId!], expectedConfigurationRevisions: revisions, supplied: structuredClone(supplied ?? {}) };
       }
       if (!pendingStart) return;
-      run = await commands.startRun($state.snapshot(pendingStart)); activeInspectionWorkflow = pendingStart.definitionId; pendingStart = null; preparation = false; runOpen = true;
+      const accepted = await commands.startRun($state.snapshot(pendingStart));
+      ++runSelection; run = accepted; activeInspectionWorkflow = pendingStart.definitionId; pendingStart = null; preparation = false; snapshot = null;
+      await openRunWorkspace();
     } catch (error) { runError = errorMessage(error); }
     finally { busy = false; }
   }
-  async function selectQueued(entry: QueueEntry) { const generation = ++runSelection; try { const value = await commands.runStatus(entry.id); if (generation === runSelection && value?.id === entry.id) { run = value; activeInspectionWorkflow = entry.definitionId; runError = ''; runOpen = true; destination = 'workflows'; } } catch (error) { if (generation === runSelection) runError = errorMessage(error); } }
+  async function openRunWorkspace() { destination = 'workflows'; await tick(); runWorkspace?.open(); }
+  async function selectQueued(entry: QueueEntry) { const generation = ++runSelection; try { const value = await commands.runStatus(entry.id); if (generation !== runSelection) return; if (!value || value.id !== entry.id) throw Error('Selected run unavailable or response identity changed.'); run = value; activeInspectionWorkflow = entry.definitionId; snapshot = null; runError = ''; await openRunWorkspace(); } catch (error) { if (generation === runSelection) runError = errorMessage(error); } }
+  async function selectHistory(detail: RunDetail) {
+    // RunDetail carries no requestId. Obtain real status; never fabricate admission identity.
+    await selectQueued({ id: detail.id, definitionId: detail.definitionId, state: detail.state, diagnostic: detail.diagnostic, cleanupPending: detail.cleanupPending });
+  }
+  function inspectCaptured(detail: RunDetail, blockId: string) {
+    if (detail.definitionId !== detail.definition.definition.id || !detail.definition.definition.blocks.some(block => block.id === blockId)) return;
+    snapshot = { detail: structuredClone($state.snapshot(detail)), blockId }; inspector = true; destination = 'workflows'; if (width < 1600) browser = false;
+  }
   function showBrowser() { browser = !browser; if (browser && width < 1600) inspector = false; }
-  function showProperties() { selected = ''; inspector = true; if (width < 1600) browser = false; }
+  function showProperties() { if (snapshot) return; selected = ''; inspector = true; if (width < 1600) browser = false; }
 </script>
 
 <svelte:window bind:innerWidth={width} onbeforeunload={event => { if (editor.dirty || configDraft.dirty) event.preventDefault(); }} />
@@ -108,27 +125,27 @@
       <div class="browser-heading"><p class="eyebrow">WORKFLOW FACTORY</p><div class="field-heading"><h1>Workflows</h1><button class="text-button" aria-label="Close workflow browser" onclick={() => { browser = false; }}>×</button></div><label class="sr-only" for="workflow-search">Find a workflow</label><input id="workflow-search" type="search" placeholder="Find a workflow" bind:value={search} /><button class="full-width" disabled={locked()} onclick={() => navigate(null)}>＋ New workflow</button></div>
       <div class="workflow-list"><p class="eyebrow">YOUR WORKFLOWS</p>{#if listError}<p role="alert">{listError}</p>{/if}<button class="text-button" disabled={busy} onclick={refresh}>Refresh workflows</button>
         {#if busy && !definitions.length}<p role="status">Loading workflows…</p>{:else}{#each filtered as saved (saved.definition.id)}<button class="workflow-link" disabled={locked()} aria-current={editor.working?.id === saved.definition.id ? 'page' : undefined} onclick={() => navigate(saved.definition.id)}><span aria-hidden="true">⌘</span><span>{saved.definition.name}<small>{saved.definition.blocks.length} AI blocks · revision {saved.revision}</small></span></button>{:else}<p class="muted">{definitions.length ? 'No matching workflows.' : listError ? 'Workflow list unavailable.' : 'No saved desktop workflows.'}</p>{/each}{/if}
-        <section class="palette"><p class="eyebrow">BUILD</p><button class="palette-block" disabled={locked() || !editor.working} onclick={addBlock}><span class="node-icon" aria-hidden="true">✣</span><span>AI block<small>Add to canvas</small></span><span aria-hidden="true">＋</span></button><p class="muted">One prompt. One focused step.</p></section>
+        <section class="palette"><p class="eyebrow">BUILD</p><button class="palette-block" disabled={editingLocked() || !editor.working} onclick={addBlock}><span class="node-icon" aria-hidden="true">✣</span><span>AI block<small>Add to canvas</small></span><span aria-hidden="true">＋</span></button><p class="muted">One prompt. One focused step.</p></section>
       </div><footer class="local-context"><span aria-hidden="true">•</span> Local workspace<small>Definitions saved on this device</small></footer>
     </aside>
   {/if}
   <main class="workspace" aria-busy={busy}>
-    <header class="workspace-header"><div class="header-title"><button class="browser-trigger" aria-label="Toggle workflow browser" aria-expanded={browser} onclick={showBrowser}>☰</button><div><p class="eyebrow">WORKFLOWS / {destination === 'workflows' ? 'EDITOR' : destination.toUpperCase()}</p><button class="workflow-title" disabled={!editor.working} onclick={showProperties}>{editor.working?.name ?? 'Your local workflows'} <span aria-hidden="true">⌄</span></button></div><span class="save-state" role="status">{busy ? 'Working…' : editor.error ? 'Save / validation failed' : editor.dirty ? editor.revision ? 'Unsaved changes' : 'New · unsaved' : editor.revision ? `Saved · revision ${editor.revision}` : 'Ready'}</span></div>
-      <div class="header-actions"><button disabled={locked() || !editor.working || !editor.dirty} onclick={save}>Save</button><button class="primary" disabled={locked() || !runReady || !editor.working} aria-describedby="run-availability" onclick={() => { preparation = true; }}>▷ Run workflow</button></div>
+    <header class="workspace-header"><div class="header-title"><button class="browser-trigger" aria-label="Toggle workflow browser" aria-expanded={browser} onclick={showBrowser}>☰</button><div><p class="eyebrow">WORKFLOWS / {destination === 'workflows' ? 'EDITOR' : destination.toUpperCase()}</p><button class="workflow-title" disabled={snapshot !== null || !editor.working} onclick={showProperties}>{editor.working?.name ?? 'Your local workflows'} <span aria-hidden="true">⌄</span></button></div><span class="save-state" role="status">{busy ? 'Working…' : editor.error ? 'Save / validation failed' : editor.dirty ? editor.revision ? 'Unsaved changes' : 'New · unsaved' : editor.revision ? `Saved · revision ${editor.revision}` : 'Ready'}</span></div>
+      <div class="header-actions"><button disabled={editingLocked() || !editor.working || !editor.dirty} onclick={save}>Save</button><button class="primary" disabled={editingLocked() || !runReady || !editor.working} aria-describedby="run-availability" onclick={() => { preparation = true; }}>▷ Run workflow</button></div>
     </header>
     <span id="run-availability" class="sr-only">{!runReady ? 'Native run status is not available. Check Settings; authoring remains available.' : 'Opens input and saved revision preparation; execution is subject to native readiness.'}</span>
     {#if editor.error}<div class="context-error" role="alert">{editor.error}<p>Draft retained. For revision conflicts, copy edits or explicitly discard and reopen; saving never forces overwrite.</p></div>{/if}
     <div class="destination editor-destination" hidden={destination !== 'workflows'}>
       <div class="editor-body">
         <section class="canvas-region" aria-label="Definition editor">
-          <div class="canvas-toolbar"><span class="eyebrow">WORKFLOW CANVAS</span><div class="field-heading"><div><button disabled={locked() || !editor.working} onclick={addBlock}>＋ Add block</button><button title="Workflow properties" disabled={!editor.working} onclick={showProperties}>Workflow properties</button></div><span class="muted">{editor.working?.blocks.length ?? 0} blocks</span></div></div>
-          {#if editor.working}<Canvas definition={editor.working} configurations={configurations} selectedId={selected} disabled={locked()} onchange={changeDefinition} onselect={selectBlock} />{#if !editor.working.blocks.length}<div class="canvas-empty"><h2>Start with one focused step.</h2><p>Add an AI block, write its prompt, then connect your sequence.</p><button disabled={locked()} onclick={addBlock}>＋ Add AI block</button></div>{/if}{:else}<div class="canvas-empty"><h2>Your workflows, saved locally.</h2><p>Open a workflow or create a new definition to begin.</p><button disabled={locked()} onclick={() => navigate(null)}>New workflow</button></div>{/if}
+          <div class="canvas-toolbar"><span class="eyebrow">{snapshot ? `Read-only run snapshot · ${snapshot.detail.id} · revision ${snapshot.detail.definition.revision}` : 'WORKFLOW CANVAS'}</span>{#if snapshot}<button onclick={() => { snapshot = null; }}>Return to editing</button>{/if}<div class="field-heading"><div><button disabled={editingLocked() || !editor.working} onclick={addBlock}>＋ Add block</button><button title="Workflow properties" disabled={snapshot !== null || !editor.working} onclick={showProperties}>Workflow properties</button></div><span class="muted">{editor.working?.blocks.length ?? 0} blocks</span></div></div>
+          {#if snapshot}<Canvas definition={snapshot.detail.definition.definition} configurations={capturedConfigurations} selectedId={snapshot.blockId} disabled={true} onchange={changeDefinition} onselect={() => {}} />{:else if editor.working}<Canvas definition={editor.working} configurations={configurations} selectedId={selected} disabled={editingLocked()} onchange={changeDefinition} onselect={selectBlock} />{#if !editor.working.blocks.length}<div class="canvas-empty"><h2>Start with one focused step.</h2><p>Add an AI block, write its prompt, then connect your sequence.</p><button disabled={locked()} onclick={addBlock}>＋ Add AI block</button></div>{/if}{:else}<div class="canvas-empty"><h2>Your workflows, saved locally.</h2><p>Open a workflow or create a new definition to begin.</p><button disabled={locked()} onclick={() => navigate(null)}>New workflow</button></div>{/if}
         </section>
-        {#if inspector && editor.working}<aside class="context-inspector" aria-label={block ? 'Block inspector' : 'Workflow properties'} use:focusScope={{ enabled: width < 1200, close: () => { inspector = false; } }}><header class="panel-heading"><div><h2>{block ? 'Block inspector' : 'Workflow properties'}</h2><p class="muted">{block ? 'AI block · editable draft' : 'Settings for this definition'}</p></div><button aria-label="Close inspector" onclick={() => { inspector = false; }}>×</button></header><div class="inspector-content">{#if block}{#key block.id}<BlockInspector definition={editor.working} {block} {configurations} disabled={locked()} onpatch={patch => { if (!locked()) editor = editGraph(editor, { type: 'update', id: selected, patch }); }} onremove={() => { removeReferences = false; removing = true; }} />{/key}{:else}<DefinitionProperties definition={editor.working} disabled={locked()} onchange={changeDefinition} />{/if}</div></aside>{/if}
+        {#if inspector && snapshot}<aside class="context-inspector" aria-label="Captured block inspector" use:focusScope={{ enabled: width < 1200, close: () => { inspector = false; } }}><header class="panel-heading"><div><h2>Captured block inspector</h2><p class="muted">Read-only · {snapshot.detail.id}</p></div><button aria-label="Close inspector" onclick={() => { inspector = false; }}>×</button></header><div class="inspector-content"><label for="captured-block">Captured block</label><select id="captured-block" bind:value={snapshot.blockId}>{#each snapshot.detail.definition.definition.blocks as item}<option value={item.id}>{item.name}</option>{/each}</select><CapturedRunBlock detail={snapshot.detail} blockId={snapshot.blockId} /></div></aside>{:else if inspector && editor.working}<aside class="context-inspector" aria-label={block ? 'Block inspector' : 'Workflow properties'} use:focusScope={{ enabled: width < 1200, close: () => { inspector = false; } }}><header class="panel-heading"><div><h2>{block ? 'Block inspector' : 'Workflow properties'}</h2><p class="muted">{block ? 'AI block · editable draft' : 'Settings for this definition'}</p></div><button aria-label="Close inspector" onclick={() => { inspector = false; }}>×</button></header><div class="inspector-content">{#if block}{#key block.id}<BlockInspector definition={editor.working} {block} {configurations} disabled={editingLocked()} onpatch={patch => { if (!editingLocked()) editor = editGraph(editor, { type: 'update', id: selected, patch }); }} onremove={() => { removeReferences = false; removing = true; }} />{/key}{:else}<DefinitionProperties definition={editor.working} disabled={editingLocked()} onchange={changeDefinition} />{/if}</div></aside>{/if}
       </div>
-      <section class="legacy-run-drawer" aria-label="Run details"><button class="run-strip" aria-expanded={runOpen} onclick={() => { runOpen = !runOpen; }}><strong>◉ Run details</strong><span>{run ? `${run.id} · ${run.state}` : 'No run selected'}</span><span>{runOpen ? '⌄' : '⌃'}</span></button>{#if runOpen}<div class="legacy-run-content">{#key run?.id}<RunPanel {commands} {run} definitionId={activeInspectionWorkflow} onstatus={value => { run = value; }} />{/key}</div>{/if}</section>
+      <div class="run-workspace-slot"><RunWorkspace bind:this={runWorkspace} {commands} {run} definitionId={activeInspectionWorkflow} onstatus={value => { if (value.id === run?.id) run = value; }} oninspect={inspectCaptured} /></div>
     </div>
-    <div class="destination secondary-destination" hidden={destination !== 'runs'}><h1>Runs</h1><QueuePanel {commands} onselect={selectQueued} admissionError={runError} /><h2>Workflow history</h2><p class="muted">Select a saved workflow in the browser to inspect its retained history.</p>{#if editor.working}{#key editor.working.id}<RunHistory {commands} definitionId={editor.working.id} />{/key}{/if}</div>
+    <div class="destination secondary-destination" hidden={destination !== 'runs'}><h1>Runs</h1><QueuePanel {commands} onselect={selectQueued} admissionError={runError} /><h2>Workflow history</h2><p class="muted">Select a saved workflow in the browser to inspect its retained history.</p>{#if editor.working}{#key editor.working.id}<RunHistory {commands} definitionId={editor.working.id} onselect={selectHistory} />{/key}{/if}</div>
     <div class="destination secondary-destination" hidden={destination !== 'configurations'}><ConfigurationManager bind:this={configurationManager} locked={shutdownFrozen} {configurations} {commands} onchanged={refreshConfigurations} />{#if configError}<p role="alert">{configError}</p>{/if}</div>
     {#if destination === 'settings'}<div class="destination secondary-destination"><h1>Settings & readiness</h1><RuntimeSettings {commands} /><AuthReadinessPanel {commands} /><button disabled={shutdownFrozen || busy} onclick={() => { void commands.openSessionSignIn().catch(error => { runError = errorMessage(error); }); }}>Open native managed sign-in</button>{#if runError}<p role="alert">{runError}</p>{/if}<button onclick={() => { shutdownVisible = true; }}>Safe application shutdown</button></div>{/if}
   </main>
