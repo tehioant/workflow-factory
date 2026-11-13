@@ -3,7 +3,8 @@
   import RunInspection from './RunInspection.svelte';
   import type { Commands } from './commands.ts';
   import type { HistoryPage, RunDetail } from './transport.ts';
-  let { commands, definitionId }: { commands: Commands; definitionId: string } = $props();
+  import { runStateLabel } from './run-presentation.ts';
+  let { commands, definitionId, onselect }: { commands: Commands; definitionId: string; onselect?: (detail: RunDetail) => void } = $props();
   let page = $state<HistoryPage|null>(null), detail = $state<RunDetail|null>(null);
   let cursor = $state<string|null>(null), selected = $state('');
   let listBusy = $state(false), detailBusy = $state(false);
@@ -33,12 +34,13 @@
       if(!current())return;
       if(value.id!==id||value.definitionId!==workflow||value.definition.definition.id!==workflow)throw Error('identity');
       detail=value;
+      onselect?.(value);
     } catch { if(current()){detail=null;detailError='Captured run unavailable. Retry the selected run.';} }
     finally {if(current())detailBusy=false;}
   }
   function navigate(boundary:string|null) {listGeneration++;clearSelection();page=null;cursor=boundary;}
 </script>
-<section class="notice" aria-label="Retained run history">
+<section class="run-history" aria-label="Retained run history">
   <h2>Retained run history · read-only</h2>
   <p>Captured records, separate from editor and active run controls. Newest retained record first; execution dates were not captured. Select a captured run to inspect retained logs and text artifacts.</p>
   <div aria-busy={listBusy}>
@@ -50,14 +52,14 @@
     {#if page?.unknownScopeRecords}<p role="status">Some retained records cannot be scoped safely (oversized or malformed capture). They may belong to other workflows and are not listed.</p>{/if}
     {#if listBusy}<p role="status">Loading retained runs…</p>{/if}
     <ul>{#each page?.entries??[] as entry (entry.id)}
-      <li><button aria-pressed={selected===entry.id} onclick={()=>selectRun(entry.id)}>Run {entry.id} · {entry.state??'unavailable'}</button><p>{entry.inputSummary||'No captured input values'}</p>{#if entry.unavailable}<p>Captured details unavailable</p>{/if}</li>
+      <li><button aria-pressed={selected===entry.id} onclick={()=>selectRun(entry.id)}>Run {entry.id} · {entry.state ? runStateLabel(entry.state) : 'Unavailable'}</button><p>{entry.inputSummary||'No captured input values'}</p>{#if entry.unavailable}<p>Captured details unavailable</p>{/if}</li>
     {:else}{#if page}<li>No retained runs on this page.</li>{/if}{/each}</ul>
   </div>
   {#if selected}<section aria-label="Selected captured run" aria-busy={detailBusy}>
     <h3>Captured run {selected}</h3>
     {#if detailBusy}<p role="status">Loading captured details…</p>{/if}
     {#if detailError}<p role="alert">{detailError}</p><button onclick={()=>selectRun(selected)}>Retry captured read</button>{/if}
-    {#if detail}
+    {#if detail && !onselect}
       <p>{detail.state} · Cleanup pending: {detail.cleanupPending?'yes':'no'}</p>
       <p>Captured definition: {detail.definition.definition.name} · revision {detail.definition.revision} · isolation {detail.definition.definition.isolation}</p>
       <p>Captured image: {detail.imageId}</p>
@@ -78,3 +80,19 @@
     {/if}
   </section>{/if}
 </section>
+<style>
+ .run-history { min-width: 0; padding: 24px; background: var(--color-surface, #1B1E1B); color: var(--color-text, #EDF0E8); font-size: 14px; }
+ h2 { font-size: 18px; margin: 0 0 12px; }
+ h3 { font-size: 16px; margin: 20px 0 12px; }
+ h4 { font-size: 14px; margin: 20px 0 8px; }
+ p { margin: 8px 0; overflow-wrap: anywhere; }
+ button { color: inherit; font: inherit; min-height: 32px; padding: 6px 10px; margin: 4px 8px 4px 0; border: 1px solid var(--color-control-border, #79846F); border-radius: 7px; background: var(--color-raised, #242824); cursor: pointer; overflow-wrap: anywhere; text-align: left; }
+ button:hover:not(:disabled), button[aria-pressed=true] { background: var(--color-selection-fill, #2B3521); }
+ button:disabled { opacity: .6; cursor: not-allowed; }
+ button:focus-visible { outline: 2px solid var(--color-primary, #D1F56A); outline-offset: 3px; }
+ ul { margin: 16px 0; padding: 0; list-style: none; }
+ li { padding: 12px 0; border-bottom: 1px solid var(--color-divider, #343A33); }
+ li p { color: var(--color-secondary, #8A9485); }
+ pre { font: 13px/1.6 var(--font-mono, FreeMono, monospace); white-space: pre-wrap; overflow-wrap: anywhere; }
+ [role=alert] { color: var(--color-warning, #E4C17B); }
+</style>
