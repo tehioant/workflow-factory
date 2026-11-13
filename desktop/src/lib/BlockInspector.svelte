@@ -4,7 +4,11 @@
   import type { Definition, SavedConfiguration, AiBlock } from './transport.ts';
   let { definition, block, configurations, disabled, onpatch, onremove }: { definition: Definition; block: AiBlock; configurations: SavedConfiguration[]; disabled: boolean; onpatch: (patch: Partial<Pick<AiBlock, 'name' | 'prompt' | 'configurationId' | 'position'>>) => void; onremove: () => void } = $props();
   let field = $state<HTMLTextAreaElement>();
-  let configError = $derived(!block.configurationId ? 'Not configured. Choose a saved configuration before running.' : !configurations.some(saved => saved.config.id === block.configurationId) ? 'This configuration is unavailable. Select an existing configuration or clear the reference.' : '');
+  let configError = $derived.by(() => {
+    if (!block.configurationId) return 'Not configured. Choose a saved configuration before running.';
+    if (!configurations.some(saved => saved.config.id === block.configurationId)) return 'This configuration is unavailable. Select an existing configuration or clear the reference.';
+    return '';
+  });
   let promptError = $derived.by(() => {
     const order = sequence(definition), predecessors = order.slice(0, Math.max(0, order.indexOf(block.id)));
     let rest = block.prompt;
