@@ -18,6 +18,6 @@
 <svelte:window onkeyup={(event)=>{if(!disabled && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key) && event.target instanceof Element && !event.target.closest('input,textarea,select,[contenteditable=true]') && event.target.closest('.svelte-flow__node, .svelte-flow__selection-wrapper')) sync();}} />
 <div class="canvas" aria-label="Workflow canvas">
  <SvelteFlow bind:nodes bind:edges {nodeTypes} nodesDraggable={!disabled} nodesConnectable={!disabled} elementsSelectable={!disabled} onselectionchange={({nodes})=>{if(!disabled && nodes[0] && nodes[0].id!==selectedId) onselect(nodes[0].id);}} onnodeclick={({node})=>{if(!disabled) onselect(node.id);}} onnodedragstop={sync} onconnect={(c)=>{if(!disabled) onchange({...definition,connections:[...definition.connections,{source:c.source,target:c.target}]});}} deleteKey={null} fitView minZoom={0.2} maxZoom={1.5} fitViewOptions={{padding:0.2,maxZoom:1}} colorMode="dark">
-  <Background variant={BackgroundVariant.Dots} gap={24} size={1} /><Controls showLock={false} />
+  <Background variant={BackgroundVariant.Dots} gap={24} size={1} patternColor="#343A33" /><Controls showLock={false} />
  </SvelteFlow>
 </div>

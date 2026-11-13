@@ -33,8 +33,8 @@
   }
 </script>
 <div class="modal-backdrop">
-  <section class="workspace-dialog" role="dialog" tabindex="-1" aria-modal="true" aria-labelledby="prepare-title" use:focusScope={{ enabled: true, close: () => { if (!working && !locked && !pending) onclose(); } }}>
-    <header class="panel-heading"><div><p class="eyebrow">RUN PREPARATION</p><h2 id="prepare-title">Run {definition.name}</h2></div><button aria-label="Close run preparation" disabled={working || locked || pending} onclick={onclose}>×</button></header>
+  <div class="workspace-dialog" role="dialog" tabindex="-1" aria-modal="true" aria-labelledby="prepare-title" use:focusScope={{ enabled: true, close: () => { if (!working && !locked) onclose(); } }}>
+    <header class="panel-heading"><div><p class="eyebrow">RUN PREPARATION</p><h2 id="prepare-title">Run {definition.name}</h2></div><button aria-label="Close run preparation" disabled={working || locked} onclick={onclose}>×</button></header>
     <div class="dialog-content">
       {#if pending}
         <p role="status">Admission outcome may be unknown. Only the original immutable request can be retried. Its revision and supplied values cannot be changed.</p>
@@ -57,7 +57,7 @@
       {#if error}<p role="alert">{error}</p>{/if}
       {#if admissionError}<p role="alert">{admissionError}</p>{/if}
       <p class="muted">Execution still requires native runtime, supported managed authentication and containment approval. A saved configuration is not a credential.</p>
-      <button disabled={working || pending || locked} onclick={onsettings}>Open Settings / readiness</button>
+      <button disabled={working || locked} onclick={onsettings}>Open Settings / readiness</button>
     </div>
-  </section>
+  </div>
 </div>
