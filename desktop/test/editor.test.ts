@@ -22,7 +22,9 @@ test('open refuses dirty navigation without invoking load', async () => {
 test('save accepts nested reactive proxies without aliasing the invoked JSON domain', async () => {
   const source = { ...definition, isolation: 'perBlock' as const, blocks: [{ id: 'a', name: 'A', prompt: '', position: { x: 1, y: 2 }, configurationId: null }], connections: [], inputs: [] };
   let request: any;
-  const commands = createCommands(async <T>(_command: string, args?: Record<string, unknown>) => {
+  let invocation: unknown;
+  const commands = createCommands(async <T>(command: string, args?: Record<string, unknown>) => {
+    invocation = { command, args };
     request = args?.request;
     structuredClone(request);
     return { definition: request.definition, revision: 4 } as T;
@@ -30,20 +32,10 @@ test('save accepts nested reactive proxies without aliasing the invoked JSON dom
   const result = await saveEditor(reactive({ working: source, revision: 3, dirty: true, error: '' }), commands);
   assert.equal(result.error, '');
   assert.equal(result.dirty, false);
+  assert.equal(result.revision, 4);
+  assert.deepEqual(invocation, { command: 'save_definition', args: { request: { definition: source, expectedRevision: 3 } } });
   assert.deepEqual(request.definition, source);
   request.definition.blocks[0].position.x = 99;
   assert.equal(source.blocks[0].position.x, 1);
 });
 const definition = { schemaVersion: 1, isolation: 'perRun' as const, id: 'ecbca0a8-d457-4c42-89d4-6727261747bc', name: 'Research', blocks: [], connections: [], inputs: [] };
-
-test('save action invokes the registered command with the expected revision', async () => {
-  let invocation: unknown;
-  const commands = createCommands(async <T>(command: string, args?: Record<string, unknown>) => {
-    invocation = { command, args };
-    return { definition, revision: 4 } as T;
-  });
-  const result = await saveEditor({ working: definition, revision: 3, dirty: true, error: '' }, commands);
-  assert.deepEqual(invocation, { command: 'save_definition', args: { request: { definition, expectedRevision: 3 } } });
-  assert.equal(result.revision, 4);
-  assert.equal(result.dirty, false);
-});
