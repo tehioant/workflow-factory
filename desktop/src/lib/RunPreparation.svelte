@@ -17,6 +17,8 @@
       if (!alive) return;
       if (!result) { error = 'Save failed. Your draft is retained; no run was requested.'; return; }
       if (result.definition.id !== definition.id) throw new Error('The saved definition does not match this workflow.');
+      const names = new Set(result.definition.inputs.map(input => input.name));
+      values = Object.fromEntries(Object.entries(values).filter(([name]) => names.has(name)));
       saved = result;
     } catch (e) { if (alive) error = errorMessage(e); }
     finally { if (alive) working = false; }

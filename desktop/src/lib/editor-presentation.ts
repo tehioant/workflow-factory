@@ -1,3 +1,4 @@
+import { tick } from 'svelte';
 import type { Definition } from './transport.ts';
 
 /** Return an order only when the whole graph is one unambiguous sequence. */
@@ -30,7 +31,11 @@ export function focusScope(node: HTMLElement, options: { enabled: boolean; close
     if (options.enabled && !active) {
       previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       active = true;
-      queueMicrotask(() => { if (active) controls()[0]?.focus(); });
+      void tick().then(() => {
+        if (!active || !node.isConnected) return;
+        if (!node.hasAttribute('tabindex')) node.tabIndex = -1;
+        (controls()[0] ?? node).focus();
+      });
     } else if (!options.enabled && active) { active = false; previous?.focus(); }
   }
   function key(event: KeyboardEvent) {
@@ -38,7 +43,7 @@ export function focusScope(node: HTMLElement, options: { enabled: boolean; close
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); options.close(); }
     if (event.key === 'Tab') {
       const items = controls(), first = items[0], last = items.at(-1);
-      if (!first) { event.preventDefault(); return; }
+      if (!first) { event.preventDefault(); node.focus(); return; }
       if (event.shiftKey && (document.activeElement === first || !node.contains(document.activeElement))) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && (document.activeElement === last || !node.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
     }
