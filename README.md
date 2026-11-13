@@ -4,6 +4,14 @@ A local workflow definition editor for Linux and macOS. Create saved workflows,
 drag AI blocks onto a canvas, edit their names/prompts, and connect them in order.
 Connected Codex AI blocks execute in order inside constrained local agent containers.
 
+## Desktop design target
+
+The [canvas-first redesign specification](docs/specs/canvas-first-redesign.md),
+[shared design system](DESIGN.md) and [three pinned design concepts](docs/design/canvas-first/README.md)
+define the next desktop UI. These are design requirements, not implemented screenshots;
+they retain the [desktop architecture and safety contracts](https://github.com/tehioant/workflow-factory/issues/23).
+The existing browser source instructions below remain unchanged.
+
 ## Start from source
 
 Prerequisites: Node.js **24 or newer**, npm, and a current browser (Firefox,
