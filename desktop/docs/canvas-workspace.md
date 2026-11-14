@@ -25,6 +25,12 @@ concepts contain illustrative data, not application execution results.
 - Canvas keyboard handling excludes editable fields. Space-to-pan is scoped to
   canvas focus rather than the graph library's global shortcut. The existing
   keyboard movement/connection alternatives and guarded domain callbacks remain.
+  The graph itself is the single named, focusable application surface, with a
+  theme-aware focus outline and associated keyboard help. Tab reaches blocks,
+  Enter selects, arrow keys move selected blocks and holding Space enables pan.
+  Captured canvases announce their read-only mode and show inspection guidance
+  rather than editing shortcuts. Releasing Space, leaving focus or window blur
+  clears temporary pan mode; form controls retain their normal keyboard behavior.
 - Admitted runs, validated history selection and queue selection open the drawer.
   History never fabricates a request ID: App reads the exact selected RunStatus.
   Mismatched/unavailable status is an error; competing selections invalidate
@@ -92,11 +98,21 @@ These results do **not** declare every A1–A9 predicate fully qualified. True
 browser/native 200% zoom, native Linux/macOS keyboard/pointer/screen-reader
 interaction, long-content/state variants and an exhaustive accessibility pass
 remain unqualified. CSS zoom stress is not a substitute for native browser zoom.
-The two Canvas warnings remain visible limitations of the current check result.
+The historical Canvas warnings above are resolved by the UI-polish continuation;
+the current checker reports zero errors and zero warnings. This is compiler and
+focused mocked-component evidence, not native screen-reader qualification.
 Real execution/authentication/runtime qualification is separate from this redesign.
 
 The desktop-only integration retires the separate browser UI/Node server, not saved data. Root commands now target the desktop; native development launch uses a synchronous frontend build and `--no-dev-server`, leaving navigation/CSP unchanged. Queue-capacity regression assertions now target Settings QueueCapacity; Runs QueuePanel retains projection/admission/selection/escaping and read-only polling checks. All runtime helpers, native engine/security logic, design PNGs and font/license bytes are unchanged.
 
-Current **static source inventory: 111 = 6 root + 36 frontend + 69 Rust**. Ninety-one root registrations retired with their exclusive Node/browser modules; three egress and two metrics registrations remain, plus two builder additions (capacity owner and launch invariant). Static inventory is not native harness discovery. The external desktop-only integration report contains source pins, exact deletion/assertion dispositions and focused command receipts; this document does not claim the full canonical suite passed.
+Current **static source inventory: 113 = 6 root + 38 frontend + 69 Rust**. Ninety-one root registrations retired with their exclusive Node/browser modules; three egress and two metrics registrations remain, plus two builder additions (capacity owner and launch invariant). Static inventory is not native harness discovery. The external desktop-only integration report contains source pins, exact deletion/assertion dispositions and focused command receipts; this document does not claim the full canonical suite passed.
 
-The former publication hold is superseded by the existing PR56 publication grant and PR56-only remote-CI exception. Local inherited journeys remain held; no local canonical/full-suite, native GUI, real service/container/authentication/model action, push/merge/release is claimed by the builder. Final independent acceptance review, exact final-head CI on Ubuntu 24.04/macOS 15 arm64/Intel, and manual macOS native launch/edit/save/reopen/configuration/connection/reference/appearance/shutdown/retained-view checks remain required. Missing macOS interaction evidence is not a source-work stop and is not waived by Linux focused checks.
+PR #56 merged the desktop-only integration into `main`. Its integrated commit
+`d2d39b1ddbbffccfcf5c43caedb0d63c757c8f3d` passed the existing Ubuntu/macOS arm64/Intel
+CI, and Antoine reported the macOS manual checklist working. Those are earlier
+integration results, not fresh verification of this UI-polish continuation.
+
+This continuation is local source work: focused mocked checks, frontend check/build
+and independent review. It does not authorize publication, remote CI, merge or a
+release. Native keyboard/pointer/screen-reader checks for these new canvas changes
+remain unperformed; previous native acceptance is not relabelled as a new pass.

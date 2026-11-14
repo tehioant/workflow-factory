@@ -193,7 +193,7 @@ visual qualification remains a separate gate.
 - Acid lime identifies the main Run action, active navigation, selected-node outline, focus and prompt references. Keep the rest of a node neutral. Success is a separate muted green and always has a text label/icon.
 - Use text for primary content, muted for supporting copy and secondary for essential low-emphasis text. Decorative is limited to grid dots or redundant, nonessential decoration; it is not permitted for readable small labels.
 - This corrects a contrast weakness in the concepts: original faint `#737D70` text does not meet 4.5:1 on the dark surfaces. Secondary `#8A9485` does, including on raised surfaces. This is a deliberate accessibility correction, not a new theme.
-- Divider is decorative only. Controls, graph handles and meaningful connection lines use control-border, which must maintain 3:1 against adjacent dark surfaces. Focus is a 2px primary outline with 3px offset. Selected graph nodes use a primary outline and restrained selection-fill halo, plus semantic selected state.
+- Divider is decorative only. Controls, graph handles and meaningful connection lines use control-border, which must maintain 3:1 against adjacent dark surfaces. Focus is a 2px focus-color outline with 3px offset. The full-bleed canvas root uses a -3px inset offset instead, keeping the outline visible inside the clipped workspace; other controls retain the outward offset. Selected graph nodes use a primary outline and restrained selection-fill halo, plus semantic selected state.
 - Status is never color-only. Preserve unknown/unavailable states rather than projecting success from a green readiness dot.
 
 ## Typography
