@@ -71,9 +71,8 @@ jobs:
         run: rustup show active-toolchain
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm ci --prefix desktop --ignore-scripts --no-audit --no-fund
-      - run: npm run typecheck
-      - run: npm --prefix desktop run check
-      - run: npm --prefix desktop run build
+      - run: npm run check
+      - run: npm run build
       - name: Rust formatting, lints and generated transport
         working-directory: desktop
         run: |
@@ -81,8 +80,7 @@ jobs:
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo run -p workflow-engine --locked --bin export-types -- --check
       - name: All focused tests with one repository-wide 200-case gate
-        run: node desktop/scripts/check-tests.mjs
-      - run: npm run build
+        run: npm test
       - name: Compile and package bundled desktop assets (no launch or upload)
         working-directory: desktop
         run: npm exec -- tauri build --debug --bundles ${{ matrix.bundle }}
