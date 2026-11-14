@@ -1,321 +1,55 @@
 # Workflow Factory
 
-A local workflow definition editor for Linux and macOS. Create saved workflows,
-drag AI blocks onto a canvas, edit their names/prompts, and connect them in order.
-Connected Codex AI blocks execute in order inside constrained local agent containers.
+A local **desktop-only** workflow editor built with Tauri 2, Svelte 5 and a Rust/SQLite engine. The canvas-first desktop is the sole application UI. There is no browser application, host Node HTTP backend, localhost application server or background worker service. Node is source-build/test tooling and remains inside the separately built runtime Docker image; it is not an installed desktop backend.
 
 ## Start from source
 
-Prerequisites: Node.js **24 or newer**, npm, and a current browser (Firefox,
-Chrome/Chromium, or Safari). No Electron, bundled browser, Rust, runtime npm
-packages are needed for editing. Execution additionally needs the runtime/login below.
+Use a clean checkout of the intended reviewed revision; preserve local edits. Provision Node **24+**, npm, pinned Rust **1.99.1** and native Tauri prerequisites first. On macOS 15+ these include Xcode command-line tools; Ubuntu 24.04 needs the [distribution guide's native development libraries](desktop/docs/distribution.md#build-explicitly-on-a-native-host). Nothing installs them automatically.
 
 ```sh
 git clone https://github.com/tehioant/workflow-factory.git
 cd workflow-factory
 npm ci --ignore-scripts
-npm run build
+npm ci --prefix desktop --ignore-scripts
 npm start
 ```
 
-Open **http://127.0.0.1:4317** in your existing browser. Use that exact address,
-not `localhost`. Stop the foreground server with Ctrl+C; closing a browser tab
-alone does not stop the server. Restart with `npm start` and reopen the address
-to see your saved definitions. The same source commands apply on Linux/macOS;
-macOS execution has not yet been verified on a macOS host. This is a local source
-delivery, not a binary release. Linux/macOS CI proves focused source compatibility,
-not native UI, live authentication or containment. See [RESOURCE_REPORT.md](RESOURCE_REPORT.md)
-for the actual Linux idle observation and explicit unmeasured scenarios.
+`npm start` opens the native desktop development app using bundled assets. Its synchronous prelaunch hook builds the frontend before Tauri starts; `--no-dev-server` prevents the CLI's default loopback server. No URL needs opening and no navigation/CSP exception is added. Repeat with `npm start`; frontend changes require rebuilding/restarting, not a web dev server. This is guidance, **not fresh native launch evidence**. Installed local deb/dmg packages launch through their app/menu entry without Node or npm; see [distribution](desktop/docs/distribution.md).
 
-To change the port or use a dedicated data directory:
+## Editing and retained views
 
-```sh
-PORT=4320 WORKFLOW_FACTORY_DATA_DIR="$HOME/workflow-factory-data" npm start
-```
+- Select **New workflow** or a saved workflow in the searchable list. Name it in workflow properties; add an **AI block** from the palette and edit its name, prompt, configuration and coordinates in the inspector. Drag/keyboard movement and explicit connection controls remain available. Only sequential AI chains are supported.
+- Declare reusable text inputs in workflow properties. Prompt-reference controls insert `{{input.name}}` or a connected predecessor's `{{output.blockId.finalResponse}}`; substituted values stay literal.
+- **Configurations** manages nonsecret model/reasoning settings. Model syntax validation is not live availability or subscription entitlement.
+- Explicitly **Save workflow**. Failed saves retain edits; reopening uses saved revisions. Run preparation distinguishes saving current edits from running the last saved revision. An ambiguous admission retains its exact request for **Retry same request**, not a new launch.
+- **Runs** shows the read-only global queue and selected workflow history. Select a retained run for its Output, Detail, Diagnostics, Inputs and Artifacts drawer. Captured-canvas inspection is read-only; **Return to editing** restores the draft. Recovery is explicit and selected, not a polling side effect.
+- **Settings** owns queue capacities, Appearance (Dark default / Light), and explicit readiness/setup-plan actions. Capacity errors retain entered values; queue polls do not save settings.
+- Use **Safe shutdown** or native close/Quit for coordinated draft-save/work-ownership decisions. Forced termination is not graceful shutdown; see [shutdown](desktop/docs/shutdown.md).
 
-## Editing
+## Runtime and authentication limits
 
-1. Choose **New workflow**, name it, or select an existing workflow from home.
-2. Drag **＋ AI block** onto the dotted canvas. Clicking it also adds a block.
-3. Drag a block's **Move AI block** handle to reposition it. A focused handle
-   supports arrow keys (10 pixels per press). Scroll to reach the wider canvas.
-4. Edit the block name and prompt directly on its card. AI is the only block type.
-5. Select **From** and **To**, then **Connect blocks**. Arrows show execution
-   order; duplicate, missing, self-connected, and cyclic edges are rejected.
-   Remove connections or blocks to revise the graph.
-6. Click **Save workflow** and wait for **Saved to disk** before quitting. Saving
-   is explicit, not automatic. Unsaved edits warn before tab close or returning
-   home; a failed save keeps the working copy available to retry. Stopping the
-   server cannot save unsaved browser edits.
+Editing, save/reopen and retained inspection need neither Docker nor authentication. Runtime setup is explicit, not part of startup/install. [Runtime policy](desktop/docs/runtime.md) specifies the fixed CLI/socket/image; [execution and managed auth](desktop/docs/single-block-run.md) describes the conditional Linux source path, native Secret Service, trusted rootful Docker 28+, host/cgroup protections and fresh native consent. The Settings readiness module only probes/plans and always reports `executionReady=false`; it is not execution authorization.
 
-## Codex configurations and authentication
+Only independently acquired **app-owned** managed sessions may authorize execution. No host Codex/Hermes credential import, API-key/paid fallback or automatic login is provided. Settings opens the separately permissioned native sign-in surface; controls are not live authentication qualification. **macOS execution remains fail-closed**; editor packaging does not enable it. Both isolation modes retain current-cache, ownership, egress and cleanup guards. Live auth, containment and tmpfs continuity remain separate qualification gates, not inferred from mocked tests.
 
-From home choose **Codex configurations**, create a named model configuration,
-then select it on each AI block. Supported settings are an explicit model ID
-and reasoning effort (low/medium/high). Model availability depends on your ChatGPT
-subscription; a saved model name is not proof of entitlement. Configuration files
-use the same private atomic store under `configurations/`. Resolution clones
-non-secret settings per block so later configuration edits cannot alter snapshots.
-No arbitrary CLI flags, API keys, custom providers or billing fallback are accepted.
+## Saved data is preserved
 
-The server-only credential provider reads just `$CODEX_HOME/auth.json` (default
-`~/.codex/auth.json`), never the rest of the home directory or Hermes credentials.
-Use an existing Codex CLI with `cli_auth_credentials_store = "file"` in its
-`config.toml`, run `codex login` using ChatGPT, then `chmod 600 ~/.codex/auth.json`
-(adjust for CODEX_HOME). Only owner-private regular files and ChatGPT token login
-are supported; keyring-only and API-key logins are refused with setup guidance.
-The browser gets availability/guidance only, never credentials. Availability does
-not validate token expiry or entitlement. The runtime integration stages only
-these credentials separately from the workspace; it never mounts the host home
-or overwrites the host login after refresh. Authenticated execution has not been
-verified for this delivery and is not simulated. Configure your own existing Codex
-login; no Hermes login or other application's credentials are copied.
+Desktop identity and locations are unchanged:
 
-## Persistence and local access
+- Linux: `${XDG_DATA_HOME:-$HOME/.local/share}/com.workflowfactory.desktop`
+- macOS: `$HOME/Library/Application Support/com.workflowfactory.desktop`
 
-### Reusable text inputs
+Private `definitions.sqlite3`, adjacent backups/journals and webview preferences remain separate from retired browser data. The old `workflow-factory` data directory, including any previously configured `WORKFLOW_FACTORY_DATA_DIR`, is **not imported, migrated or deleted**. That variable is not a desktop data-directory selector. Uninstall only app files, preserving both data sets. Back up the entire desktop data directory while stopped; private permissions are not encryption. No cleanup command is part of this change.
 
-Use **Add text input** to declare a name (letters, digits and underscores, starting
-with a letter), required/optional status and an optional default. Each prompt has
-an input-reference picker that inserts `{{inputs.name}}` at the caret, not its
-current value. Renaming/removing a referenced input requires updating its prompts;
-dangling references are rejected on save and input validation.
-
-**Run inputs…** opens a separate value form. Required values cannot be blank;
-defaults fill the form and optional blank values resolve to empty text. Values
-and resolved prompts never overwrite the definition. **Launch run** captures the
-current definition (including unsaved edits), inputs and resolved nonsecret settings.
-
-## Executing a block
-
-Install and start Docker Engine on Linux or Docker Desktop's Linux engine on macOS
-separately. Docker **28+** with internal isolated bridge support is required; the
-app inspects the created network and refuses unsupported engines instead of using
-an unrestricted bridge. Access to Docker is privileged host authority: use only
-your own trusted local daemon. Remote TCP/SSH endpoints are not supported.
-The default socket is `/var/run/docker.sock` on Linux and `~/.docker/run/docker.sock`
-on macOS. For another local socket, set `WORKFLOW_FACTORY_DOCKER_SOCKET` to its
-absolute path (for example a Linux Docker Desktop/rootless socket). Run the app as
-a non-root user. Share its data directory with Docker Desktop when prompted.
-
-Build the trusted image explicitly from this checkout; the app never installs,
-builds, pulls or starts a daemon for you:
+## Development and delivery status
 
 ```sh
-# Linux Docker Engine (choose the local socket you actually use):
-export WORKFLOW_FACTORY_DOCKER_SOCKET=/var/run/docker.sock
-# macOS Docker Desktop: use this instead of the Linux line:
-# export WORKFLOW_FACTORY_DOCKER_SOCKET="$HOME/.docker/run/docker.sock"
-docker --host "unix://$WORKFLOW_FACTORY_DOCKER_SOCKET" version
-docker --host "unix://$WORKFLOW_FACTORY_DOCKER_SOCKET" build -f runtime/Dockerfile -t workflow-factory-runtime:local .
-npm start
+npm run check       # desktop Svelte/TypeScript; typecheck is an alias
+npm run build       # desktop production frontend assets
+# Only when the complete inherited suite is admitted for execution:
+npm test            # retained root + desktop frontend + compiled Rust aggregate gate
 ```
 
-Build and run against the **same** local engine/socket; a different Docker context
-may otherwise build an image the app cannot see. macOS requires Docker Desktop's
-Linux VM, not native macOS containers; allow sharing of the app's data directory.
-Rootless/alternative engines must still pass the actual isolated-network checks;
-they are not certified as equivalent by the source tests. Editing and idle startup
-do not require Docker or a valid login, and missing execution prerequisites produce
-actionable errors instead of installation, pulls or paid fallbacks.
+The [combined runner](desktop/docs/checks.md) discovers retained tests, enforces the **200-case aggregate ceiling**, rejects incomplete cases and reconciles executed counts. Desktop-only static inventory: **111 registrations = 6 root helper/config + 36 frontend + 69 Rust source registrations**. Static counting is not native harness discovery or a full-suite pass. Ordinary local checks remain unit/small mounted selections; inherited journeys were not run locally. The existing PR56-only remote-CI exception does not authorize local full-suite/services/containers/auth/model/native GUI activity.
 
-The image pins `@openai/codex@0.166.0`; the Node 24 Debian base tag is mutable and
-should be rebuilt deliberately for OS fixes. Local execution pins the inspected
-image ID and checks its labels, not a user-selectable image. Configure ChatGPT file
-login as above, create a workflow with one block or a connected chain, choose each configuration,
-and use **Run inputs… → Launch run**. Its status, final answer, event-kind diagnostics
-and actionable errors appear below the editor. There is no retry or paid fallback.
-Runs execute concurrently up to the configured global limit; excess runs queue visibly.
-Connect A → B and select A's **final
-response** in B's prompt-reference picker to insert `{{blocks.A_ID.final}}`.
-Only earlier connected blocks may be referenced; disconnected graphs, forks/joins,
-future/missing outputs and unsupported output properties are refused at launch.
-Each block gets its own prompt with selected outputs and inputs, never the previous
-conversation. Substituted values stay literal, even if they contain reference-like
-text. Successful completion alone advances the chain; failure stops it without
-retry. All blocks reuse only that run's workspace.
-
-### Isolation modes
-
-Workflow properties offer **One agent container per run** (the default for older
-definitions) or **Separate agent container per block**. The first keeps one agent
-container for the chain; the second creates and removes a distinct agent container
-for each block. No mixed per-block strategy is offered. In both modes, only that
-run's private workspace is shared; each block has a fresh Codex invocation, not
-conversation continuation. Final responses live in the app's run record, so B can
-use A's response after A's agent container is gone. Cleanup failures stop the chain
-without discarding already captured output. The per-run trusted egress helper and
-two run-scoped networks persist through the chain and are removed at run cleanup;
-this infrastructure overhead is additional to the agent container count.
-
-Each run gets a private workspace and separate credential staging under
-`run-resources/<run-id>/`. Only those two directories are mounted. The agent is
-non-root, read-only-rootfs, capability-free, no-new-privileges, with private IPC,
-bounded tmpfs/PIDs/memory/CPU, no published ports, no home mount and no Docker socket.
-Its sole network is an inspected internal **isolated** bridge, not ordinary Docker
-bridge networking. A trusted per-run CONNECT helper is the only external route;
-it admits exact `chatgpt.com`, `api.openai.com`, `auth.openai.com` TLS destinations
-on port 443, rejects all IANA special-purpose/reserved IPv4 DNS answers and connects
-the vetted IP only after the first TLS ClientHello SNI equals the CONNECT hostname.
-Non-TLS, absent/encrypted SNI and fragmented/oversized ClientHello records fail
-closed. The helper does not decrypt application traffic or inspect encrypted HTTP
-headers; it enforces the destination IP and clear TLS hostname, not URL paths.
-IPv6 is disabled. Proxy environment variables are convenience, not enforcement:
-the outer network removes the direct route. The helper has a separate per-run
-egress bridge and no workspace/credential mounts. No general web/package egress is
-offered. Backend hostname changes require a reviewed helper change.
-
-Workflow isolation means one **agent** container, plus one trusted infrastructure
-helper per run; it does not mean one total container. Codex's inner
-`danger-full-access` is used only behind that enforced outer boundary. A container
-is not a VM security guarantee; a compromised daemon/kernel is outside this model.
-Workspace disk consumption is not quota-enforced: monitor the private data volume.
-Commands use argv with `shell:false`, clean environment and prompt stdin. The last
-completed JSONL `agent_message` is the answer; event kinds are diagnostics. Tool
-output/raw stderr are withheld to avoid credential disclosure; staged token strings
-are redacted from final output, including refreshed tokens. Auth staging is deleted
-only after agent/helper removal; refreshed login never overwrites the host login.
-Workspaces and durable completed results survive container removal. Cleanup
-failure is visible; if Docker becomes unavailable, staging remains owner-private
-until the owned containers can be stopped safely. Use the scoped **Cancel run** or
-**Quit application** actions described below, or Ctrl+C for graceful shutdown.
-
-The image build, live containment, authenticated model execution and native macOS
-runtime behaviour have **not** been exercised. Focused mocked tests are not proof
-of those live properties. No container/model smoke campaign is part of CI.
-
-Definitions use versioned JSON records with block IDs, type, name, prompt,
-positions, and directed connections. Files live outside the checkout:
-
-- Linux: `${XDG_DATA_HOME:-$HOME/.local/share}/workflow-factory/definitions/`
-- macOS: `~/Library/Application Support/workflow-factory/definitions/`
-- Override: `$WORKFLOW_FACTORY_DATA_DIR/definitions/`
-
-The store creates private directories (0700), writes a new private file (0600),
-flushes and atomically renames it over the old definition. No credentials are
-stored. Keep backups of this data folder; prompts are **not encrypted**. Invalid
-or damaged files produce a visible load/storage error rather than being reset.
-Concurrent editors use last successful save wins; use one tab per definition.
-
-The standard-library HTTP server binds only to `127.0.0.1`, checks the exact
-Host and Origin, rejects cross-site requests, and requires a random per-process
-session token for API access. It serves only allowlisted assets, limits request
-bodies to 1 MiB, and disables caching/framing. Do not proxy it publicly. These
-controls are not an OS sandbox or protection from software running as your user.
-If you restart the server while a page is open, reload to obtain its new session.
-
-## Concurrency and queue
-
-Set `WORKFLOW_FACTORY_CONCURRENCY=2 npm start` to choose the app-wide simultaneous
-run limit (default 2, accepted integers 1–8). The run pane displays this limit and
-each queued/running/terminal status. Submit multiple runs of the same or different
-workflows with separate input values; queued runs already have their immutable
-definition/input/configuration snapshot and durable record at acceptance. Edits
-while queued cannot change them. Ready admissions are dispatched in acceptance
-order when a slot is free. A slot remains occupied through resource cleanup and
-terminal persistence; a cleanup hold consumes its slot until reconciled. Runtime
-errors do not stop other runs, and slot release automatically admits waiting work.
-Both isolation modes keep run-specific networks/workspaces/output records. The
-limit counts workflow runs, not the extra trusted helper containers.
-
-## Cancel a run
-
-Select a queued or running entry and click **Cancel run**. A queued run is removed
-from readiness without starting a container. Active cancellation sets a per-run
-abort flag immediately, stops only its registered agents, prevents successor
-starts and waits for setup/execution to settle before scoped final cleanup. A
-Docker create already in flight is allowed to finish before cleanup (never killed
-mid-create); the next setup operation is refused. The executing Docker CLI is
-abortable and its owned agent is removed separately, not merely the local client.
-Completed outputs remain in the cancelled history. Cancellation requests and slot
-release are idempotent; other runs continue. Cleanup/storage failures keep a
-visible hold rather than pretending resources or terminal history were saved.
-If saving a queued cancellation fails, **Retry saving history** retries only that
-terminal write after storage recovers; it does not require Docker or create work.
-
-## Quit and signals
-
-Save definition edits, then use **Quit application**. If active/queued work or a
-retained cleanup/storage hold exists, the app asks for confirmation; Cancel leaves
-everything running. OK freezes admission before cancellation, marks queued runs
-cancelled, stops active owned agents, waits through in-flight setup, cleans scoped
-resources and saves terminal history before closing the foreground HTTP server.
-Repeated quit requests share the same operation. No independent execution service
-remains, and queued runs never auto-resume after restart. Ctrl+C (SIGINT) and
-SIGTERM use the same graceful path, without an interactive terminal prompt.
-Docker control clients use isolated process groups so terminal Ctrl+C cannot kill
-a setup client before its daemon reply. Their piped handles remain referenced and
-awaited; executing clients still support explicit abort, not an untracked service.
-
-Closing/reloading the browser tab is **not** server quit. A best-effort browser
-`beforeunload` warning uses the latest polled pending state; browser policies may
-suppress it. The foreground Node process continues until explicit Quit or a
-signal. Quit's confirmation reads fresh server state; if work appears after an
-idle check, the server rejects an unconfirmed quit so you can confirm again.
-When storage or cleanup fails, every run still gets a cleanup attempt; the app
-stays foreground, frozen and readable with an actionable error. Fix Docker/storage,
-resolve the selected run's hold and retry Quit/Ctrl+C. It does not silently exit
-with owned work left behind. SIGKILL, daemon failure or host crashes cannot be
-made graceful; inspect only the recorded run-owned resources after an abnormal exit.
-
-## Durable run history
-
-Runs are atomically saved as private JSON under `runs/` in the same app data folder.
-Admission is persisted before execution. Running/block-start/completed-output and
-terminal transitions are serialized per run; a storage failure stops advancement
-and still attempts scoped cleanup. After reopening, the run list includes retained
-history. Filter by workflow, select an individual dated run and expand **Captured
-definition, inputs, prompts and settings**. Historical data comes from the captured
-record, never a current definition/configuration lookup; each block also shows its
-actual resolved prompt, final response, safe event-kind logs and error.
-
-Credentials and runtime resource objects are never added to the persisted contract;
-unknown run fields/settings are rejected. Prompts/inputs/outputs are private files,
-not encrypted, so do not place secrets in workflow text. Back up the data folder.
-History has no automatic retention policy; its disk and in-memory use grow with
-retained runs. Damaged records fail visibly instead of being silently discarded.
-Previously active/queued records become interrupted failures on abnormal restart,
-never auto-resumed; completed outputs are retained. After a crash, inspect/stop
-only Docker resources named `wf-<run-id>-…` before starting further work; normal
-Quit/Ctrl+C instead use the scoped graceful lifecycle above.
-If a retained run has a cleanup hold, use **Recheck cleanup**. In the same app
-session this retries only its recorded cleanup. After restart it never kills
-discovered resources based on a name alone: manually remove only that run's owned
-containers/networks, then recheck. The hold clears only after Docker confirms their
-absence and the updated history is saved; unavailable Docker does not clear it.
-
-## Development and checks
-
-```sh
-npm test
-npm run typecheck
-npm run build
-```
-
-`npm test` discovers every `test/**/*.test.mjs` file and checks the Node test
-runner's actual test summary against a repository-wide ceiling of **200**.
-The final delivery has **96** focused tests, below the 200-test ceiling.
-No E2E tests, browser-to-runtime journeys, full controller
-journeys, real containers, or model calls are permitted in the ordinary suite.
-Use explicit records and fake external/storage boundaries, one editor action or
-store operation at a time. Follow red → green TDD and conventional commits.
-
-The runtime has zero dependencies. TypeScript builds native ES modules; happy-dom
-is test-only. `src/definition.ts` owns the persisted contract; `src/store.ts`
-owns atomic storage; `src/http.ts` owns the focused API; `src/server.ts` adapts
-Node HTTP and filesystem assets; `src/public/` owns the vanilla DOM/SVG editor.
-Execution uses `src/runs.ts` admission and `src/runtime.ts` Docker adapters plus
-the trusted `runtime/egress.mjs` helper. No distribution channel is included.
-
-## Resource observations
-
-The measured Linux idle Node server used 61.621 MiB RSS. Existing Docker control
-processes used 164.105 MiB RSS with three unrelated containers running; their
-combined RSS sum was 225.727 MiB, excluding browser and workload memory and without
-de-duplicating shared pages. This is not a clean-engine baseline, an execution
-measurement or proof of lightweightness. No numeric budget is agreed.
-
-See [RESOURCE_REPORT.md](RESOURCE_REPORT.md) for the actual timestamp, hardware,
-startup/CPU/disk results, accounting caveats, Linux reproduction command and
-unperformed execution/macOS procedures. The manual idle observer is deliberately
-outside the ordinary test/CI suite and never launches a workflow or container.
+[Workspace status](desktop/docs/canvas-workspace.md) distinguishes historical redesign/light-theme evidence from this integration. Final independent review, exact-head Ubuntu/macOS CI and macOS manual native launch/edit/save/reopen/appearance/shutdown/retained-view checks remain delivery gates; no merge/release or new native pass is claimed. Preserve the [design system](DESIGN.md), [spec](docs/specs/canvas-first-redesign.md), [illustrative concepts](docs/design/canvas-first/README.md) and bundled legal notices. [Desktop resources](desktop/docs/resources.md) are candidate/platform-specific; [the retired Node-server report](RESOURCE_REPORT.md) is historical only.

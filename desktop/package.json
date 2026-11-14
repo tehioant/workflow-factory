@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "tauri dev --no-dev-server",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "build": "vite build",
     "test": "node --experimental-strip-types --test test/*.test.ts",

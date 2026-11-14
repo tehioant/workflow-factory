@@ -14,7 +14,7 @@ Linux requires `/usr/bin/zenity` for a host-owned native question on each acquis
 
 Unclaimed Admitted stop requires no resource intents transactionally before releasing only the reservation/active marker. Running/uncertain records stay held. Pending setup ownership is installed before fallible login start; cancellation remains operable on failure and retryable after partial deletion. Explicit quarantined retirement requires positive owned resource/recorded-ID absence and deletion/readback absence of the exact old secure item. Errors retain quarantine. Only fresh provider authorization under a new slot may follow; no old grant is read/copied/reused. This is narrow explicit recovery, not general automatic reconciliation.
 
-No real keyring, Docker, login, model, container or native dialog was exercised. Fake-boundary checks establish source contracts, not live provider or platform qualification. Pinned keeper/CLI/Docker findings must be settled before source is declared complete. Full native close/Quit UX remains later scope.
+No real keyring, Docker, login, model, container or native dialog was exercised. Fake-boundary checks establish source contracts, not live provider or platform qualification. Native qualification remains separate from source checks. Coordinated native close/Quit is now implemented; see [shutdown](shutdown.md) for its current contract and remaining interaction gates.
 
 ## Bounded concurrent FIFO (#34)
 
@@ -40,8 +40,9 @@ output-storage retries and immutable history. Queue settings/errors, credential
 wait, authorization requirements and ownership holds are visible. Selection keeps
 RunPanel and inspection bound to the selected run/workflow, not canvas edits.
 Unclaimed queued Stop only dequeues that request. Startup withholds waiting records
-without claiming external cleanup or automatically resuming them. Full cancellation,
-shutdown and interrupted-resource recovery remain #35–#37, not this slice.
+without claiming external cleanup or automatically resuming them. Later cancellation,
+shutdown and selected interrupted-resource recovery source is documented in
+[shutdown](shutdown.md) and [run-history](run-history.md); this FIFO section is not a claim of live qualification.
 
 ## Workflow agent isolation
 

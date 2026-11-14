@@ -1,4 +1,6 @@
-# Codex subscription availability; execution remains blocked
+# Codex subscription availability and separate managed-session authority
+
+The host-file inspector described below never imports a login or authorizes execution. The current conditional Linux managed-session source path is documented in [execution](docs/single-block-run.md); macOS execution remains fail-closed and live auth/native qualification remains unperformed. Historical #29 blocker notes below do not describe the current executor as wholly unimplemented.
 
 ## Explicit manual source support
 
@@ -52,7 +54,7 @@ memory-forensics/secure-zeroization guarantee.
 There is a gated source execution/staging adapter and a separate app-owned native sign-in surface. No native platform is qualified yet. Every host-file availability result,
 including `available`, preserves `unsupportedConcurrentAuth` and
 `executionEnabled: false`. Host material availability is not successful
-in-container authentication. `start_run` records an immutable single-block snapshot or explicit blocked outcome; it does not derive managed-session authority from this host-file inspection. The current native qualification gate withholds login and execution.
+in-container authentication. `start_run` records an immutable captured workflow request or an explicit blocked outcome; it never derives managed-session authority from this host-file inspection. Conditional Linux admission uses separately acquired app-owned sessions and native runtime/security/consent gates; macOS remains withheld.
 
 Copied per-run refresh grants can race with each other and the ordinary host
 CLI; moving a copied grant to a different store does not create an independent
@@ -72,7 +74,7 @@ The [CLI-specific auth guide](https://developers.openai.com/codex/auth.md?surfac
 documents managed login and container cache consumption. No internal token
 injection interface or host refresh API is needed.
 
-#29 may implement separately acquired app-owned managed sessions with secure
+Historical #29 design requirements (now implemented as gated source, not live-qualified): separately acquired app-owned managed sessions require secure
 native storage, exclusive restore → run → persist-updated-cache → cleanup
 leases, and private staging. Host-file availability does not create such a
 session or authorize importing/copying the ordinary host login. Different
@@ -81,10 +83,9 @@ source guarantee unlimited same-account session independence/non-interference.
 A failed write-back or lost staged cache must quarantine the slot for explicit
 reauthentication rather than reuse a possibly obsolete seed. Secure native
 store behavior, tmpfs/host/VM paging and diagnostic persistence constraints,
-trusted-private scope, containment and cleanup remain unmet implementation and
-platform-verification prerequisites. The current blocker is those unimplemented
-operations/unverified gates, **not absence of a public cache consumption route**.
-#29 must enforce these gates at backend admission, not only in UI.
+trusted-private scope, containment and cleanup remain mandatory backend admission
+requirements. Concrete source operations now exist; live platform/provider verification
+is still separate, **not absence of a public cache consumption route**.
 No automatic login/status process, refresh, network/model call, paid API-key
 fallback, host-login overwrite, plaintext conversion or concurrency reduction is
 introduced. Consult [Codex setup](https://developers.openai.com/codex/auth) for

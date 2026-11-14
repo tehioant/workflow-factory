@@ -16,8 +16,7 @@ on Ubuntu 24.04, `macos-15` and `macos-15-intel`. These ran focused checks and
 **debug** native packaging with pinned action SHAs, Node 24 and Rust 1.99.1;
 they neither launched nor uploaded packages. They are baseline compilation/package
 evidence, not #38 candidate CI, release artifacts or installed usability receipts.
-README's older case counts/launch statements are historical; use candidate-bound
-receipts.
+Use candidate-bound receipts rather than historical case counts/launch statements.
 
 Available local build host: Ubuntu **26.04.1 LTS x86_64**, not Ubuntu 24.04.
 Local #38 **release** packaging on this host is a non-target build check only;
@@ -137,9 +136,9 @@ Tauri app data identity is `com.workflowfactory.desktop`:
 Keep these paths and platform webview data when uninstalling. Back up the entire
 private app-data directory while the app is stopped; never copy a live SQLite
 main file alone and assume journals are unnecessary. Do not delete or migrate old
-browser-app data, host Codex data, Docker images/volumes or workspaces. No importer,
-old-app retirement, updater, tray/background service or destructive migration is
-part of distribution.
+browser-app data, host Codex data, Docker images/volumes or workspaces. The old
+browser code/server are retired, but no importer, updater, tray/background service
+or destructive data migration is part of distribution.
 
 Editing/persistence do not require Docker or authentication. The delivered
 executor has a **conditional Linux source path**, not unconditional execution or

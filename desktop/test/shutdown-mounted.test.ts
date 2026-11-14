@@ -42,7 +42,7 @@ test('d13_mounted_shutdown_decision_retains_drafts_and_requires_fresh_consent',a
   const moduleUrl=(source:string)=>'data:text/javascript;base64,'+Buffer.from(source).toString('base64');
   const stub=moduleUrl('export default function() {return {shutdownState:()=>({dirty:false,busy:false,identity:""}),saveDraft:async()=>true};}');
   const overrides=new Map<string,string>();
-  for(const name of ['RunHistory','QueuePanel','IsolationSelect','RunPanel','OutputReferencePicker','AuthReadiness','Canvas','InputForm','RuntimeSettings','ConfigurationManager'])overrides.set(`./lib/${name}.svelte`,stub);
+  for(const name of ['RunHistory','QueuePanel','IsolationSelect','RunWorkspace','RunPanel','OutputReferencePicker','AuthReadiness','Canvas','InputForm','RuntimeSettings','ConfigurationManager'])overrides.set(`./lib/${name}.svelte`,stub);
   let listener:(()=>void)|undefined,subscriptionResolve:((stop:()=>void)=>void)|undefined,subscriptionReject:((error:unknown)=>void)|undefined,stopped=0;
   (globalThis as any).__d13Listen=(event:string,callback:()=>void)=>{assert.equal(event,'shutdown-requested');assert.ok(capability.permissions.includes('core:event:allow-listen'));listener=callback;return new Promise((resolve,reject)=>{subscriptionResolve=resolve;subscriptionReject=reject;});};
   (globalThis as any).__d13Invoke=async(command:string)=>{if(command==='run_status')return null;if(command==='list_definitions'||command==='list_configurations')return [];throw new Error('Unexpected App command '+command);};

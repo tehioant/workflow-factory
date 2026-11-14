@@ -1,0 +1,25 @@
+:root[data-theme=light] {
+  --color-canvas: #F7F8F2;
+  --color-rail: #EBEEE4;
+  --color-surface: #FFFFFF;
+  --color-raised: #EDF1E7;
+  --color-divider: #CED5C5;
+  --color-control-border: #6C7961;
+  --color-text: #232B20;
+  --color-muted: #52604C;
+  --color-secondary: #53604D;
+  --color-accent: #46620D;
+  --color-focus: #46620D;
+  --color-hover: #E1E7D9;
+  --color-grid: #CED5C5;
+  --color-selection-fill: #E3EDCF;
+  --color-reference-fill: #E8F0D9;
+  --color-selection-halo: #D9E7BD;
+  --color-success: #35603D;
+  --color-warning: #795400;
+  --color-danger: #963F35;
+  --color-overlay: #202B2066;
+  --color-panel-overlay: #202B2055;
+  --color-shadow: #202B2029;
+  color-scheme: light;
+}
