@@ -140,7 +140,8 @@ The acceptance list is not a required one-test-per-bullet inventory. Choose the 
 - Branching/routers/loops, non-AI block types, integrations marketplace, parallel graph execution or additional providers.
 - New account/profile, avatars, team collaboration, cloud sync, paid features, token/cost estimates or inferred execution telemetry.
 - Automatic saving, automatic execution retries/resume, silent installation/image pulls, relaxed authentication/sandbox gates or provider/billing fallbacks.
-- New branding approval, light theme, polished marketing pages, new binary releases, deployments, signing purchases or public-visibility changes.
+- New branding approval, polished marketing pages, new binary releases, deployments, signing purchases or public-visibility changes.
+- The original light-theme exclusion is superseded only by the explicit user-approved bounded appearance extension: Settings → Appearance offers saved Dark/Light, Dark remains default, malformed/unavailable storage is safe, and common pre-mount bootstrap covers App/SignIn. Shared semantic colors and Svelte Flow mode cover draft/captured canvases and every secondary panel; no backend, domain authority or dependency changes are authorized.
 - Implementation, automatic worker launch, merging, automated E2E or live platform/model qualification from publishing these specs.
 
 ## Further Notes

@@ -20,6 +20,30 @@ colors:
   success: "#A4D5AA"
   warning: "#E4C17B"
   danger: "#D7A49B"
+  accent: "#D1F56A"
+  focus: "#D1F56A"
+  light-canvas: "#F7F8F2"
+  light-rail: "#EBEEE4"
+  light-surface: "#FFFFFF"
+  light-raised: "#EDF1E7"
+  light-divider: "#CED5C5"
+  light-control-border: "#6C7961"
+  light-text: "#232B20"
+  light-muted: "#52604C"
+  light-secondary: "#53604D"
+  light-accent: "#46620D"
+  light-focus: "#46620D"
+  light-hover: "#E1E7D9"
+  light-grid: "#CED5C5"
+  light-selection-fill: "#E3EDCF"
+  light-reference-fill: "#E8F0D9"
+  light-selection-halo: "#D9E7BD"
+  light-success: "#35603D"
+  light-warning: "#795400"
+  light-danger: "#963F35"
+  light-overlay: "#202B2066"
+  light-panel-overlay: "#202B2055"
+  light-shadow: "#202B2029"
 typography:
   title:
     fontFamily: FreeSans
@@ -137,6 +161,33 @@ The product is a local desktop workspace for authoring and inspecting sequential
 The three [reference images](docs/design/canvas-first/README.md) establish this design direction. This file defines shared visual tokens; the [behavior spec](docs/specs/canvas-first-redesign.md) defines interactions and acceptance. These are target specifications, not evidence of an implemented or live-ready interface.
 
 ## Colors
+
+### Explicit light-theme extension
+
+The user explicitly approved Light/Dark selection after the original dark-only
+scope. Dark stays the default, including its original palette. Settings → Appearance
+provides labelled Dark and Light choices, saved locally as `workflow-factory.theme`.
+Only the exact `light` value opts in; missing, invalid or blocked storage uses Dark.
+Storage write failure does not prevent switching in the current window. Both the
+main workspace and separate SignIn mount restore this preference before mounting.
+
+The `light-*` tokens above are the normative light overrides; omitted roles inherit
+the dark value. Warm near-white canvas, white panels, green-tinted raised and selected
+surfaces retain the hierarchy. Lime `primary` remains an action fill with dark
+`on-primary` text; dark olive `light-accent`/`light-focus` is used for essential
+icons, references, selected outlines and focus, never pale lime text on white.
+Status colors retain textual labels. Grid/dividers/halos are decorative; meaningful
+borders and edges use control-border. Hover, overlay and shadow have semantic roles.
+Draft and captured Svelte Flow share the selected explicit color mode.
+
+[Light CSS](docs/design/canvas-first/light-theme.css) and
+[DTCG light tokens](docs/design/canvas-first/light-theme.tokens.json) are derived
+exports of these light overrides. Original dark concept PNGs and historical dark
+exports are unchanged and are not light-theme screenshots. Implementation tokens
+live in `desktop/src/app.css`. Local measured light contrast and command receipts
+are retained in `/home/ops/reports/workflow-factory-light-theme/`; browser/native
+visual qualification remains a separate gate.
+
 
 - Canvas, rail, surface and raised define a small warm-neutral hierarchy. Separate regions with subtle dividers rather than shadows or decorative rails.
 - Acid lime identifies the main Run action, active navigation, selected-node outline, focus and prompt references. Keep the rest of a node neutral. Success is a separate muted green and always has a text label/icon.

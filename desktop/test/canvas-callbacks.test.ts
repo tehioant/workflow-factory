@@ -33,11 +33,17 @@ test('selection wrapper arrow key publishes group positions', async () => {
   try {
     flushSync(()=>component=mount(Component,{target,props:{definition:{id:'d',name:'D',schemaVersion:1,isolation:'perRun',blocks:[],connections:[],inputs:[]},onchange:()=>assert.fail('domain mutation forbidden'),onselect:()=>assert.fail('selection forbidden')}}));
     const canvas=target.querySelector('.canvas') as HTMLElement,flow=(globalThis as any).__flow;
+    const {setTheme}=await import('../src/lib/appearance.ts');
+    for(const mode of ['light','dark'] as const){setTheme(mode);flushSync();assert.equal(flow.colorMode,mode);}
     assert.equal(flow.panActivationKey,null);assert.deepEqual(flow.panOnDrag,[1,2]);
     const space=()=>new window.KeyboardEvent('keydown',{key:' ',code:'Space',bubbles:true,cancelable:true});
     const textarea=window.document.createElement('textarea');target.append(textarea);textarea.focus();textarea.dispatchEvent(space());flushSync();assert.deepEqual(flow.panOnDrag,[1,2]);
     canvas.focus();const key=space();canvas.dispatchEvent(key);flushSync();assert.equal(key.defaultPrevented,true);assert.equal(flow.panOnDrag,true);
     canvas.dispatchEvent(new window.KeyboardEvent('keyup',{code:'Space',bubbles:true}));flushSync();assert.deepEqual(flow.panOnDrag,[1,2]);
+    await unmount(component);component=null;
+    flushSync(()=>component=mount(Component,{target,props:{definition:{id:'captured',name:'Captured',schemaVersion:1,isolation:'perRun',blocks:[],connections:[],inputs:[]},disabled:true,onchange:()=>assert.fail('captured mutation forbidden'),onselect:()=>assert.fail('captured selection forbidden')}}));
+    const captured=(globalThis as any).__flow;
+    for(const mode of ['light','dark'] as const){setTheme(mode);flushSync();assert.equal(captured.colorMode,mode);assert.equal(captured.nodesDraggable,false);assert.equal(captured.nodesConnectable,false);assert.equal(captured.elementsSelectable,false);captured.onnodeclick({node:{id:'ignored'}});}
   } finally {if(component)await unmount(component);delete (globalThis as any).__flow;window.happyDOM.abort();}
 
 });

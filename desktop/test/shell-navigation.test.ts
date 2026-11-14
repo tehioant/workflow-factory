@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { Window } from 'happy-dom';
 import { compileComponent } from './compile-component.ts';
 
@@ -50,6 +51,55 @@ test('configuration navigation exposes its destination without a domain mutation
     assert.equal(destination.closest('[hidden]'), null);
     assert.deepEqual(calls, before, 'Destination selection is presentation-only');
     [...target.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Settings')!.click();await settle();
+    const appearance = target.querySelector('select#appearance') as unknown as import('happy-dom').HTMLSelectElement;
+    assert.ok(appearance, 'Settings exposes a labelled Appearance selector');
+    assert.equal(target.querySelector('label[for="appearance"]')?.textContent?.trim(), 'Appearance');
+    assert.deepEqual([...appearance.options].map(option => option.textContent), ['Dark', 'Light']);
+    assert.equal(appearance.value, 'dark');
+    const appearanceCalls = [...calls];
+    appearance.value = 'light'; appearance.dispatchEvent(new window.Event('change', { bubbles: true })); await settle();
+    assert.equal(window.document.documentElement.dataset.theme, 'light');
+    assert.equal(window.localStorage.getItem('workflow-factory.theme'), 'light');
+    assert.deepEqual(calls, appearanceCalls, 'Appearance never invokes a domain command');
+    appearance.value = 'dark'; appearance.dispatchEvent(new window.Event('change', { bubbles: true })); await settle();
+    assert.equal(window.document.documentElement.dataset.theme, 'dark');
+    const { initializeTheme } = await import('../src/lib/appearance.ts');
+    const storage = window.localStorage;
+    for (const saved of [null, 'light', 'dark', '{invalid', 'system']) {
+      if (saved === null) storage.removeItem('workflow-factory.theme');
+      else storage.setItem('workflow-factory.theme', saved);
+      initializeTheme(); await settle();
+      const expected = saved === 'light' ? 'light' : 'dark';
+      assert.equal(appearance.value, expected, `Restored preference: ${saved}`);
+      assert.equal(window.document.documentElement.dataset.theme, expected);
+      appearance.value = 'light'; appearance.dispatchEvent(new window.Event('change', { bubbles: true })); await settle();
+      initializeTheme(); await settle();
+      assert.equal(appearance.value, 'light', 'Reopening restores the explicit choice');
+    }
+    const storageDescriptor = Object.getOwnPropertyDescriptor(window, 'localStorage');
+    try {
+      Object.defineProperty(window, 'localStorage', { configurable: true, get() { throw new Error('blocked'); } });
+      initializeTheme(); await settle();
+      assert.equal(appearance.value, 'dark');
+      appearance.value = 'light'; appearance.dispatchEvent(new window.Event('change', { bubbles: true })); await settle();
+      assert.equal(window.document.documentElement.dataset.theme, 'light', 'Storage failure cannot block switching');
+    } finally {
+      if (storageDescriptor) Object.defineProperty(window, 'localStorage', storageDescriptor);
+      else delete (window as any).localStorage;
+    }
+    assert.deepEqual(calls, appearanceCalls, 'Every appearance variant is presentation-only');
+    const { transpile } = await import('typescript');
+    const bootstrap = transpile(readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8').replace(/^import .*\n/gm, ''));
+    for (const query of ['', '?signin']) {
+      storage.setItem('workflow-factory.theme', 'light');
+      window.document.documentElement.dataset.theme = 'dark';
+      let mounted = 0;
+      new Function('initializeTheme', 'mount', 'location', 'document', 'App', 'SignIn', bootstrap)(initializeTheme, (view: string) => {
+        assert.equal(window.document.documentElement.dataset.theme, 'light', 'Common bootstrap restores before either content mount');
+        assert.equal(view, query ? 'signin' : 'app'); mounted++;
+      }, { href: `https://local.invalid/${query}` }, window.document, 'app', 'signin');
+      assert.equal(mounted, 1);
+    }
     assert.equal(target.querySelectorAll('#queue-active').length,1);
     const capacity=target.querySelector('#queue-active') as HTMLInputElement;capacity.value='3';capacity.dispatchEvent(new window.Event('input',{bubbles:true}));await settle();
     [...target.querySelectorAll('button')].find(b=>b.textContent==='Save capacities')!.click();await settle();

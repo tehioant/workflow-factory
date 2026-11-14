@@ -192,7 +192,7 @@
   button { color: inherit; font: inherit; min-height: 32px; padding: 6px 10px; border: 1px solid var(--color-control-border, #79846F); border-radius: 7px; background: var(--color-raised, #242824); cursor: pointer; }
   button:hover:not(:disabled) { background: var(--color-selection-fill, #2B3521); }
   button:disabled { opacity: .6; cursor: not-allowed; }
-  button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--color-primary, #D1F56A); outline-offset: 3px; }
+  button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--color-accent, #D1F56A); outline-offset: 3px; }
   .toggle { border: 0; background: transparent; padding-left: 0; font-weight: 700; white-space: nowrap; }
   .toggle span { padding-right: 8px; }
   .close { margin-left: auto; font-size: 20px; background: transparent; border: 0; }
@@ -215,7 +215,7 @@
   .run-content { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
   .tabs { display: flex; gap: 8px; flex-shrink: 0; overflow-x: auto; padding: 0 16px; border-bottom: 1px solid var(--color-divider, #343A33); }
   .tabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 12px 8px; }
-  .tabs button[aria-selected=true] { border-bottom-color: var(--color-primary, #D1F56A); }
+  .tabs button[aria-selected=true] { border-bottom-color: var(--color-accent, #D1F56A); }
   .tab-content { padding: 20px 24px; overflow: auto; min-height: 0; }
   .output-heading { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
   h4 { margin: 16px 0 8px; font-size: 14px; }

@@ -41,5 +41,5 @@
   pre { font: 13px/1.6 var(--font-mono, FreeMono, monospace); white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--color-canvas, #141615); border-radius: 6px; }
   details { margin-top: 24px; }
   summary { cursor: pointer; padding: 8px 0; }
-  summary:focus-visible { outline: 2px solid var(--color-primary, #D1F56A); outline-offset: 3px; }
+  summary:focus-visible { outline: 2px solid var(--color-accent, #D1F56A); outline-offset: 3px; }
 </style>

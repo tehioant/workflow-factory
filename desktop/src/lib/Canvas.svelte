@@ -2,6 +2,7 @@
  import { SvelteFlow, Background, Controls, BackgroundVariant, MarkerType, type Node, type Edge } from '@xyflow/svelte';
  import '@xyflow/svelte/dist/style.css';
  import AiNode from './AiNode.svelte';
+ import { theme } from './appearance.ts';
  import { toFlow, fromFlow } from './graph.ts';
  import { sequence } from './editor-presentation.ts';
  import type { Definition, SavedConfiguration } from './transport.ts';
@@ -23,7 +24,7 @@
 </script>
 <svelte:window onblur={releasePan} onkeydown={(event)=>{if(event.code==='Space' && event.target instanceof Element && !event.target.closest('.canvas')) releasePan();}} onkeyup={(event)=>{if(event.code==='Space') releasePan();if(!disabled && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key) && event.target instanceof Element && !event.target.closest('input,textarea,select,[contenteditable=true]') && event.target.closest('.svelte-flow__node, .svelte-flow__selection-wrapper')) sync();}} />
 <div class="canvas" role="application" tabindex="0" aria-label="Workflow canvas" onkeydown={panKey} onfocusout={releasePan} onpointerdown={(event)=>{if(event.target instanceof Element && event.target.closest('.svelte-flow__pane')) event.currentTarget.focus();}}>
- <SvelteFlow bind:nodes bind:edges {nodeTypes} panActivationKey={null} panOnDrag={spacePan ? true : [1,2]} nodesDraggable={!disabled && !spacePan} nodesConnectable={!disabled} elementsSelectable={!disabled} onselectionchange={({nodes})=>{if(!disabled && nodes[0] && nodes[0].id!==selectedId) onselect(nodes[0].id);}} onnodeclick={({node})=>{if(!disabled) onselect(node.id);}} onnodedragstop={sync} onconnect={(c)=>{if(!disabled) onchange({...definition,connections:[...definition.connections,{source:c.source,target:c.target}]});}} deleteKey={null} fitView minZoom={0.2} maxZoom={1.5} fitViewOptions={{padding:0.2,maxZoom:1}} colorMode="dark">
-  <Background variant={BackgroundVariant.Dots} gap={24} size={1} patternColor="#343A33" /><Controls showLock={false} />
+ <SvelteFlow bind:nodes bind:edges {nodeTypes} panActivationKey={null} panOnDrag={spacePan ? true : [1,2]} nodesDraggable={!disabled && !spacePan} nodesConnectable={!disabled} elementsSelectable={!disabled} onselectionchange={({nodes})=>{if(!disabled && nodes[0] && nodes[0].id!==selectedId) onselect(nodes[0].id);}} onnodeclick={({node})=>{if(!disabled) onselect(node.id);}} onnodedragstop={sync} onconnect={(c)=>{if(!disabled) onchange({...definition,connections:[...definition.connections,{source:c.source,target:c.target}]});}} deleteKey={null} fitView minZoom={0.2} maxZoom={1.5} fitViewOptions={{padding:0.2,maxZoom:1}} colorMode={$theme}>
+  <Background variant={BackgroundVariant.Dots} gap={24} size={1} patternColor="var(--color-grid)" /><Controls showLock={false} />
  </SvelteFlow>
 </div>

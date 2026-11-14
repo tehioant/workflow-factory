@@ -89,7 +89,7 @@
  button { color: inherit; font: inherit; min-height: 32px; padding: 6px 10px; margin: 4px 8px 4px 0; border: 1px solid var(--color-control-border, #79846F); border-radius: 7px; background: var(--color-raised, #242824); cursor: pointer; overflow-wrap: anywhere; text-align: left; }
  button:hover:not(:disabled), button[aria-pressed=true] { background: var(--color-selection-fill, #2B3521); }
  button:disabled { opacity: .6; cursor: not-allowed; }
- button:focus-visible { outline: 2px solid var(--color-primary, #D1F56A); outline-offset: 3px; }
+ button:focus-visible { outline: 2px solid var(--color-accent, #D1F56A); outline-offset: 3px; }
  ul { margin: 16px 0; padding: 0; list-style: none; }
  li { padding: 12px 0; border-bottom: 1px solid var(--color-divider, #343A33); }
  li p { color: var(--color-secondary, #8A9485); }
