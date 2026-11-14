@@ -35,17 +35,19 @@ test('p3 mounted inspector picker inserts only predecessor final response at the
 
 test('ambiguous admission preserves the exact pending payload across every dirty choice', async()=>{
  const source=await readFile(new URL('../src/App.svelte',import.meta.url),'utf8');
- const body=source.slice(source.indexOf("  async function begin("),source.indexOf('\n  async function refresh()')).replace("mode:'save'|'saved'|'retry'","mode").replaceAll('$state.snapshot','snapshot');
+ const {transpileModule}=await import('typescript');
+ const body=transpileModule(source.slice(source.indexOf("  async function begin("),source.indexOf('\n  async function openRunWorkspace()')).replaceAll('$state.snapshot','snapshot'),{}).outputText;
  const original={requestId:'prepared-ambiguous-uuid',definitionId:'prepared',expectedRevision:3,expectedConfigurationRevision:2,supplied:{topic:'original'}};
  const calls:any[]=[];
- const make=new Function('commands','pending','snapshot',`let activeInspectionWorkflow=null;let pendingStart=pending;let busy=false,runReady=true,editor={working:{id:'changed'},dirty:true},supplied={topic:'changed'},runError='',run=null,dirtyStart=true;const errorMessage=String;${body};return {begin,pending:()=>pendingStart};`);
+ const make=new Function('commands','pending','snapshot',`let activeInspectionWorkflow=null;let pendingStart=pending;let busy=false,runReady=true,runError='',run=null,runSelection=0,preparation=true;const locked=()=>busy;const errorMessage=String;const openRunWorkspace=async()=>{};${body};return {begin,pending:()=>pendingStart};`);
  const harness=make({startRun:async(request:any)=>{calls.push(request);throw Error('reply lost');},load:()=>{throw Error('new work forbidden');}},original,(x:any)=>structuredClone(x));
- for(const mode of ['save','saved']){await harness.begin(mode);assert.deepEqual(harness.pending(),original);assert.equal(calls.length,0);}
- await harness.begin('retry');assert.deepEqual(calls,[original]);assert.deepEqual(harness.pending(),original);
- for(const label of ['Save and start','Start last saved revision','Stay']){
-  const button=source.split('<button ').find(s=>s.split('</button>')[0].endsWith(`>${label}`));
-  assert.ok(button?.split('onclick')[0].includes('pendingStart!==null'),label);
- }
+ for(const mode of ['save','saved']){await harness.begin({definition:{id:mode}}, {topic:'changed'});assert.deepEqual(harness.pending(),original);assert.equal(calls.length,0);}
+ await harness.begin();assert.deepEqual(calls,[original]);assert.deepEqual(harness.pending(),original);
+ const preparation=await readFile(new URL('../src/lib/RunPreparation.svelte',import.meta.url),'utf8');
+ assert.match(preparation,/if \(working \|\| locked \|\| pending\) return/);
+ const pendingView=preparation.slice(preparation.indexOf('{#if pending}'),preparation.indexOf('{:else if !saved}'));
+ assert.match(pendingView,/Retry same request/);
+ assert.ok(!/Save and run|Run last saved revision/.test(pendingView));
 });
 
 test('held and long-running panels remain refreshable and reject stale or unmounted reads', async()=>{
@@ -73,8 +75,9 @@ test('held and long-running panels remain refreshable and reject stale or unmoun
   retry.click();await Promise.resolve();await Promise.resolve();flushSync();assert.equal(effects.at(-1),'retry_run_output');assert.equal(statuses.at(-1).finalResponse,'Durable selected output');
   const recheck=Array.from(target.querySelectorAll('button')).find(b=>b.textContent.includes('Recheck'))!;assert.ok(recheck);
   const app=await readFile(new URL('../src/App.svelte',import.meta.url),'utf8');
-  const selectBody=app.slice(app.indexOf('    const generation=++runSelection;'),app.indexOf('\n  async function begin('));
-  const select=new Function('commands',`let runSelection=0,run=null,activeInspectionWorkflow=null,runError='';const errorMessage=String;return async function(entry){${selectBody.slice(0,selectBody.lastIndexOf('  }'))}}`)(commands);
+  const {transpileModule}=await import('typescript');
+  const selectBody=transpileModule(app.slice(app.indexOf('  async function selectQueued('),app.indexOf('\n  async function selectHistory(')),{}).outputText;
+  const select=new Function('commands',`let runSelection=0,run=null,activeInspectionWorkflow=null,runError='',snapshot=null;const errorMessage=String;const openRunWorkspace=async()=>{};${selectBody};return selectQueued;`)(commands);
   await select({id:held.id,definitionId:'captured-workflow'});assert.equal(effects.at(-1),'run_status');
   const pending:((x:any)=>void)[]=[];
   commands.runStatus=()=>new Promise(resolve=>{pending.push(resolve);});
@@ -220,7 +223,7 @@ test('f2 mounted workflow isolation selection changes only the working copy', as
   const select=target.querySelector('select')!;assert.equal(target.querySelector('label')!.htmlFor,select.id);assert.equal(select.value,'perRun');assert.deepEqual(Array.from(select.options).map(o=>o.value),['perRun','perBlock']);
   select.value='perBlock';select.dispatchEvent(new window.Event('change',{bubbles:true}));flushSync();
   assert.deepEqual(editor,{working:{isolation:'perBlock'},dirty:true,error:''});assert.equal(saved.isolation,'perRun');
-  const app=await readFile(new URL('../src/App.svelte',import.meta.url),'utf8');assert.match(app,/<IsolationSelect value={editor.working.isolation}/);assert.match(app,/working:{\.\.\.editor.working,isolation},dirty:true/);
+  const app=await readFile(new URL('../src/App.svelte',import.meta.url),'utf8');assert.match(app,/<DefinitionProperties definition={editor.working}/);assert.match(app,/working: definition, dirty: true/);const properties=await readFile(new URL('../src/lib/DefinitionProperties.svelte',import.meta.url),'utf8');assert.match(properties,/<IsolationSelect value={definition.isolation}/);assert.match(properties,/onchange\(\{ \.\.\.definition, isolation \}\)/);
  }finally{if(component)await unmount(component);await rm(directory,{recursive:true,force:true});window.happyDOM.abort();}
 });
 
@@ -250,7 +253,7 @@ test('queued and active runs project scoped capacity and admission errors', asyn
   Array.from(target.querySelectorAll('button')).find(b=>b.textContent==='Save capacities')!.click();await settle();assert.deepEqual(writes,[{active:1,waiting:16}]);assert.ok(target.textContent.includes('cannot be reduced'));assert.equal(input.value,'1');
   await tick();await settle();assert.equal(reads,2);assert.equal(writes.length,1);assert.equal(input.value,'1');
   await unmount(component);component=null;assert.equal(target.textContent,'');
-  const app=await readFile(new URL('../src/App.svelte',import.meta.url),'utf8');assert.match(app,/<QueuePanel \{commands\} onselect=\{selectQueued\} admissionError=\{runError\}/);assert.match(app,/selected\?\.id===entry.id/);assert.match(app,/activeInspectionWorkflow=entry.definitionId/);
+  const app=await readFile(new URL('../src/App.svelte',import.meta.url),'utf8');assert.match(app,/<QueuePanel \{commands\} onselect=\{selectQueued\} admissionError=\{runError\}/);assert.match(app,/value.id !== entry.id/);assert.match(app,/activeInspectionWorkflow = entry.definitionId/);
  }finally{globalThis.setTimeout=realSet;globalThis.clearTimeout=realClear;if(component)await unmount(component);await rm(directory,{recursive:true,force:true});window.happyDOM.abort();}
 });
 
@@ -291,6 +294,6 @@ test('fhistory mounted selected capture rejects stale identities and renders onl
   await unmount(component);component=null;oldPage.resolve(page());await settle();assert.equal(target.textContent,'');
   flushSync(()=>{component=mount(Component,{target,props:{commands,definitionId:'workflow'}});});pending.at(-1).resolve({...page(),definitionId:'other'});await settle();assert.ok(target.textContent.includes('Retained run list unavailable'));
   click('Refresh history');pending.at(-1).resolve(page());await settle();click('Run a');const unmounted=pending.at(-1);await unmount(component);component=null;unmounted.resolve(capture('a'));await settle();assert.equal(target.textContent,'');
-  const app=await readFile(new URL('../src/App.svelte',import.meta.url),'utf8');assert.match(app,/<RunHistory \{commands\} definitionId=\{editor.working.id\}/);
+  const app=await readFile(new URL('../src/App.svelte',import.meta.url),'utf8');assert.match(app,/<RunHistory \{commands\} definitionId=\{editor.working.id\} onselect=\{selectHistory\}/);
  }finally{if(component)await unmount(component);await rm(directory,{recursive:true,force:true});window.happyDOM.abort();}
 });

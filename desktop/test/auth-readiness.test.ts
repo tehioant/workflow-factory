@@ -22,7 +22,10 @@ test('manual credential inspection does not run at mount and keeps execution blo
     const modulePath = join(directory,'component.mjs'); await writeFile(modulePath,code);
     const Component = (await import(pathToFileURL(modulePath).href)).default;
     const target=window.document.createElement('main'); window.document.body.append(target);
-    const commands={authReadiness:async()=>{calls++;return {executionEnabled:false,credentialSource:'codexFile',credentialAvailability:'available',status:'unsupportedConcurrentAuth',guidance:'Subscription-shaped material available; not authenticated. Container staging and concurrent refresh unsupported.'};}};
+    const status={executionEnabled:false,credentialSource:'codexFile',credentialAvailability:'available',status:'unsupportedConcurrentAuth',guidance:'Subscription-shaped material available; not authenticated. Container staging and concurrent refresh unsupported.'};
+    const {createCommands}=await import('../src/lib/commands.ts');
+    const transport=createCommands(async<T>(command:string,args?:Record<string,unknown>)=>{calls++;assert.equal(command,'auth_readiness');assert.equal(args,undefined);return status as T;});
+    const commands={authReadiness:async()=>{const result=await transport.authReadiness();assert.deepEqual(result,status);return result;}};
     flushSync(()=>{component=mount(Component,{target,props:{commands}});});
     assert.equal(calls,0);
     const check=Array.from(target.querySelectorAll('button')).find(b=>b.textContent.includes('Check Codex'));
