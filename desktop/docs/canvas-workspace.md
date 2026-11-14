@@ -60,7 +60,7 @@ under `/home/ops/reports/workflow-factory-light-theme/`. New light/dark built-bu
 visual acceptance, simplification and independent review belong to the parent;
 prior dark-only review/captures below do not certify this continuation.
 
-## Completed local verification
+## Historical redesign verification (before desktop-only integration)
 
 The stabilized implementation received independent **Standards PASS** and
 **Spec source PASS**, after correcting all seven confirmed review findings.
@@ -82,7 +82,7 @@ One optional ordering-helper duplication suggestion remains nonblocking.
   were observed. The original fresh narrow captured-inspector focus issue was
   rechecked: focus enters the panel, Escape closes it, and its trigger regains
   focus. Browser component evidence is not native Tauri evidence.
-- Static inventory remains **200 registrations**, net zero: 96 root Node,
+- At that checkpoint static inventory was **200 registrations**, net zero: 96 root Node,
   35 frontend and 69 Rust source registrations. Source inventory is not compiled
   native harness discovery. Original meaningful assertions remain retained.
 
@@ -95,9 +95,8 @@ remain unqualified. CSS zoom stress is not a substitute for native browser zoom.
 The two Canvas warnings remain visible limitations of the current check result.
 Real execution/authentication/runtime qualification is separate from this redesign.
 
-Canonical full-suite execution and PR publication remain **HOLD**: inherited
-multistage fixtures need a separately approved exception or conversion. The
-canonical runner and inherited checks remain intact; focused local results are
-not canonical/CI success. No held journey, native application launch, real
-service/container/authentication/model call, implementation-branch publication,
-main merge, issue closure or release is claimed by this local delivery.
+The desktop-only integration retires the separate browser UI/Node server, not saved data. Root commands now target the desktop; native development launch uses a synchronous frontend build and `--no-dev-server`, leaving navigation/CSP unchanged. Queue-capacity regression assertions now target Settings QueueCapacity; Runs QueuePanel retains projection/admission/selection/escaping and read-only polling checks. All runtime helpers, native engine/security logic, design PNGs and font/license bytes are unchanged.
+
+Current **static source inventory: 111 = 6 root + 36 frontend + 69 Rust**. Ninety-one root registrations retired with their exclusive Node/browser modules; three egress and two metrics registrations remain, plus two builder additions (capacity owner and launch invariant). Static inventory is not native harness discovery. The external desktop-only integration report contains source pins, exact deletion/assertion dispositions and focused command receipts; this document does not claim the full canonical suite passed.
+
+The former publication hold is superseded by the existing PR56 publication grant and PR56-only remote-CI exception. Local inherited journeys remain held; no local canonical/full-suite, native GUI, real service/container/authentication/model action, push/merge/release is claimed by the builder. Final independent acceptance review, exact final-head CI on Ubuntu 24.04/macOS 15 arm64/Intel, and manual macOS native launch/edit/save/reopen/configuration/connection/reference/appearance/shutdown/retained-view checks remain required. Missing macOS interaction evidence is not a source-work stop and is not waived by Linux focused checks.

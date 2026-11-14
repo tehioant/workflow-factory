@@ -1,4 +1,6 @@
-# Resource evidence and reproduction
+# Historical resource evidence — retired browser/Node implementation
+
+This report records the old Node/browser application only, not the desktop product. Its server and observer have been retired; commands and procedures below are historical, **not current launch or authentication instructions**. No new measurement is claimed. Use [desktop resources](desktop/docs/resources.md) and [distribution](desktop/docs/distribution.md) for the retained application.
 
 This is a source-delivered POC, not a claim of proven lightweightness. There is no
 agreed numeric performance budget. Do not infer an agent workload's cost from an
