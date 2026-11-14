@@ -31,6 +31,9 @@
  --xy-selection-background-color:var(--color-selection-halo);--xy-selection-border:1px solid var(--color-accent);
 }
 .svelte-flow__node:focus-visible .ai-card{outline:2px solid var(--color-focus);outline-offset:3px}
+.canvas{position:relative}
+.canvas>.svelte-flow:focus-visible{outline:2px solid var(--color-focus);outline-offset:-3px}
+.canvas-help{position:absolute;right:20px;bottom:20px;max-width:calc(100% - 160px);margin:0;padding:6px 10px;border-radius:6px;background:var(--color-surface);color:var(--color-muted);font-size:13px;pointer-events:none}
 .svelte-flow__edge.selected .svelte-flow__edge-path,.svelte-flow__edge:focus .svelte-flow__edge-path{stroke:var(--color-accent)!important}
 .svelte-flow__controls button:hover:not(:disabled){background:var(--color-hover)!important}
 a{color:var(--color-accent)}
