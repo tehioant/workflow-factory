@@ -14,12 +14,12 @@ The engine provides read-only Docker probes and an explicit setup **plan**, not 
 `RuntimeStatus` is a camelCase serialized enum: `missing`, `stopped`, `unsupported`, `imageMissing`, `imageUnsupported`, `networkUnavailable`, `authUnsupported`.
 
 - Missing CLI: explicitly install Docker Engine / Docker Desktop; editing continues.
-- Stopped/inaccessible/failed probe: start the selected Linux daemon and check socket permissions. A timeout, oversized/invalid response or access denial is unavailable, not success; raw stdout/stderr never goes to the UI.
+- Stopped/inaccessible/failed probe: start the selected Linux daemon or Docker Desktop on macOS and check the fixed local socket configuration/permissions described above. A timeout, oversized/invalid response or access denial is unavailable, not success; raw stdout/stderr never goes to the UI.
 - Unsupported: upgrade to Docker 28+ with a rootful Linux daemon. No Windows/rootless/remote fallback.
 - Missing/uninspectable image: review assets and explicitly build; readiness does not pull.
 - Wrong labels/ID or ID drift: refuse it; review/rebuild/reselect explicitly. Existing admitted IDs must not silently change.
 - `networkUnavailable`: refuse execution. Check the **owned immutable network ID**, `Driver=bridge`, `Internal=true`, `EnableIPv6=false`, and `Options[com.docker.network.bridge.gateway_mode_ipv4]=isolated`. Upgrade/reconfigure explicitly if unavailable. There is no ordinary-bridge fallback and no startup network probe that creates resources.
-- `authUnsupported`: even valid runtime/image prerequisites do not establish secure container subscription authentication or concurrent refresh. Execution stays disabled pending a separately approved supported mechanism. No host credentials, Hermes credentials or API-key fallback are read or used here.
+- `authUnsupported` is the retained wire name for **runtime prerequisites checked; authentication/security not checked**. Valid Docker/image results do not authorize execution or inspect managed sessions. Settings points separately to managed-session metadata and native sign-in. The actual conditional executor performs fresh native/security/session/confirmation checks; it is not disabled by this settings-only result. No host credentials, Hermes credentials or API-key fallback are read or used here.
 
 `Readiness` contains `{ status, message, imageId: string | null, isolation, executionReady }`. `executionReady` is **always false** in this module. `isolation` is `notChecked`, `expectedNotMeasured` or `measuredNetworkConfiguration`. Normal readiness reports only an expectation after version/image checks. `inspect_private_network` provides fresh measured Docker configuration evidence, not a live packet/egress test, a complete containment certificate or execution authorization. Its `networkUnavailable` error must be rendered using the actionable network guidance above.
 
@@ -34,9 +34,9 @@ argv: ["--host", "unix:///var/run/docker.sock", "build", "--file", "runtime/Dock
 
 This explicitly requested build can download the base image and npm package, consume disk/network and create a local image. It is never passed to `Process`, run at startup or run by this adapter. Review assets first; confirm labels and capture the resulting immutable ID with a later read-only recheck. Do not copy the old application runtime or silently package/build its images with the desktop editor. The adapter uses the compatible existing image/helper assets in place and does not modify them.
 
-## Outer-network contract for the future execution owner
+## Outer-network contract for the separate execution owner
 
-Immediately before **each** future agent start, freshly call `inspect_private_network` on the durably recorded, positively owned network ID; fail closed on any error. Do not cache settings-time evidence as authority. Before any paid work, recheck the captured image identity too. This module contains no start function, so it cannot enforce a future caller that bypasses this seam.
+Immediately before **each** agent start, freshly inspect the durably recorded, positively owned network ID; fail closed on any error. Do not cache settings-time evidence as authority. Recheck the captured image identity too. The separate native executor and sandbox implement fresh runtime/owned-resource checks; this read-only settings adapter itself contains no start function. See [execution](single-block-run.md).
 
 Preserve the reviewed helper: only exact TLS CONNECT destinations `chatgpt.com`, `api.openai.com`, `auth.openai.com` on 443, vetted public IPv4 DNS results, exact resolved-IP connect, and matching TLS ClientHello SNI; no arbitrary HTTP, IP/private-address, alternate-host, IPv6 or encrypted/absent-SNI bypass. The agent has **only** the internal isolated network. A separate trusted per-run egress helper bridges that network to its separate egress network, with no agent workspace or credential mounts. Proxy variables alone do not constrain an agent. Future execution must verify agent network membership, helper wiring/ownership and all non-root/read-only/capability/resource/mount hardening; never expose the Docker socket or host home to workloads. No weaker substitute is allowed when containment is infeasible.
 

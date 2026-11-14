@@ -1,17 +1,25 @@
 <script lang="ts">
- import type { Commands } from './commands.ts';
- import type { AuthReadiness } from './transport.ts';
- let {commands}:{commands:Commands}=$props();
- let readiness=$state<AuthReadiness|null>(null);
- let busy=$state(false);let failed=$state(false);
- async function check(){if(busy)return;busy=true;failed=false;readiness=null;try{readiness=await commands.authReadiness();}catch{failed=true;}finally{busy=false;}}
+  import type { Commands } from './commands.ts';
+  import type { ManagedSessionStatus } from './transport.ts';
+  let { commands }: { commands: Commands } = $props();
+  let status = $state<ManagedSessionStatus | null>(null);
+  let busy = $state(false);
+  let failed = $state(false);
+  async function check() {
+    if (busy) return;
+    busy = true; failed = false; status = null;
+    try { status = await commands.managedSessionStatus(); }
+    catch { failed = true; }
+    finally { busy = false; }
+  }
 </script>
-<section aria-label="Execution readiness">
- <h2>Execution unavailable</h2><button disabled>Run workflow (blocked)</button>
- <p>Manual inspection only: existing ~/.codex/auth.json. No custom home, keyring, config or environment credential discovery. Never paste or convert credentials for this app.</p>
- <button disabled={busy} onclick={check}>Check Codex credential availability</button>
- <p aria-live="polite">Credential availability: {busy?'checking':readiness?.credentialAvailability??'notInspected'}</p>
- <p>{readiness?.guidance??'Container authentication/staging and managed-cache refresh/write-back are not implemented here. The documented app-owned serialized cache route requires trusted-private scope and secure native storage/staging in #29. Availability is not validity or authentication.'}</p>
- {#if readiness}<p>Credential source: {readiness.credentialSource} · Container route: {readiness.status}</p>{/if}
- {#if failed}<p role="alert">Credential inspection unavailable. No execution enabled; retry manually.</p>{/if}
+<section aria-label="Managed authentication">
+  <h2>Managed session availability</h2>
+  <p>Checks app-owned session metadata only, not host credential files. This check does not sign in, validate credentials or authorize execution.</p>
+  <p>Use “Open native managed sign-in” in Settings to add or recover an app-owned session.</p>
+  <button disabled={busy} onclick={check}>Check managed sessions</button>
+  <p aria-live="polite">{#if busy}Managed sessions: checking…{:else if status}Available: {status.available} · Withheld: {status.withheld}{:else}Managed sessions: not checked{/if}</p>
+  {#if status}<p>{status.guidance}</p>{/if}
+  <p>Session availability does not authorize execution. Run preparation and native authentication/security checks still apply.</p>
+  {#if failed}<p role="alert">Managed session status unavailable. No execution authorized; retry manually.</p>{/if}
 </section>

@@ -316,7 +316,7 @@ impl Docker {
         }
         let info = match read_json(process, &self.info_command()) {
             Err(ProcessError::Missing) => return readiness(RuntimeStatus::Missing, "Install Docker Engine 28+ on Linux or Docker Desktop on macOS explicitly; editing remains available."),
-            Err(_) => return readiness(RuntimeStatus::Stopped, "Start the selected local Linux Docker daemon and check socket permissions; probe failed or exceeded bounds. No TCP endpoint is supported."),
+            Err(_) => return readiness(RuntimeStatus::Stopped, "Start the selected local Docker daemon on Linux or Docker Desktop on macOS and check socket permissions; probe failed or exceeded bounds. No TCP endpoint is supported."),
             Ok(info) => info,
         };
         let major = info["ServerVersion"]
@@ -352,7 +352,7 @@ impl Docker {
         }
         Readiness {
             status: RuntimeStatus::AuthUnsupported,
-            message: "Docker version suggests isolated IPv4 bridge capability, NOT measured containment. Secure container subscription authentication and concurrent refresh are unsupported pending an approved mechanism. Execution is blocked. No credentials were read.".into(),
+            message: "Docker/image prerequisites checked. Docker version suggests isolated IPv4 bridge capability, NOT measured containment. Authentication and security were not checked; this observation does not authorize execution. Use managed sign-in in Settings if needed, then run preparation for execution checks. No credentials were read.".into(),
             image_id: Some(id.into()), isolation: IsolationEvidence::ExpectedNotMeasured, execution_ready: false,
         }
     }
