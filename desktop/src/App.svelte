@@ -116,7 +116,7 @@
 {#if shutdownVisible}<div class:shutdown-modal={!shutdownFrozen}><ShutdownDialog {commands} dirty={editor.dirty || configDraft.dirty} busy={busy || configDraft.busy} identity={shutdownIdentity} save={saveShutdownDrafts} onstay={() => { shutdownVisible = false; }} onfreeze={() => { shutdownFrozen = true; }} /></div>{/if}
 <div class="app-shell" class:browser-open={browser} class:inspector-open={inspector && destination === 'workflows'} inert={(shutdownVisible && !shutdownFrozen) || preparation || confirmDiscard || removing}>
   <nav class="navigation-rail" aria-label="Main destinations">
-    <div class="factory-mark" aria-hidden="true">F</div>
+    <img class="factory-mark" src="/app-icon.svg" alt="Workflow Factory" width="40" height="40" />
     {#each [{ id: 'workflows', label: 'Workflows', icon: '⌘' }, { id: 'runs', label: 'Runs', icon: '▷' }, { id: 'configurations', label: 'Configurations', icon: '☷' }, { id: 'settings', label: 'Settings', icon: '⚙' }] as item}
       <button title={item.label} aria-label={item.label} aria-current={destination === item.id ? 'page' : undefined} onclick={() => { destination = item.id as typeof destination; }}>{item.icon}</button>
     {/each}
