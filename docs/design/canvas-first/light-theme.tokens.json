@@ -1,6 +1,6 @@
 {
   "$schema": "https://www.designtokens.org/schemas/2025.10/format.json",
-  "$description": "Specification-only neutral light targets from DESIGN.md; not yet applied to the runtime stylesheet. Inherit unchanged primary fill/on-primary from dark defaults.",
+  "$description": "Blue accents with neutral Light surfaces and explicit white on-primary text.",
   "color": {
     "$type": "color",
     "canvas": {
@@ -106,22 +106,22 @@
       "$value": {
         "colorSpace": "srgb",
         "components": [
-          0.27451,
-          0.384314,
-          0.05098
+          0.156863,
+          0.333333,
+          0.780392
         ],
-        "hex": "#46620d"
+        "hex": "#2855c7"
       }
     },
     "focus": {
       "$value": {
         "colorSpace": "srgb",
         "components": [
-          0.27451,
-          0.384314,
-          0.05098
+          0.156863,
+          0.333333,
+          0.780392
         ],
-        "hex": "#46620d"
+        "hex": "#2855c7"
       }
     },
     "hover": {
@@ -183,11 +183,11 @@
       "$value": {
         "colorSpace": "srgb",
         "components": [
-          0.207843,
-          0.376471,
-          0.239216
+          0.156863,
+          0.372549,
+          0.639216
         ],
-        "hex": "#35603d"
+        "hex": "#285fa3"
       }
     },
     "warning": {
@@ -246,6 +246,50 @@
         ],
         "hex": "#20202029",
         "alpha": 0.160784
+      }
+    },
+    "primary": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.192157,
+          0.364706,
+          0.85098
+        ],
+        "hex": "#315dd9"
+      }
+    },
+    "primary-hover": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.152941,
+          0.309804,
+          0.745098
+        ],
+        "hex": "#274fbe"
+      }
+    },
+    "primary-pressed": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          0.137255,
+          0.278431,
+          0.67451
+        ],
+        "hex": "#2347ac"
+      }
+    },
+    "on-primary": {
+      "$value": {
+        "colorSpace": "srgb",
+        "components": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "hex": "#ffffff"
       }
     }
   }

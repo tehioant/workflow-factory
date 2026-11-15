@@ -1,6 +1,6 @@
 # Counterform app logo
 
-The approved Workflow Factory identity is the **Counterform** symbol: two opposing cut blocks in white on cobalt `#244DF4`. Keep its geometry and colours unchanged. The rest of the interface keeps its existing theme.
+The approved Workflow Factory identity is the **Counterform** symbol: two opposing cut blocks in white on cobalt `#244DF4`. Keep its geometry and colours unchanged. The interface uses the current blue Light/Dark palette in DESIGN.md independently of the unchanged logo.
 
 - `src-tauri/icons/source.svg`: approved 1024-unit vector master.
 - `src-tauri/icons/icon.png`: original approved 1024 × 1024 PNG export.

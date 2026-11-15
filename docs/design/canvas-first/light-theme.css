@@ -8,18 +8,22 @@
   --color-text: #242424;
   --color-muted: #555555;
   --color-secondary: #595959;
-  --color-accent: #46620D;
-  --color-focus: #46620D;
+  --color-accent: #2855C7;
+  --color-focus: #2855C7;
   --color-hover: #E7E7E7;
   --color-grid: #D2D2D2;
   --color-selection-fill: #EAEAEA;
   --color-reference-fill: #F0F0F0;
   --color-selection-halo: #DDDDDD;
-  --color-success: #35603D;
+  --color-success: #285FA3;
   --color-warning: #795400;
   --color-danger: #963F35;
   --color-overlay: #20202066;
   --color-panel-overlay: #20202055;
   --color-shadow: #20202029;
+  --color-primary: #315DD9;
+  --color-primary-hover: #274FBE;
+  --color-primary-pressed: #2347AC;
+  --color-on-primary: #FFFFFF;
   color-scheme: light;
 }
