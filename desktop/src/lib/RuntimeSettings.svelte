@@ -22,13 +22,13 @@
 </script>
 <section aria-label="Runtime settings">
   <h2>Local runtime settings</h2>
-  <p>Not checked automatically. Uses the backend-selected local Unix Docker socket only; no Docker context or credentials are read. Execution remains auth-blocked regardless of runtime readiness.</p>
+  <p>Not checked automatically. Uses the backend-selected local Unix Docker socket only; no Docker context or credentials are read. Checks Docker/image prerequisites only, not authentication or security. This observation does not authorize execution; run preparation performs its own checks.</p>
   <button disabled={busy} onclick={check}>Check local Docker readiness</button>
   <button disabled={busy} onclick={showPlan}>Show setup instructions (does not execute)</button>
   {#if busy}<p role="status">Checking…</p>{/if}
   {#if error}<p role="alert">{error}</p>{/if}
   {#if readiness}
-    <p role="status">{readiness.status}: {readiness.message}</p>
+    <p role="status">{readiness.status === 'authUnsupported' ? 'Docker/image prerequisites checked (authentication and security not checked)' : readiness.status}: {readiness.message}</p>
     <p>Isolation evidence: {readiness.isolation} · Image: {readiness.imageId ?? 'not observed'}</p>
   {:else}<p>No current runtime observation.</p>{/if}
   {#if plan}

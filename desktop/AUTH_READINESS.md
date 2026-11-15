@@ -1,11 +1,21 @@
 # Codex subscription availability and separate managed-session authority
 
-The host-file inspector described below never imports a login or authorizes execution. The current conditional Linux managed-session source path is documented in [execution](docs/single-block-run.md); macOS execution remains fail-closed and live auth/native qualification remains unperformed. Historical #29 blocker notes below do not describe the current executor as wholly unimplemented.
+Settings reports app-owned managed-session metadata, not the ordinary host login. Conditional Linux and macOS execution paths are implemented in source; all native runtime/security/consent gates still apply. Live authentication and native qualification remain unperformed. See [execution](docs/single-block-run.md) for the current path. The legacy host-file inspector below never imports a login or authorizes execution.
+
+## Settings → Run preparation
+
+- **Check managed sessions** explicitly reads `managed_session_status`: available and withheld counts plus sanitized guidance. Opening Settings does not inspect host credential files, probe Docker, or start sign-in. Available metadata is not proof of current keyring access, provider validity, native security qualification or permission to execute.
+- **Open native managed sign-in** opens the dedicated sign-in surface. Beginning acquisition is a separate explicit action with native prerequisites and scoped confirmation. Only that window can display transient provider URL/code information; Settings receives no credentials or device codes. Never send credentials or device codes in chat.
+- **Check local Docker readiness** separately inspects Docker and the pinned image. A successful check is not an authentication or security check, and its `executionReady: false` is not a claim that the separate executor is unimplemented. See [runtime guidance](docs/runtime.md).
+- Run preparation shows managed-session counts and selected saved revisions. No available slot? Open Settings to review sessions or use native sign-in. Withheld slots need explicit native recovery, not host-login import or a copied old cache. Queuing may wait for an available session; native execution requires a fresh exact reservation and single-use confirmation.
+
+These actions never build an image, enable execution, change security settings or spend money automatically. Native refusal remains authoritative; do not bypass FileVault, swap/core, Keychain or containment checks.
 
 ## Explicit manual source support
 
-Only **Check Codex credential availability** requests the read-only Tauri
-`auth_readiness` command. Mounting/opening the app never inspects credentials.
+The retained legacy read-only Tauri `auth_readiness` command runs only on an
+explicit request; Settings no longer offers this inspector as an execution setup step.
+Mounting/opening the app never invokes this host-file inspection.
 On supported Unix hosts it checks exactly the host home directory's existing
 `~/.codex/auth.json`. The location is resolved in Rust; JS cannot supply a path.
 This is an explicit choice to inspect that file, not automatic selection of the
@@ -49,12 +59,12 @@ Availability outcomes: `notInspected`, `available`, `missing`, `unsupported`,
 results. Credentials remain confined to transient backend memory; this is not a
 memory-forensics/secure-zeroization guarantee.
 
-## Container authentication and concurrent refresh blocker
+## Host-file inspection is not managed-session authority
 
 There is a gated source execution/staging adapter and a separate app-owned native sign-in surface. No native platform is qualified yet. Every host-file availability result,
 including `available`, preserves `unsupportedConcurrentAuth` and
 `executionEnabled: false`. Host material availability is not successful
-in-container authentication. `start_run` records an immutable captured workflow request or an explicit blocked outcome; it never derives managed-session authority from this host-file inspection. Conditional Linux admission uses separately acquired app-owned sessions and native runtime/security/consent gates; macOS remains withheld.
+in-container authentication. `start_run` records an immutable captured workflow request or an explicit blocked outcome; it never derives managed-session authority from this host-file inspection. Conditional Linux and macOS admission use separately acquired app-owned sessions and native runtime/security/consent gates. Unknown or unsupported prerequisites fail closed.
 
 Copied per-run refresh grants can race with each other and the ordinary host
 CLI; moving a copied grant to a different store does not create an independent
@@ -86,10 +96,10 @@ store behavior, tmpfs/host/VM paging and diagnostic persistence constraints,
 trusted-private scope, containment and cleanup remain mandatory backend admission
 requirements. Concrete source operations now exist; live platform/provider verification
 is still separate, **not absence of a public cache consumption route**.
-No automatic login/status process, refresh, network/model call, paid API-key
-fallback, host-login overwrite, plaintext conversion or concurrency reduction is
-introduced. Consult [Codex setup](https://developers.openai.com/codex/auth) for
-your own subscription login; this app does not start or modify it.
+The host-file inspector introduces no automatic login/status process, refresh,
+network/model call, paid API-key fallback, host-login overwrite, plaintext
+conversion or concurrency reduction. Use the separate native managed sign-in
+surface for this app; do not export or convert your ordinary subscription login.
 
 Named configuration/revision/reference behavior remains unchanged. SQLite
 contains typed nonsecret settings, not credential DTOs or source content.

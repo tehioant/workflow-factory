@@ -53,9 +53,29 @@ fn available_prerequisites_do_not_authorize_execution() {
     );
     let result = docker.readiness(&mut Replies([daemon(), image].into()), None);
     assert_eq!(result.status, RuntimeStatus::AuthUnsupported);
+    assert_eq!(
+        serde_json::to_value(&result.status).unwrap(),
+        "authUnsupported"
+    );
     assert_eq!(result.isolation, IsolationEvidence::ExpectedNotMeasured);
     assert_eq!(result.image_id.as_deref(), Some(id.as_str()));
     assert!(!result.execution_ready);
+    assert!(result
+        .message
+        .contains("Docker/image prerequisites checked"));
+    assert!(result
+        .message
+        .contains("Authentication and security were not checked"));
+    assert!(result.message.contains("does not authorize execution"));
+    assert!(!result.message.contains("unsupported pending"));
+    assert!(!result.message.contains("Execution is blocked"));
+    let stopped = Docker::new("unix:///var/run/docker.sock", Platform::MacOs)
+        .unwrap()
+        .readiness(&mut Injected(Err(ProcessError::Unavailable)), None);
+    assert_eq!(stopped.status, RuntimeStatus::Stopped);
+    assert!(!stopped.execution_ready);
+    assert!(stopped.message.contains("Docker Desktop on macOS"));
+    assert!(stopped.message.contains("socket permissions"));
 }
 #[test]
 fn ordinary_bridge_cannot_be_isolation_evidence() {

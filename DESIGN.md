@@ -22,28 +22,28 @@ colors:
   danger: "#D7A49B"
   accent: "#D1F56A"
   focus: "#D1F56A"
-  light-canvas: "#F7F8F2"
-  light-rail: "#EBEEE4"
+  light-canvas: "#F7F7F7"
+  light-rail: "#EEEEEE"
   light-surface: "#FFFFFF"
-  light-raised: "#EDF1E7"
-  light-divider: "#CED5C5"
-  light-control-border: "#6C7961"
-  light-text: "#232B20"
-  light-muted: "#52604C"
-  light-secondary: "#53604D"
+  light-raised: "#F0F0F0"
+  light-divider: "#D2D2D2"
+  light-control-border: "#737373"
+  light-text: "#242424"
+  light-muted: "#555555"
+  light-secondary: "#595959"
   light-accent: "#46620D"
   light-focus: "#46620D"
-  light-hover: "#E1E7D9"
-  light-grid: "#CED5C5"
-  light-selection-fill: "#E3EDCF"
-  light-reference-fill: "#E8F0D9"
-  light-selection-halo: "#D9E7BD"
+  light-hover: "#E7E7E7"
+  light-grid: "#D2D2D2"
+  light-selection-fill: "#EAEAEA"
+  light-reference-fill: "#F0F0F0"
+  light-selection-halo: "#DDDDDD"
   light-success: "#35603D"
   light-warning: "#795400"
   light-danger: "#963F35"
-  light-overlay: "#202B2066"
-  light-panel-overlay: "#202B2055"
-  light-shadow: "#202B2029"
+  light-overlay: "#20202066"
+  light-panel-overlay: "#20202055"
+  light-shadow: "#20202029"
 typography:
   title:
     fontFamily: FreeSans
@@ -171,26 +171,34 @@ Only the exact `light` value opts in; missing, invalid or blocked storage uses D
 Storage write failure does not prevent switching in the current window. Both the
 main workspace and separate SignIn mount restore this preference before mounting.
 
-The `light-*` tokens above are the normative light overrides; omitted roles inherit
-the dark value. Warm near-white canvas, white panels, green-tinted raised and selected
-surfaces retain the hierarchy. Lime `primary` remains an action fill with dark
+The `light-*` tokens above specify the neutral light-theme correction requested
+after hands-on macOS feedback; they are target values, not evidence that the
+application has been updated or visually accepted. Omitted roles inherit the
+dark value. Use achromatic white/light-gray canvas, panels, raised/hover/selection
+fills, borders and charcoal/gray text, with neutral overlay/shadow tints. Do not
+spread an olive/green wash across the workspace. Lime `primary` remains an action fill with dark
 `on-primary` text; dark olive `light-accent`/`light-focus` is used for essential
 icons, references, selected outlines and focus, never pale lime text on white.
 Status colors retain textual labels. Grid/dividers/halos are decorative; meaningful
 borders and edges use control-border. Hover, overlay and shadow have semantic roles.
-Draft and captured Svelte Flow share the selected explicit color mode.
+Draft and captured Svelte Flow share the selected explicit color mode. Green is
+limited to restrained action/navigation/selection/focus/reference accents and
+semantic success, not large background fills or ordinary body text. Dark-mode
+tokens, typography, spacing and layout remain unchanged.
 
 [Light CSS](docs/design/canvas-first/light-theme.css) and
 [DTCG light tokens](docs/design/canvas-first/light-theme.tokens.json) are derived
 exports of these light overrides. Original dark concept PNGs and historical dark
-exports are unchanged and are not light-theme screenshots. Implementation tokens
-live in `desktop/src/app.css`. Local measured light contrast and command receipts
+exports are unchanged and are not light-theme screenshots. These light exports
+are documentation targets only; the runtime stylesheet still has the previously
+implemented green-tinted palette until a separately authorized implementation.
+Implementation tokens live in `desktop/src/app.css`. Earlier measured light contrast and command receipts
 are retained in `/home/ops/reports/workflow-factory-light-theme/`; browser/native
 visual qualification remains a separate gate.
 
 
-- Canvas, rail, surface and raised define a small warm-neutral hierarchy. Separate regions with subtle dividers rather than shadows or decorative rails.
-- Acid lime identifies the main Run action, active navigation, selected-node outline, focus and prompt references. Keep the rest of a node neutral. Success is a separate muted green and always has a text label/icon.
+- Canvas, rail, surface and raised define a small warm-neutral hierarchy in Dark and an achromatic hierarchy in Light. Separate regions with subtle dividers rather than shadows or decorative rails.
+- Acid lime identifies the main Run action; use the theme's accessible accent/focus colors for active navigation, selected-node outlines and prompt references. Keep the rest of a node neutral. Success is a separate muted green and always has a text label/icon.
 - Use text for primary content, muted for supporting copy and secondary for essential low-emphasis text. Decorative is limited to grid dots or redundant, nonessential decoration; it is not permitted for readable small labels.
 - This corrects a contrast weakness in the concepts: original faint `#737D70` text does not meet 4.5:1 on the dark surfaces. Secondary `#8A9485` does, including on raised surfaces. This is a deliberate accessibility correction, not a new theme.
 - Divider is decorative only. Controls, graph handles and meaningful connection lines use control-border, which must maintain 3:1 against adjacent dark surfaces. Focus is a 2px focus-color outline with 3px offset. The full-bleed canvas root uses a -3px inset offset instead, keeping the outline visible inside the clipped workspace; other controls retain the outward offset. Selected graph nodes use a primary outline and restrained selection-fill halo, plus semantic selected state.
@@ -234,7 +242,7 @@ Use 100–150ms color/outline transitions where useful; omit automatic graph tra
 
 ## Do's and Don'ts
 
-- Preserve the compact dark-green/charcoal composition and clear typography across secondary destinations.
+- Preserve the compact charcoal composition in Dark and neutral white/gray composition in Light, with clear typography across secondary destinations.
 - Bind controls and statuses to actual command results; retain runtime/authentication failures and incomplete inspection states.
 - Keep the three example workflows, prompts, counts, outputs, revision 12 and durations in design fixtures only. Omit unavailable duration fields in production: the inspected transport does not supply them.
 - Preserve native text selection, keyboard operation, independent scrolling and clear focus.
