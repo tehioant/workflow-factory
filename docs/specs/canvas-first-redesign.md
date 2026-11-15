@@ -6,9 +6,13 @@ Workflow authors need to build and inspect sequential AI workflows without navig
 
 The three supplied design concepts establish a compact charcoal workspace, restrained acid-lime actions, a central canvas, a contextual inspector and a collapsible run drawer. Their static sample results are not evidence of successful execution or runtime readiness.
 
+Hands-on macOS feedback confirms that the editor and theme switching work, but the light palette looks too green. Functional Dark/Light acceptance is not approval of the palette. A user whose shell aliases Docker to Podman also needs clear runtime prerequisites rather than assuming that shell compatibility authorizes this app's execution path.
+
 ## Solution
 
 Recompose the existing desktop UI around the author's current task: choose a Definition, connect AI blocks, edit one block, explicitly save, supply run inputs and inspect the immutable Run independently of the current draft.
+
+Retain the existing saved Dark/Light selector, with Dark unchanged and still the default. Correct Light to neutral white/light-gray surfaces and charcoal/gray text, reserving green for restrained action/focus/selection accents and semantic status. Preserve the tested editing, persistence and shutdown behavior.
 
 Use the existing Tauri + Rust, Svelte + TypeScript, Svelte Flow, selected shadcn-svelte controls, Tailwind CSS and Vite stack. Preserve the domain, execution and security contracts in [desktop specification #23](https://github.com/tehioant/workflow-factory/issues/23). This is a presentation and interaction redesign, not a second engine rewrite.
 
@@ -22,6 +26,7 @@ Visual values are maintained in [DESIGN.md](../../DESIGN.md). The [reference ind
 4. As a local user, I want a collapsible run inspector with immutable snapshots, outputs and diagnostics, so that I can understand execution without confusing it with current edits.
 5. As a local user, I want configurations, runtime setup and queue/history access in predictable destinations, so that secondary controls remain available without dominating the editor.
 6. As a keyboard user, I want labelled controls, visible focus, non-drag graph actions and usable narrow-window layouts, so that the editor remains operable without precise pointer gestures.
+7. As a local user, I want a neutral light workspace with readable controls and restrained green accents, so that I can work in Light mode without a green cast while retaining the existing Dark option.
 
 ## Implementation Decisions
 
@@ -61,7 +66,7 @@ At the 1920 × 1200 reference viewport:
 - AI block is the only palette type. Clicking Add block adds one block at an appropriate visible position and selects it. A drag interaction may supplement, not replace, this action. Do not show decorative integrations or branching controls.
 - At reference scale, a node is approximately 260 × 160px with icon, AI block label, name, optional short derived prompt preview and saved-configuration name. There is no new description field: the preview derives from the existing prompt or is omitted. Missing configuration is visible as Not configured, not a sample default.
 - Node ordinals, when shown, derive from the valid sequential connection order; incomplete/invalid graphs do not receive a misleading execution order. Names and configuration summaries come from the draft, not historical Run records.
-- Selected node uses a lime outline/quiet halo and semantic selection. Full prompts stay in the inspector. Support long names with constrained wrapping/truncation and access to the complete name.
+- Selected node uses the theme's accessible accent outline, a quiet theme-appropriate halo and semantic selection; Light keeps selection fills neutral. Full prompts stay in the inspector. Support long names with constrained wrapping/truncation and access to the complete name.
 - Ports: target left, source right. Connections are directed, keyboard-operable through the connection manager and visibly selectable/removable. Reuse existing validation; self-edges, duplicate/unknown endpoints, cycles and unsupported executable shapes are refused at the applicable save/admission boundary with actionable feedback. Preserve authoring incomplete drafts where the existing model permits it.
 - Moving a node marks the draft dirty. Support existing keyboard movement with arrow keys on a focused graph movement handle. Typing arrows/Space in fields never moves/pans the graph. Space-to-pan applies only with canvas focus; zoom/fit have accessible named buttons.
 - Removing a block identifies affected connections/references and uses an explicit confirmation when destructive dependencies exist. Do not leave invisible dangling references or silently remove unrelated blocks. Removal retains existing domain validation.
@@ -81,7 +86,8 @@ At the 1920 × 1200 reference viewport:
 - Clean draft: collect inputs, then explicitly start the saved revision. Dirty draft: require Save and run, Run last saved revision (only if one exists), or Stay. Running the saved revision leaves the unsaved draft intact; saving failures prevent admission. Validate values against the exact chosen saved definition, not a conflicting dirty input declaration.
 - Capture expected definition/configuration revisions and supplied values through the existing start request. Disable duplicate submissions while pending. Unknown admission outcome exposes Retry same request with the original immutable request ID and payload; never generate a new execution as an error-recovery shortcut.
 - Missing/unsupported runtime or authentication produces an actionable explanation and link to Settings. Do not disable authoring or retained-history access. An unavailable Run control needs an accessible reason; grey styling alone is insufficient.
-- The inspected backend reports unsupported authentication/readiness states. The active green Run button in the image is illustrative, not authorization to override these gates. Ready can only be shown when the real command contract confirms it.
+- Separate runtime/image observations, app-owned managed-session metadata, native security qualification and operation-specific consent. A successful runtime check or available-session count is not authorization, and a read-only readiness result is not evidence that the guarded executor is unimplemented. The active green Run button in the image is illustrative, not permission to override gates. Ready can only be shown for the scope actually confirmed by the real command contract.
+- The supported macOS runtime contract targets Docker Desktop. Interactive shell aliases such as Docker pointing to Podman are not application runtime selection or proof of compatibility. Explain the missing/unsupported prerequisite without automatic discovery, alias execution, installation or a compatibility shim. Editor/history access stays available. Podman execution support requires a separate approved compatibility/security design; this spec does not authorize it.
 - Accepted runs open/select the run drawer, with queued versus active state taken from backend data. Later draft/configuration edits never modify accepted Runs.
 
 ### 6. Run drawer, snapshot and state projection
@@ -110,13 +116,17 @@ These narrow-window rules complete the desktop design; they are specified behavi
 - Provide non-drag add/connect/move actions. Ordinary Delete/Backspace editing in a prompt must never delete a graph object. Use labelled confirmation for consequential deletion. Normal tab order follows navigation → editor toolbar → canvas/inspector → drawer, with contextual dialogs temporarily owning focus.
 - Measure normal text at ≥4.5:1 and meaningful non-text affordances at ≥3:1. Use the accessible secondary/control-border tokens rather than reproducing the mockup's faint essential labels. Respect reduced motion.
 
+### 8. Light appearance after macOS feedback
+
+Keep one existing appearance authority shared by the saved selector, pre-mount preference bootstrap, theme tokens and flow-widget color mode. Settings → Appearance retains labelled Dark/Light choices; Dark stays the default, the explicit preference is saved locally, malformed/unavailable storage falls back safely, and failed writes do not prevent switching in the current window. Both the main workspace and dedicated sign-in surface restore the same preference before mounting. Correct only the light palette and its documented derivatives; do not add a second preference or a new theme engine. Neutrality applies to canvas, rail, panels, controls, hover/selection/reference fills, text, borders and overlays across editable and captured views, secondary destinations and the dedicated sign-in surface. Preserve focus geometry, semantic selection, status text and accessible accent contrast. No domain, transport, native security, dependency or data behavior changes are required.
+
 ## Testing Decisions
 
 ### Retained approach
 
 The already-approved primary seams remain the engine's public interface and small focused UI/desktop-command checks. This redesign primarily needs prepared-state UI components with mocked Tauri commands; it does not reopen the engine architecture or require a testing interview.
 
-Assert visible behavior from one action or state transition per check. Reuse the existing editor, reference-insertion, command, run-projection and inspection tests. Group useful assertions in focused cases; do not duplicate engine validation or test Svelte Flow internals. Preserve the existing repository-wide ceiling of 200 discovered Rust/frontend cases. Replace redundant coverage rather than raising the ceiling, wrapping many journeys in one test, increasing timeouts or adding sharding.
+Assert visible behavior from one action or state transition per check. Reuse the existing editor, reference-insertion, command, run-projection and inspection tests. Group useful assertions in focused cases; do not duplicate engine validation or test Svelte Flow internals. Preserve the existing repository-wide ceiling of 200 discovered root Node/frontend/Rust cases. Replace redundant coverage rather than raising the ceiling, wrapping many journeys in one test, increasing timeouts or adding sharding.
 
 No automated E2E tests, full controller/workflow journeys, real services, containers, live authentication or model calls. For this documentation-only delivery, validate files, references, token structure and contrast, not the application suite. Native Linux/macOS interaction checks remain separately recorded manual evidence; rendered concepts are not that evidence.
 
@@ -131,6 +141,7 @@ No automated E2E tests, full controller/workflow journeys, real services, contai
 - **A7 — Status and inspection:** Seed each declared backend run-state projection directly, including terminal result plus cleanup hold. Unavailable/incomplete/truncated/empty records stay distinct. Ignore mismatched/late run and artifact-generation responses. Do not show fixture durations or invented success.
 - **A8 — Secondary controls:** Configurations, readiness/settings, queue, definition-scoped history, cancel and permitted hold recovery remain reachable after relocation. Their rendered states use existing command data and preserve actionable failures.
 - **A9 — Accessibility and fidelity:** Confirm focus, labels, semantic selection, keyboard alternatives, measured contrast, 200% zoom and long content. Compare component previews of the three concepts using deterministic sample fixtures; fixture names/results and concept footer do not leak into production.
+- **A10 — Neutral Light:** Light's non-status/non-accent surfaces, body text, borders and overlays use achromatic tokens rather than green-tinted neutrals. Action/focus/selection accents remain distinguishable and text/status meaning is not color-only. Keep normal text at least 4.5:1 and essential non-text affordances at least 3:1 on their adjacent surfaces. Dark tokens and layout remain unchanged. Existing appearance component checks cover one prepared selection or restore transition with mocked storage/native boundaries; extend them rather than adding a new seam or replaying a complete app journey. Inspect actual built Light previews at wide/narrow sizes, plus a Dark comparison; a later native Mac visual check must explicitly accept the revised palette. Earlier Mac passes do not certify this correction.
 
 The acceptance list is not a required one-test-per-bullet inventory. Choose the smallest meaningful focused coverage; visual captures establish composition only, not execution or persistence success.
 
@@ -141,12 +152,15 @@ The acceptance list is not a required one-test-per-bullet inventory. Choose the 
 - New account/profile, avatars, team collaboration, cloud sync, paid features, token/cost estimates or inferred execution telemetry.
 - Automatic saving, automatic execution retries/resume, silent installation/image pulls, relaxed authentication/sandbox gates or provider/billing fallbacks.
 - New branding approval, polished marketing pages, new binary releases, deployments, signing purchases or public-visibility changes.
-- The original light-theme exclusion is superseded only by the explicit user-approved bounded appearance extension: Settings → Appearance offers saved Dark/Light, Dark remains default, malformed/unavailable storage is safe, and common pre-mount bootstrap covers App/SignIn. Shared semantic colors and Svelte Flow mode cover draft/captured canvases and every secondary panel; no backend, domain authority or dependency changes are authorized.
+- Theme-engine replacement, changing Dark's palette/default, or changing behavior beyond the bounded neutral-Light correction and retained saved appearance selection.
+- Podman execution support, runtime-engine migration, alias-based discovery, Docker-to-Podman shims and weakening the existing platform/security contract.
 - Implementation, automatic worker launch, merging, automated E2E or live platform/model qualification from publishing these specs.
 
 ## Further Notes
 
-- Source baseline inspected: main commit `0d9e8a09be9efea5e9568a01521355d02cef7d50`. The generated transport confirms current data availability and unsupported readiness, not live execution qualification.
+- Original design baseline: main commit `0d9e8a09be9efea5e9568a01521355d02cef7d50`; feedback update inspected main `b3fbc162a5654cb9205164ed9548c92202644eb6` and the locally reviewed readiness candidate `f5a99e1e7870df164895fe376d89aa76d87d321e`. The latter was supplied to Antoine as an offline bundle and is not merged or published by this specification update. Current conditional execution source is not live platform qualification.
+- Manual feedback, user-reported against the supplied Mac testing plan: launch, save/reopen, canvas, Dark/Light switching and shutdown PASS; Antoine also reported section 3 (installed-DMG phase) PASS. Managed-session status returned Available 0 / Withheld 0. Docker readiness returned missing, and the user's shell reports Docker aliased to Podman. These are observations of the tested build, not assistant-observed verification of each platform gate, both CPU architectures, positive runtime/authentication or the proposed neutral palette. Exact Mac build identity/architecture were not independently read back.
+- Visual feedback: “light mode is a little green. i don't like it so much”. This update replaces the former green-tinted Light direction; it does not re-open passed unrelated editor work. The existing prepared-state appearance tests, contrast checks and separately recorded manual Mac checks are retained, with no new testing seam or policy expansion.
 - This focused spec supplements #23 and supersedes its broad layout guidance only where this document explicitly refines presentation/interaction. The parent architecture/security/testing contracts remain in force; older browser startup prose is not this desktop's interaction contract.
 - The three PNGs are the selected direction for specification, not implemented screenshots or approval of every decorative detail. The temporary mark, avatar, prompt chip rendering, short faint labels and duration examples are constrained/corrected above.
 - Secondary destinations retain the same design system and existing functionality; no additional finished mockups of those destinations are claimed.
