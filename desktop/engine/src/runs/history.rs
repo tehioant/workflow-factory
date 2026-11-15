@@ -202,11 +202,18 @@ fn validated_capture(
     id: &str,
 ) -> Result<(Snapshot, RunStatus), Error> {
     // Check bytes in SQL before materializing any stored JSON in Rust.
-    let sql = format!("SELECT request_id,request,snapshot,status FROM runs WHERE id=?1 AND {SCOPE}=?2 AND length(CAST(request_id AS BLOB))=36 AND length(CAST(request AS BLOB))+length(CAST(snapshot AS BLOB))+length(CAST(status AS BLOB))<=?3");
+    let sql = format!("SELECT request_id,request,snapshot,status FROM runs WHERE id=?1 AND {SCOPE}=?2 AND length(CAST(request_id AS BLOB))=36 AND CASE WHEN EXISTS(SELECT 1 FROM run_queue WHERE run_id=runs.id AND execution_kind='directModel') THEN length(CAST(request AS BLOB))+length(CAST(snapshot AS BLOB))<=?3 AND length(CAST(status AS BLOB))<=?4 ELSE length(CAST(request AS BLOB))+length(CAST(snapshot AS BLOB))+length(CAST(status AS BLOB))<=?3 END");
     let row: Option<(String, String, String, String)> = c
-        .query_row(&sql, params![id, workflow, MAX_ROW as i64], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })
+        .query_row(
+            &sql,
+            params![
+                id,
+                workflow,
+                MAX_ROW as i64,
+                super::direct::MAX_STATUS_BYTES as i64
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
         .optional()
         .map_err(storage)?;
     let (request_id, request, snapshot, status) = row.ok_or_else(unavailable)?;

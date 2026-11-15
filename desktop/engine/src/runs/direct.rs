@@ -2,14 +2,57 @@
 use super::{ExecutionKind, RunState, RunStatus, Snapshot};
 use crate::{params, storage, validation, Error, OptionalExtension, Store, TransactionBehavior};
 use rusqlite::Connection;
+const MAX_DIAGNOSTIC_BYTES: usize = 2048;
+// JSON can encode one decoded byte as six bytes (\u00XX). UUID, i64,
+// field names, punctuation and booleans fit in the fixed envelope.
+const MAX_FINALITY_BYTES: usize =
+    6 * (crate::providers::MAX_OUTPUT_BYTES + MAX_DIAGNOSTIC_BYTES) + 256;
+// At most 100 blocks: each resolved prompt is bounded to 1 MiB, each
+// output to 256 KiB, plus the duplicated final output and metadata envelope.
+pub(super) const MAX_STATUS_BYTES: usize = 6
+    * (100 * (1_048_576 + crate::providers::MAX_OUTPUT_BYTES) + crate::providers::MAX_OUTPUT_BYTES)
+    + 2 * 1024 * 1024;
+fn validate_finality(f: &DirectSettlement) -> Result<(), Error> {
+    if f.text
+        .as_ref()
+        .is_some_and(|s| s.len() > crate::providers::MAX_OUTPUT_BYTES)
+        || f.diagnostic.len() > MAX_DIAGNOSTIC_BYTES
+        || f.reservation.run_id.len() != 36
+        || uuid::Uuid::parse_str(&f.reservation.run_id).is_err()
+        || f.reservation.sequence <= 0
+    {
+        return Err(validation(
+            "Direct finality exceeds bounds or has invalid identity.",
+        ));
+    }
+    Ok(())
+}
+fn retained(c: &Connection, id: &str) -> Result<Option<(String, DirectSettlement)>, Error> {
+    let row: Option<(i64, Option<String>)> = c.query_row(
+        "SELECT sequence,CASE WHEN length(CAST(body AS BLOB))<=?2 THEN body END FROM direct_run_settlements WHERE run_id=?1",
+        params![id, MAX_FINALITY_BYTES as i64], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).optional().map_err(storage)?;
+    row.map(|(sequence, body)| {
+        let body = body.ok_or_else(|| validation("Retained direct finality exceeds bounds."))?;
+        let f: DirectSettlement = serde_json::from_str(&body).map_err(storage)?;
+        validate_finality(&f)?;
+        if f.reservation.run_id != id || f.reservation.sequence != sequence {
+            return Err(validation("Direct finality identity changed."));
+        }
+        Ok((body, f))
+    })
+    .transpose()
+}
 pub(super) const RESTART_HOLD:&str="Interrupted direct request withheld; never resent. Remote processing and API charges may already have occurred. Explicit Stop or retained-output storage recovery only.";
 pub(super) const STOP_STORAGE_HOLD:&str="Direct Stop with no local HTTP worker; final storage pending. No execution retry or remote cancellation claim.";
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DirectReservation {
     pub run_id: String,
     pub sequence: i64,
 }
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DirectSettlement {
     pub reservation: DirectReservation,
     pub text: Option<String>,
@@ -40,7 +83,7 @@ pub(super) fn checked(
     c: &Connection,
     r: &DirectReservation,
 ) -> Result<(Snapshot, RunStatus), Error> {
-    let (snapshot,status):(String,String)=c.query_row("SELECT r.snapshot,r.status FROM runs r JOIN run_queue q ON q.run_id=r.id WHERE r.id=?1 AND q.sequence=?2 AND q.execution_kind='directModel' AND q.phase='occupied' AND q.slot IS NULL AND q.generation IS NULL AND r.active=1 AND length(CAST(r.snapshot AS BLOB))+length(CAST(r.status AS BLOB))<=2097152 AND NOT EXISTS(SELECT 1 FROM run_resources WHERE run_id=r.id)",params![r.run_id,r.sequence],|row|Ok((row.get(0)?,row.get(1)?))).map_err(storage)?;
+    let (snapshot,status):(String,String)=c.query_row("SELECT r.snapshot,r.status FROM runs r JOIN run_queue q ON q.run_id=r.id WHERE r.id=?1 AND q.sequence=?2 AND q.execution_kind='directModel' AND q.phase='occupied' AND q.slot IS NULL AND q.generation IS NULL AND r.active=1 AND length(CAST(r.snapshot AS BLOB))<=2097152 AND length(CAST(r.status AS BLOB))<=?3 AND NOT EXISTS(SELECT 1 FROM run_resources WHERE run_id=r.id)",params![r.run_id,r.sequence,MAX_STATUS_BYTES as i64],|row|Ok((row.get(0)?,row.get(1)?))).map_err(storage)?;
     let snapshot: Snapshot = serde_json::from_str(&snapshot).map_err(storage)?;
     let status: RunStatus = serde_json::from_str(&status).map_err(storage)?;
     snapshot.validate_kind()?;
@@ -118,27 +161,16 @@ impl Store {
         kind.ok_or_else(|| validation("Empty run."))
     }
     pub fn retain_direct_settlement(&self, f: &DirectSettlement) -> Result<(), Error> {
-        if f.text
-            .as_ref()
-            .is_some_and(|s| s.len() > crate::providers::MAX_OUTPUT_BYTES)
-            || f.diagnostic.len() > 2048
-        {
-            return Err(validation("Direct finality exceeds bounds."));
-        }
+        validate_finality(f)?;
         let mut c = Connection::open(&self.path).map_err(storage)?;
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
         let body = serde_json::to_string(f).map_err(storage)?;
-        let old: Option<String> = tx
-            .query_row(
-                "SELECT body FROM direct_run_settlements WHERE run_id=?1 AND sequence=?2",
-                params![f.reservation.run_id, f.reservation.sequence],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(storage)?;
-        if let Some(old) = old {
+        if body.len() > MAX_FINALITY_BYTES {
+            return Err(validation("Direct finality exceeds bounds."));
+        }
+        if let Some((old, _)) = retained(&tx, &f.reservation.run_id)? {
             if old == body {
                 return Ok(());
             }
@@ -153,6 +185,7 @@ impl Store {
         tx.commit().map_err(storage)
     }
     pub fn settle_direct(&self, f: &DirectSettlement) -> Result<(), Error> {
+        validate_finality(f)?;
         let r = &f.reservation;
         let mut c = Connection::open(&self.path).map_err(storage)?;
         let tx = c
@@ -162,7 +195,7 @@ impl Store {
         if !exact {
             return Err(validation("Durable direct finality missing or changed."));
         }
-        let (body,active,phase,sequence,kind,slot,generation):(String,bool,String,i64,String,Option<String>,Option<u32>)=tx.query_row("SELECT r.status,r.active,q.phase,q.sequence,q.execution_kind,q.slot,q.generation FROM runs r JOIN run_queue q ON q.run_id=r.id WHERE r.id=?1 AND length(CAST(r.status AS BLOB))<=2097152",[&r.run_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).map_err(storage)?;
+        let (body,active,phase,sequence,kind,slot,generation):(String,bool,String,i64,String,Option<String>,Option<u32>)=tx.query_row("SELECT r.status,r.active,q.phase,q.sequence,q.execution_kind,q.slot,q.generation FROM runs r JOIN run_queue q ON q.run_id=r.id WHERE r.id=?1 AND length(CAST(r.status AS BLOB))<=?2",params![r.run_id,MAX_STATUS_BYTES as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).map_err(storage)?;
         let mut s: RunStatus = serde_json::from_str(&body).map_err(storage)?;
         if s.id != r.run_id
             || sequence != r.sequence
@@ -222,15 +255,7 @@ impl Store {
     }
     pub fn retained_direct_settlement(&self, id: &str) -> Result<Option<DirectSettlement>, Error> {
         let c = Connection::open(&self.path).map_err(storage)?;
-        let body:Option<String>=c.query_row("SELECT body FROM direct_run_settlements WHERE run_id=?1 AND length(CAST(body AS BLOB))<=270000",[id],|r|r.get(0)).optional().map_err(storage)?;
-        body.map(|b| {
-            let f: DirectSettlement = serde_json::from_str(&b).map_err(storage)?;
-            if f.reservation.run_id != id {
-                return Err(validation("Direct finality identity changed."));
-            }
-            Ok(f)
-        })
-        .transpose()
+        retained(&c, id).map(|row| row.map(|(_, f)| f))
     }
     pub fn hold_direct_persistence(
         &self,

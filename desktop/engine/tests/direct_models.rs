@@ -157,10 +157,31 @@ fn prepared_direct_block_uses_durable_outputs_and_honors_cancel_freeze() {
 #[test]
 fn direct_settlement_is_exact_durable_storage_only_and_atomic() {
     use workflow_engine::runs::direct::{DirectReservation, DirectSettlement};
-    for state in ["running", "cancelling"] {
-        let (_dir, store, c) = prepared();
+    for (state, text) in [
+        ("running", "done".to_string()),
+        ("cancelling", "done".to_string()),
+        ("running", "a".repeat(262144)),
+        ("running", format!("x{}", "\n".repeat(262143))),
+        ("cancelling", "\"".repeat(262144)),
+        ("running", "\\".repeat(262144)),
+        (
+            "running",
+            format!("x{}{}", "\u{0001}".repeat(157200), "a".repeat(104943)),
+        ),
+    ] {
+        let (dir, store, c) = prepared();
         let id = seed(&c, state);
-        c.execute("UPDATE runs SET status=json_set(status,'$.blocks',json(?1),'$.finalResponse','done') WHERE id=?2",params![json!([{"blockId":"a","state":"succeeded","resolvedPrompt":"Hello","finalResponse":"done"}]).to_string(),id]).unwrap();
+        let wire = json!({"object":"response","status":"completed","error":null,"incomplete_details":null,"output":[{"type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":text}]}]}).to_string();
+        assert_eq!(
+            workflow_engine::providers::parse_terminal(
+                workflow_engine::DirectProviderId::OpenaiResponses,
+                200,
+                wire.as_bytes()
+            )
+            .unwrap(),
+            text
+        );
+        c.execute("UPDATE runs SET status=json_set(status,'$.blocks',json(?1),'$.finalResponse',?2) WHERE id=?3",params![json!([{"blockId":"a","state":"succeeded","resolvedPrompt":"Hello","finalResponse":text}]).to_string(),text,id]).unwrap();
         let r = DirectReservation {
             run_id: id.clone(),
             sequence: c
@@ -173,16 +194,58 @@ fn direct_settlement_is_exact_durable_storage_only_and_atomic() {
         };
         let f = DirectSettlement {
             reservation: r,
-            text: Some("done".into()),
-            diagnostic: "HTTP returned; no remote cancellation claim.".into(),
+            text: Some(text.clone()),
+            diagnostic: "\u{0001}".repeat(2048),
             success: true,
         };
         store.retain_direct_settlement(&f).unwrap();
-        assert!(
-            store.retained_direct_settlement(&id).unwrap().is_some(),
-            "chosen direct finality must be durable"
+        let retained = store.retained_direct_settlement(&id).unwrap();
+        assert!(retained.is_some(), "chosen direct finality must be durable");
+        assert!(retained.unwrap() == f, "literal payload must round trip");
+        c.execute_batch("CREATE TRIGGER refuse_settle BEFORE UPDATE OF phase ON run_queue WHEN NEW.phase='settled' BEGIN SELECT RAISE(FAIL,'prepared'); END;").unwrap();
+        assert!(store.settle_direct(&f).is_err());
+        assert_eq!(
+            c.query_row("SELECT active FROM runs WHERE id=?1", [&id], |r| r
+                .get::<_, bool>(0))
+                .unwrap(),
+            true
         );
-        if state == "running" {
+        c.execute_batch("DROP TRIGGER refuse_settle;").unwrap();
+        // A new Store has no volatile worker/finality claim: recovery is storage only.
+        let restarted = Store::open(dir.path()).unwrap();
+        if text != "done" {
+            restarted.withhold_unfinished_runs().unwrap();
+            let recovered = restarted.retained_direct_settlement(&id).unwrap().unwrap();
+            assert!(recovered == f);
+            restarted.retain_direct_settlement(&recovered).unwrap();
+            if state == "cancelling" {
+                assert_eq!(restarted.stop_run(&id).unwrap().state, RunState::Stopped);
+            } else {
+                restarted.settle_direct(&recovered).unwrap();
+            }
+            let detail = restarted.run_detail(D, &id).unwrap();
+            assert_eq!(detail.final_response.as_deref(), Some(text.as_str()));
+            let history = workflow_engine::runs::history::HistoryReader::open(dir.path()).unwrap();
+            assert_eq!(
+                history
+                    .run_status(Some(&id))
+                    .unwrap()
+                    .unwrap()
+                    .final_response
+                    .as_deref(),
+                Some(text.as_str())
+            );
+            assert!(!history.list_run_history(D, None, 10).unwrap().entries[0].unavailable);
+            assert_eq!(
+                detail.state,
+                if state == "cancelling" {
+                    RunState::Stopped
+                } else {
+                    RunState::Succeeded
+                }
+            );
+        }
+        if state == "running" && text == "done" {
             assert_eq!(
                 store.stop_run(&id).unwrap().state,
                 RunState::Running,
@@ -387,6 +450,83 @@ fn unclaimed_direct_stop_retries_failed_finality_without_execution() {
             "settled"
         );
     }
+}
+#[test]
+fn retained_direct_finality_rejects_existing_corruption_without_replacement() {
+    use workflow_engine::runs::direct::{DirectReservation, DirectSettlement};
+    let (_dir, store, c) = prepared();
+    let id = seed(&c, "running");
+    assert!(store.retained_direct_settlement(&id).unwrap().is_none());
+    let sequence = c
+        .query_row(
+            "SELECT sequence FROM run_queue WHERE run_id=?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let f = DirectSettlement {
+        reservation: DirectReservation {
+            run_id: id.clone(),
+            sequence,
+        },
+        text: Some("literal".into()),
+        diagnostic: String::new(),
+        success: false,
+    };
+    let valid = serde_json::to_value(&f).unwrap();
+    let mut wrong_sequence = valid.clone();
+    wrong_sequence["reservation"]["sequence"] = (sequence + 1).into();
+    let mut wrong_id = valid.clone();
+    wrong_id["reservation"]["run_id"] = D.into();
+    let mut long_text = valid.clone();
+    long_text["text"] = "x".repeat(262145).into();
+    let mut long_diagnostic = valid.clone();
+    long_diagnostic["diagnostic"] = "x".repeat(2049).into();
+    for body in [
+        "{".into(),
+        " ".repeat(2 * 1024 * 1024),
+        wrong_sequence.to_string(),
+        wrong_id.to_string(),
+        long_text.to_string(),
+        long_diagnostic.to_string(),
+    ] {
+        c.execute(
+            "INSERT OR REPLACE INTO direct_run_settlements VALUES(?1,?2,?3)",
+            params![id, sequence, body],
+        )
+        .unwrap();
+        assert!(
+            store.retained_direct_settlement(&id).is_err(),
+            "existing invalid finality must not look absent"
+        );
+        assert!(store.retain_direct_settlement(&f).is_err());
+        assert_eq!(
+            c.query_row(
+                "SELECT body FROM direct_run_settlements WHERE run_id=?1",
+                [&id],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            body
+        );
+    }
+    c.execute("DELETE FROM direct_run_settlements", []).unwrap();
+    // The storage contract supports every 256 KiB text, even the worst sixfold
+    // JSON expansion (not a claim that this fits a provider's raw wire cap).
+    let mut escaped = f.clone();
+    escaped.text = Some("\u{0001}".repeat(262144));
+    escaped.diagnostic = "\u{0001}".repeat(2048);
+    store.retain_direct_settlement(&escaped).unwrap();
+    assert!(store.retained_direct_settlement(&id).unwrap().unwrap() == escaped);
+    c.execute_batch("CREATE TRIGGER reject_replay BEFORE INSERT ON direct_run_settlements BEGIN SELECT RAISE(FAIL,'must not write'); END;").unwrap();
+    store.retain_direct_settlement(&escaped).unwrap();
+    assert!(store.retain_direct_settlement(&f).is_err());
+    c.execute_batch("DROP TRIGGER reject_replay; DELETE FROM direct_run_settlements;")
+        .unwrap();
+    let mut too_large = f.clone();
+    too_large.text = Some("x".repeat(262145));
+    assert!(store.retain_direct_settlement(&too_large).is_err());
+    assert!(store.retained_direct_settlement(&id).unwrap().is_none());
 }
 #[test]
 fn kind_preflight_resolves_exact_saved_revisions_before_native_probes() {
