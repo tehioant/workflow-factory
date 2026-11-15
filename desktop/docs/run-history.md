@@ -21,9 +21,17 @@ retained row order, not an invented execution date.
   valid-ID rows retain their keyset order and remain accessible across pages.
   A separate warning marks unscopable malformed/oversized captures anywhere in
   the retained store: it does not claim they belong to the selected workflow.
-- Detailed stored request + snapshot + status JSON is capped at 2 MiB **before**
-  Rust materialization. Request IDs and list IDs are bounded in SQL too. Input
-  expansion is bounded before historical preparation/validation.
+- For legacy agent runs, detailed stored request + snapshot + status JSON is
+  capped at 2 MiB **before** Rust materialization. Direct-model runs retain a
+  separate 2 MiB request + snapshot cap and an escaping-aware status ceiling
+  shared by storage, history and active-queue readers. The derived status ceiling
+  is 790,102,016 serialized bytes, covering the supported block/prompt/output
+  bounds and duplicated final text; it is **not** a measured memory or latency
+  budget. Prepared checks exercise a 2,108,839-byte status, not the maximum.
+  SQLite may parse status within that ceiling even for a metadata-only queue
+  projection; maximum-size and many-row resource behavior remains unqualified.
+  Request IDs and list IDs remain bounded in SQL. Input expansion is bounded
+  before historical preparation/validation.
 - The public DTO is a typed allowlist: captured definition, prepared inputs,
   image identity, non-secret settings, status, diagnostics and durable results.
   Raw request/snapshot JSON, session/resource records and unknown extra fields
