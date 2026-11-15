@@ -171,9 +171,9 @@ Only the exact `light` value opts in; missing, invalid or blocked storage uses D
 Storage write failure does not prevent switching in the current window. Both the
 main workspace and separate SignIn mount restore this preference before mounting.
 
-The `light-*` tokens above specify the neutral light-theme correction requested
-after hands-on macOS feedback; they are target values, not evidence that the
-application has been updated or visually accepted. Omitted roles inherit the
+The `light-*` tokens above define the neutral light-theme correction requested
+after hands-on macOS feedback and applied in the runtime stylesheet. Source
+implementation is not native visual acceptance of the revised palette. Omitted roles inherit the
 dark value. Use achromatic white/light-gray canvas, panels, raised/hover/selection
 fills, borders and charcoal/gray text, with neutral overlay/shadow tints. Do not
 spread an olive/green wash across the workspace. Lime `primary` remains an action fill with dark
@@ -189,12 +189,12 @@ tokens, typography, spacing and layout remain unchanged.
 [Light CSS](docs/design/canvas-first/light-theme.css) and
 [DTCG light tokens](docs/design/canvas-first/light-theme.tokens.json) are derived
 exports of these light overrides. Original dark concept PNGs and historical dark
-exports are unchanged and are not light-theme screenshots. These light exports
-are documentation targets only; the runtime stylesheet still has the previously
-implemented green-tinted palette until a separately authorized implementation.
-Implementation tokens live in `desktop/src/app.css`. Earlier measured light contrast and command receipts
-are retained in `/home/ops/reports/workflow-factory-light-theme/`; browser/native
-visual qualification remains a separate gate.
+exports are unchanged and are not light-theme screenshots. The light exports
+are documentation derivatives of the palette used in `desktop/src/app.css`,
+not a second theme engine or additional runtime import. Earlier measured light
+contrast and command receipts are retained in
+`/home/ops/reports/workflow-factory-light-theme/`; frontend previews do not
+establish native macOS visual acceptance of this corrected palette.
 
 
 - Canvas, rail, surface and raised define a small warm-neutral hierarchy in Dark and an achromatic hierarchy in Light. Separate regions with subtle dividers rather than shadows or decorative rails.

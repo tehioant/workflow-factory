@@ -1,6 +1,6 @@
 {
   "$schema": "https://www.designtokens.org/schemas/2025.10/format.json",
-  "$description": "Specification-only neutral light targets from DESIGN.md; not yet applied to the runtime stylesheet. Inherit unchanged primary fill/on-primary from dark defaults.",
+  "$description": "Neutral light overrides matching DESIGN.md and the runtime stylesheet. Documentation export only; inherit unchanged primary fill/on-primary from dark defaults.",
   "color": {
     "$type": "color",
     "canvas": {

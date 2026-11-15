@@ -66,6 +66,18 @@ test('configuration navigation exposes its destination without a domain mutation
     appearance.value = 'light'; appearance.dispatchEvent(new window.Event('change', { bubbles: true })); await settle();
     assert.equal(window.document.documentElement.dataset.theme, 'light');
     assert.equal(window.localStorage.getItem('workflow-factory.theme'), 'light');
+    const stylesheet = readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
+    const lightRule = stylesheet.match(/:root\[data-theme=light\]\{([^}]+)\}/)![1];
+    const actualColors = Object.fromEntries([...lightRule.matchAll(/--color-([\w-]+):(#[\da-f]{6}(?:[\da-f]{2})?);/gi)].map(([, role, color]) => [role, color.toUpperCase()]));
+    const design = readFileSync(new URL('../../DESIGN.md', import.meta.url), 'utf8');
+    const expectedColors = Object.fromEntries([...design.matchAll(/^  light-([\w-]+): "(#[\da-f]{6}(?:[\da-f]{2})?)"$/gmi)].map(([, role, color]) => [role, color.toUpperCase()]));
+    assert.ok(Object.keys(expectedColors).length > 0, 'The normative Light palette is present');
+    assert.deepEqual(actualColors, expectedColors, 'Light uses the normative neutral palette across shared surfaces');
+    for (const [role, color] of Object.entries(actualColors)) {
+      if (['accent', 'focus', 'success', 'warning', 'danger'].includes(role)) continue;
+      assert.equal(color.slice(1, 3), color.slice(3, 5), `${role} has no green cast`);
+      assert.equal(color.slice(3, 5), color.slice(5, 7), `${role} is achromatic`);
+    }
     assert.deepEqual(calls, appearanceCalls, 'Appearance never invokes a domain command');
     appearance.value = 'dark'; appearance.dispatchEvent(new window.Event('change', { bubbles: true })); await settle();
     assert.equal(window.document.documentElement.dataset.theme, 'dark');
