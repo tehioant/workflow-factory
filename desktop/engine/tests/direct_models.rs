@@ -198,6 +198,29 @@ fn direct_settlement_is_exact_durable_storage_only_and_atomic() {
             diagnostic: "\u{0001}".repeat(2048),
             success: true,
         };
+        c.execute(
+            "UPDATE runs SET status=json_set(status,'$.diagnostic',?1) WHERE id=?2",
+            params![f.diagnostic, id],
+        )
+        .unwrap();
+        let history = workflow_engine::runs::history::HistoryReader::open(dir.path()).unwrap();
+        let queue = history
+            .queue_status()
+            .expect("valid direct status must remain visible in the read-only queue");
+        assert_eq!(queue.occupied, 1);
+        assert_eq!(queue.entries.len(), 1);
+        assert_eq!(queue.entries[0].id, id);
+        assert_eq!(queue.entries[0].definition_id, D);
+        assert_eq!(queue.entries[0].diagnostic, f.diagnostic);
+        assert!(!queue.entries[0].cleanup_pending);
+        assert_eq!(
+            queue.entries[0].state,
+            if state == "running" {
+                RunState::Running
+            } else {
+                RunState::Cancelling
+            }
+        );
         store.retain_direct_settlement(&f).unwrap();
         let retained = store.retained_direct_settlement(&id).unwrap();
         assert!(retained.is_some(), "chosen direct finality must be durable");
@@ -454,8 +477,38 @@ fn unclaimed_direct_stop_retries_failed_finality_without_execution() {
 #[test]
 fn retained_direct_finality_rejects_existing_corruption_without_replacement() {
     use workflow_engine::runs::direct::{DirectReservation, DirectSettlement};
-    let (_dir, store, c) = prepared();
+    let (dir, store, c) = prepared();
     let id = seed(&c, "running");
+    let history = workflow_engine::runs::history::HistoryReader::open(dir.path()).unwrap();
+    let status: String = c
+        .query_row("SELECT status FROM runs WHERE id=?1", [&id], |r| r.get(0))
+        .unwrap();
+    // Legacy projection retains the original 2 MiB ceiling; corruption is an
+    // explicit error, never an empty queue or an allocation of the full body.
+    c.execute(
+        "UPDATE run_queue SET execution_kind='codex' WHERE run_id=?1",
+        [&id],
+    )
+    .unwrap();
+    assert_eq!(history.queue_status().unwrap().entries[0].id, id);
+    let oversized_legacy = format!("{}{}", status, " ".repeat(2 * 1024 * 1024));
+    c.execute(
+        "UPDATE runs SET status=?1 WHERE id=?2",
+        params![oversized_legacy, id],
+    )
+    .unwrap();
+    assert!(history.queue_status().is_err());
+    c.execute(
+        "UPDATE run_queue SET execution_kind='directModel' WHERE run_id=?1",
+        [&id],
+    )
+    .unwrap();
+    assert_eq!(history.queue_status().unwrap().entries[0].id, id);
+    c.execute("UPDATE runs SET status='{' WHERE id=?1", [&id])
+        .unwrap();
+    assert!(history.queue_status().is_err());
+    c.execute("UPDATE runs SET status=?1 WHERE id=?2", params![status, id])
+        .unwrap();
     assert!(store.retained_direct_settlement(&id).unwrap().is_none());
     let sequence = c
         .query_row(

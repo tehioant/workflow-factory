@@ -103,10 +103,13 @@ pub(super) fn reserve(c: &Connection) -> Result<Option<String>, Error> {
 pub fn projection(c: &Connection) -> Result<QueueStatus, Error> {
     let settings = settings(c)?;
     let (occupied, waiting) = counts(c)?;
-    // Lazy bounded extraction: never materialize historical prompts/results or oversized JSON.
-    let mut q=c.prepare("SELECT r.id,CASE WHEN length(CAST(r.snapshot AS BLOB))<=2097152 THEN CASE WHEN json_valid(r.snapshot) THEN json_extract(r.snapshot,'$.definition.definition.id') END END,CASE WHEN length(CAST(r.status AS BLOB))<=2097152 THEN CASE WHEN json_valid(r.status) THEN json_extract(r.status,'$.state') END END,CASE WHEN length(CAST(r.status AS BLOB))<=2097152 THEN CASE WHEN json_valid(r.status) THEN substr(json_extract(r.status,'$.diagnostic'),1,2048) END END,CASE WHEN length(CAST(r.status AS BLOB))<=2097152 THEN CASE WHEN json_valid(r.status) THEN json_extract(r.status,'$.cleanupPending') END END FROM runs r LEFT JOIN run_queue q ON q.run_id=r.id WHERE r.active=1 ORDER BY COALESCE(q.sequence,0),r.rowid LIMIT 73").map_err(storage)?;
+    // Lazy bounded extraction: return metadata only, never full prompts/results.
+    // Direct rows share the finite storage envelope; legacy rows retain 2 MiB.
+    // Captures here are byte-guarded, not schema-validated, so their block count
+    // is not trusted authority for tightening the direct status ceiling.
+    let mut q=c.prepare("SELECT r.id,CASE WHEN length(CAST(r.snapshot AS BLOB))<=2097152 THEN CASE WHEN json_valid(r.snapshot) THEN json_extract(r.snapshot,'$.definition.definition.id') END END,CASE WHEN length(CAST(r.status AS BLOB))<=CASE WHEN q.execution_kind='directModel' THEN ?1 ELSE 2097152 END THEN CASE WHEN json_valid(r.status) THEN json_extract(r.status,'$.state') END END,CASE WHEN length(CAST(r.status AS BLOB))<=CASE WHEN q.execution_kind='directModel' THEN ?1 ELSE 2097152 END THEN CASE WHEN json_valid(r.status) THEN substr(json_extract(r.status,'$.diagnostic'),1,2048) END END,CASE WHEN length(CAST(r.status AS BLOB))<=CASE WHEN q.execution_kind='directModel' THEN ?1 ELSE 2097152 END THEN CASE WHEN json_valid(r.status) THEN json_extract(r.status,'$.cleanupPending') END END FROM runs r LEFT JOIN run_queue q ON q.run_id=r.id WHERE r.active=1 ORDER BY COALESCE(q.sequence,0),r.rowid LIMIT 73").map_err(storage)?;
     let rows = q
-        .query_map([], |r| {
+        .query_map([super::direct::MAX_STATUS_BYTES as i64], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
