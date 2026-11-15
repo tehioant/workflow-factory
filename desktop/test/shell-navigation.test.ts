@@ -40,6 +40,12 @@ test('configuration navigation exposes its destination without a domain mutation
   try {
     flushSync(() => { component = mount(App, { target }); });
     await settle();
+    const logo = target.querySelector('img.factory-mark');
+    assert.ok(logo, 'The shell displays the approved app logo, not a text initial');
+    assert.equal(logo.getAttribute('src'), '/app-icon.svg');
+    assert.equal(logo.getAttribute('alt'), 'Workflow Factory');
+    assert.equal(logo.getAttribute('width'), '40');
+    assert.equal(logo.getAttribute('height'), '40');
     const trigger = [...target.querySelectorAll('button')].find(button => button.getAttribute('aria-label') === 'Configurations' || button.textContent?.trim() === 'Configurations');
     assert.ok(trigger, 'The shell provides a labelled Configurations destination');
     const before = [...calls];
