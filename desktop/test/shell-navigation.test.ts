@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { Window } from 'happy-dom';
 import { compileComponent } from './compile-component.ts';
 
@@ -71,10 +71,47 @@ test('configuration navigation exposes its destination without a domain mutation
     const actualColors = Object.fromEntries([...lightRule.matchAll(/--color-([\w-]+):(#[\da-f]{6}(?:[\da-f]{2})?);/gi)].map(([, role, color]) => [role, color.toUpperCase()]));
     const design = readFileSync(new URL('../../DESIGN.md', import.meta.url), 'utf8');
     const expectedColors = Object.fromEntries([...design.matchAll(/^  light-([\w-]+): "(#[\da-f]{6}(?:[\da-f]{2})?)"$/gmi)].map(([, role, color]) => [role, color.toUpperCase()]));
+    const colors = (rule: string) => Object.fromEntries([...rule.matchAll(/--color-([\w-]+):(#[\da-f]{3,8});/gi)].map(([, role, color]) => [role, color.toUpperCase()]));
+    const dark = colors(stylesheet.match(/:root\{([^}]+)\}/)![1]);
+    const normativeDark = Object.fromEntries([...design.matchAll(/^  (?!light-)([\w-]+): "(#[\da-f]{6}(?:[\da-f]{2})?)"$/gmi)].map(([, role, color]) => [role, color.toUpperCase()]));
+    for (const [role, value] of Object.entries(normativeDark)) assert.equal(dark[role], value, `Dark normative ${role}`);
+    const luminance = (hex: string) => hex.slice(1, 7).match(/../g)!.map(value => parseInt(value, 16) / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4).reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
+    const contrast = (a: string, b: string) => (Math.max(luminance(a), luminance(b)) + .05) / (Math.min(luminance(a), luminance(b)) + .05);
+    for (const [theme, palette] of Object.entries({ dark, light: { ...dark, ...actualColors } })) {
+      for (const role of ['primary', 'primary-hover', 'accent', 'focus', 'success']) {
+        const value = palette[role];
+        assert.ok(parseInt(value.slice(5, 7), 16) > parseInt(value.slice(3, 5), 16) && parseInt(value.slice(3, 5), 16) > parseInt(value.slice(1, 3), 16), `${theme} ${role} is blue`);
+      }
+      for (const fill of ['primary', 'primary-hover', 'primary-pressed']) assert.ok(contrast(palette['on-primary'], palette[fill]) >= 4.5, `${theme} filled ${fill} text contrast`);
+      for (const surface of ['canvas', 'rail', 'surface', 'raised', 'hover', 'selection-fill', 'reference-fill']) {
+        for (const role of ['text', 'muted', 'secondary', 'accent', 'success', 'warning', 'danger']) assert.ok(contrast(palette[role], palette[surface]) >= 4.5, `${theme} ${role}/${surface} text contrast`);
+        for (const role of ['control-border', 'focus']) assert.ok(contrast(palette[role], palette[surface]) >= 3, `${theme} ${role}/${surface} functional contrast`);
+      }
+      const prefix = theme === 'light' ? 'light-theme' : 'theme';
+      const exportedCss = readFileSync(new URL(`../../docs/design/canvas-first/${prefix}.css`, import.meta.url), 'utf8');
+      const exportedTokens = JSON.parse(readFileSync(new URL(`../../docs/design/canvas-first/${theme === 'light' ? 'light-theme.tokens' : 'tokens'}.json`, import.meta.url), 'utf8'));
+      for (const [role, value] of Object.entries(theme === 'light' ? expectedColors : normativeDark)) {
+        assert.ok(exportedCss.toUpperCase().includes(`--COLOR-${role.toUpperCase()}: ${value}`), `${theme} CSS export ${role}`);
+        assert.equal(exportedTokens.color[role].$value.hex.toUpperCase(), value, `${theme} DTCG ${role}`);
+      }
+    }
+    const sourceRoot = new URL('../src/', import.meta.url);
+    const statusColors = new Set([dark.warning, dark.danger, actualColors.warning, actualColors.danger]);
+    for (const path of readdirSync(sourceRoot, { recursive: true }).filter(path => /\.(css|svelte)$/.test(path))) {
+      const source = readFileSync(new URL(path, sourceRoot), 'utf8');
+      const css = path.endsWith('.css') ? source : source.match(/<style[^>]*>([\s\S]*?)<\/style>/)?.[1] ?? '';
+      for (const [literal] of css.matchAll(/#[\da-f]{6}(?:[\da-f]{2})?\b/gi)) {
+        if (statusColors.has(literal.toUpperCase())) continue;
+        const [r, g, b] = literal.slice(1, 7).match(/../g)!.map(value => parseInt(value, 16));
+        assert.ok(b >= g && g >= r, `${path}: ${literal} is cool or neutral, not green`);
+      }
+      for (const [, role, fallback] of css.matchAll(/var\(--color-([\w-]+),\s*(#[\da-f]{6})\)/gi)) assert.equal(fallback.toUpperCase(), dark[role], `${path} fallback ${role}`);
+    }
+    assert.equal(actualColors['on-primary'], '#FFFFFF', 'Light explicitly overrides dark primary text inheritance');
     assert.ok(Object.keys(expectedColors).length > 0, 'The normative Light palette is present');
     assert.deepEqual(actualColors, expectedColors, 'Light uses the normative neutral palette across shared surfaces');
     for (const [role, color] of Object.entries(actualColors)) {
-      if (['accent', 'focus', 'success', 'warning', 'danger'].includes(role)) continue;
+      if (['primary', 'primary-hover', 'primary-pressed', 'accent', 'focus', 'success', 'warning', 'danger'].includes(role)) continue;
       assert.equal(color.slice(1, 3), color.slice(3, 5), `${role} has no green cast`);
       assert.equal(color.slice(3, 5), color.slice(5, 7), `${role} is achromatic`);
     }

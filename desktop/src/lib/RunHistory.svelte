@@ -81,18 +81,18 @@
   </section>{/if}
 </section>
 <style>
- .run-history { min-width: 0; padding: 24px; background: var(--color-surface, #1B1E1B); color: var(--color-text, #EDF0E8); font-size: 14px; }
+ .run-history { min-width: 0; padding: 24px; background: var(--color-surface, #1B2130); color: var(--color-text, #EDF1F8); font-size: 14px; }
  h2 { font-size: 18px; margin: 0 0 12px; }
  h3 { font-size: 16px; margin: 20px 0 12px; }
  h4 { font-size: 14px; margin: 20px 0 8px; }
  p { margin: 8px 0; overflow-wrap: anywhere; }
- button { color: inherit; font: inherit; min-height: 32px; padding: 6px 10px; margin: 4px 8px 4px 0; border: 1px solid var(--color-control-border, #79846F); border-radius: 7px; background: var(--color-raised, #242824); cursor: pointer; overflow-wrap: anywhere; text-align: left; }
- button:hover:not(:disabled), button[aria-pressed=true] { background: var(--color-selection-fill, #2B3521); }
+ button { color: inherit; font: inherit; min-height: 32px; padding: 6px 10px; margin: 4px 8px 4px 0; border: 1px solid var(--color-control-border, #7F8FA8); border-radius: 7px; background: var(--color-raised, #252D3D); cursor: pointer; overflow-wrap: anywhere; text-align: left; }
+ button:hover:not(:disabled), button[aria-pressed=true] { background: var(--color-selection-fill, #243653); }
  button:disabled { opacity: .6; cursor: not-allowed; }
- button:focus-visible { outline: 2px solid var(--color-accent, #D1F56A); outline-offset: 3px; }
+ button:focus-visible { outline: 2px solid var(--color-accent, #8DAEFF); outline-offset: 3px; }
  ul { margin: 16px 0; padding: 0; list-style: none; }
- li { padding: 12px 0; border-bottom: 1px solid var(--color-divider, #343A33); }
- li p { color: var(--color-secondary, #8A9485); }
+ li { padding: 12px 0; border-bottom: 1px solid var(--color-divider, #394357); }
+ li p { color: var(--color-secondary, #97A5BE); }
  pre { font: 13px/1.6 var(--font-mono, FreeMono, monospace); white-space: pre-wrap; overflow-wrap: anywhere; }
  [role=alert] { color: var(--color-warning, #E4C17B); }
 </style>

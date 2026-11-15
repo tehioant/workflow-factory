@@ -48,21 +48,24 @@ concepts contain illustrative data, not application execution results.
 - Local FreeSans/FreeMono assets and complete notices are bundled; fonts do not
   require remote requests.
 
-## User-approved light-theme continuation
+## User-approved blue-theme continuation
 
-Settings → Appearance now offers **Dark** (the unchanged default) and **Light**.
+Settings → Appearance now offers **Dark** (still the default) and **Light**.
 The explicit choice is saved locally when storage is available, restored before
 App or SignIn mounts, and never mutates workflow/configuration/run records. Invalid
 preferences fall back to Dark; blocked storage cannot stop rendering or switching.
-The light palette covers the actual draft/captured Svelte Flow canvas, panels,
-fields, states, reference menus, dialogs, focus and hover. Lime stays an action
-fill with dark text; essential light-surface accents/focus use darker olive.
+Both themes use blue actions, focus, references, selection outlines and semantic
+success with textual states retained. Dark surfaces are cool blue-grey; Light
+ordinary surfaces/text/borders remain achromatic. Light explicitly uses white
+on-primary text on blue default/hover/pressed fills. Warning/danger stay amber/red.
+The tokens cover draft/captured canvases, panels, fields, dialogs and run inspection.
 
-This user-approved extension supersedes only the original light-theme exclusion.
+This approval supersedes earlier green accents and the unchanged-Dark palette requirement.
 The original concept PNGs are untouched. Focused shell/canvas cases extend the
 same presentation invariants without new registrations; original assertions remain.
 Local RED/GREEN, contrast, static inventory, check/build and input pins are saved
-under `/home/ops/reports/workflow-factory-light-theme/`. New light/dark built-bundle
+under `/home/ops/reports/workflow-factory-blue-theme/`; earlier light-theme reports
+are historical only. New light/dark built-bundle
 visual acceptance, simplification and independent review belong to the parent;
 prior dark-only review/captures below do not certify this continuation.
 

@@ -1,27 +1,27 @@
 ---
 version: alpha
 name: Workflow Factory — Canvas Workspace
-description: A quiet charcoal workspace with compact AI blocks and restrained acid-lime actions.
+description: A quiet cool blue-grey workspace with compact AI blocks and restrained blue actions.
 colors:
-  primary: "#D1F56A"
-  canvas: "#141615"
-  rail: "#101211"
-  surface: "#1B1E1B"
-  raised: "#242824"
-  divider: "#343A33"
-  control-border: "#79846F"
-  text: "#EDF0E8"
-  muted: "#A0A89D"
-  secondary: "#8A9485"
-  decorative: "#737D70"
-  on-primary: "#1A230D"
-  selection-fill: "#2B3521"
-  reference-fill: "#2E3824"
-  success: "#A4D5AA"
+  primary: "#8DAEFF"
+  canvas: "#141824"
+  rail: "#10141F"
+  surface: "#1B2130"
+  raised: "#252D3D"
+  divider: "#394357"
+  control-border: "#7F8FA8"
+  text: "#EDF1F8"
+  muted: "#A6B0C3"
+  secondary: "#97A5BE"
+  decorative: "#77859D"
+  on-primary: "#101A2E"
+  selection-fill: "#243653"
+  reference-fill: "#263A5C"
+  success: "#91B7F5"
   warning: "#E4C17B"
   danger: "#D7A49B"
-  accent: "#D1F56A"
-  focus: "#D1F56A"
+  accent: "#8DAEFF"
+  focus: "#8DAEFF"
   light-canvas: "#F7F7F7"
   light-rail: "#EEEEEE"
   light-surface: "#FFFFFF"
@@ -31,19 +31,31 @@ colors:
   light-text: "#242424"
   light-muted: "#555555"
   light-secondary: "#595959"
-  light-accent: "#46620D"
-  light-focus: "#46620D"
+  light-accent: "#2855C7"
+  light-focus: "#2855C7"
   light-hover: "#E7E7E7"
   light-grid: "#D2D2D2"
   light-selection-fill: "#EAEAEA"
   light-reference-fill: "#F0F0F0"
   light-selection-halo: "#DDDDDD"
-  light-success: "#35603D"
+  light-success: "#285FA3"
   light-warning: "#795400"
   light-danger: "#963F35"
   light-overlay: "#20202066"
   light-panel-overlay: "#20202055"
   light-shadow: "#20202029"
+  hover: "#303B50"
+  grid: "#394357"
+  selection-halo: "#8DAEFF22"
+  primary-hover: "#A9C1FF"
+  primary-pressed: "#7F9FEA"
+  overlay: "#00000099"
+  panel-overlay: "#00000088"
+  shadow: "#00000088"
+  light-primary: "#315DD9"
+  light-primary-hover: "#274FBE"
+  light-primary-pressed: "#2347AC"
+  light-on-primary: "#FFFFFF"
 typography:
   title:
     fontFamily: FreeSans
@@ -106,10 +118,10 @@ components:
     height: 38px
     padding: 12px
   button-primary-hover:
-    backgroundColor: "#DDF88E"
+    backgroundColor: "{colors.primary-hover}"
     textColor: "{colors.on-primary}"
   button-primary-pressed:
-    backgroundColor: "#BDDE5C"
+    backgroundColor: "{colors.primary-pressed}"
     textColor: "{colors.on-primary}"
   button-secondary:
     backgroundColor: "{colors.raised}"
@@ -118,7 +130,7 @@ components:
     height: 38px
     padding: 12px
   button-secondary-hover:
-    backgroundColor: "#30362E"
+    backgroundColor: "{colors.hover}"
     textColor: "{colors.text}"
   input:
     backgroundColor: "{colors.canvas}"
@@ -158,51 +170,38 @@ components:
 
 The product is a local desktop workspace for authoring and inspecting sequential AI workflows. Its primary surface is Command / Inspect: the canvas owns the center; editable properties and historical results appear contextually.
 
-The three [reference images](docs/design/canvas-first/README.md) establish this design direction. This file defines shared visual tokens; the [behavior spec](docs/specs/canvas-first-redesign.md) defines interactions and acceptance. These are target specifications, not evidence of an implemented or live-ready interface.
+The three historical [reference images](docs/design/canvas-first/README.md) establish this design direction. This file defines shared visual tokens; the [behavior spec](docs/specs/canvas-first-redesign.md) defines interactions and acceptance. These are target specifications, not evidence of an implemented or live-ready interface.
 
 ## Colors
 
-### Explicit light-theme extension
+### Explicit blue themes
 
-The user explicitly approved Light/Dark selection after the original dark-only
-scope. Dark stays the default, including its original palette. Settings → Appearance
-provides labelled Dark and Light choices, saved locally as `workflow-factory.theme`.
-Only the exact `light` value opts in; missing, invalid or blocked storage uses Dark.
-Storage write failure does not prevent switching in the current window. Both the
-main workspace and separate SignIn mount restore this preference before mounting.
+Settings → Appearance provides labelled Dark and Light choices, saved locally as
+`workflow-factory.theme`. Dark remains the default; only the exact `light` value
+opts in. Missing, invalid or blocked storage uses Dark. Storage write failure does
+not prevent switching. Both workspace and SignIn restore before mounting.
 
-The `light-*` tokens above define the neutral light-theme correction requested
-after hands-on macOS feedback and applied in the runtime stylesheet. Source
-implementation is not native visual acceptance of the revised palette. Omitted roles inherit the
-dark value. Use achromatic white/light-gray canvas, panels, raised/hover/selection
-fills, borders and charcoal/gray text, with neutral overlay/shadow tints. Do not
-spread an olive/green wash across the workspace. Lime `primary` remains an action fill with dark
-`on-primary` text; dark olive `light-accent`/`light-focus` is used for essential
-icons, references, selected outlines and focus, never pale lime text on white.
-Status colors retain textual labels. Grid/dividers/halos are decorative; meaningful
-borders and edges use control-border. Hover, overlay and shadow have semantic roles.
-Draft and captured Svelte Flow share the selected explicit color mode. Green is
-limited to restrained action/navigation/selection/focus/reference accents and
-semantic success, not large background fills or ordinary body text. Dark-mode
-tokens, typography, spacing and layout remain unchanged.
+Both themes use blue actions, references, focus, selection outlines and semantic
+success. Dark uses cool blue-grey surfaces; Light keeps achromatic white/gray
+ordinary surfaces, text, borders, overlays and selection fills. Light explicitly
+overrides primary, hover, pressed and on-primary: filled blue buttons use white
+text rather than inheriting Dark's dark text. Warning amber and danger red are
+unchanged. Success and all other states retain textual labels, never color alone.
+Typography, spacing, layout, saved preferences and application behavior are unchanged.
 
-[Light CSS](docs/design/canvas-first/light-theme.css) and
-[DTCG light tokens](docs/design/canvas-first/light-theme.tokens.json) are derived
-exports of these light overrides. Original dark concept PNGs and historical dark
-exports are unchanged and are not light-theme screenshots. The light exports
-are documentation derivatives of the palette used in `desktop/src/app.css`,
-not a second theme engine or additional runtime import. Earlier measured light
-contrast and command receipts are retained in
-`/home/ops/reports/workflow-factory-light-theme/`; frontend previews do not
-establish native macOS visual acceptance of this corrected palette.
+[Dark CSS](docs/design/canvas-first/theme.css), [dark DTCG tokens](docs/design/canvas-first/tokens.json),
+[Light CSS](docs/design/canvas-first/light-theme.css) and [Light DTCG tokens](docs/design/canvas-first/light-theme.tokens.json)
+are documentation derivatives of these normative colors, not runtime theme engines.
+The original concept PNGs are historical green-palette illustrations and remain
+unchanged; they are not screenshots of either current blue theme. Earlier reports
+are historical evidence, not acceptance of this palette. Frontend previews do not
+establish native macOS visual acceptance.
 
-
-- Canvas, rail, surface and raised define a small warm-neutral hierarchy in Dark and an achromatic hierarchy in Light. Separate regions with subtle dividers rather than shadows or decorative rails.
-- Acid lime identifies the main Run action; use the theme's accessible accent/focus colors for active navigation, selected-node outlines and prompt references. Keep the rest of a node neutral. Success is a separate muted green and always has a text label/icon.
-- Use text for primary content, muted for supporting copy and secondary for essential low-emphasis text. Decorative is limited to grid dots or redundant, nonessential decoration; it is not permitted for readable small labels.
-- This corrects a contrast weakness in the concepts: original faint `#737D70` text does not meet 4.5:1 on the dark surfaces. Secondary `#8A9485` does, including on raised surfaces. This is a deliberate accessibility correction, not a new theme.
-- Divider is decorative only. Controls, graph handles and meaningful connection lines use control-border, which must maintain 3:1 against adjacent dark surfaces. Focus is a 2px focus-color outline with 3px offset. The full-bleed canvas root uses a -3px inset offset instead, keeping the outline visible inside the clipped workspace; other controls retain the outward offset. Selected graph nodes use a primary outline and restrained selection-fill halo, plus semantic selected state.
-- Status is never color-only. Preserve unknown/unavailable states rather than projecting success from a green readiness dot.
+- Canvas, rail, surface and raised form a cool blue-grey hierarchy in Dark and an achromatic hierarchy in Light. Dividers/grid/halos are decorative.
+- Blue primary identifies the main action; accent/focus marks essential navigation, references and selection. Keep node bodies neutral. Semantic success is blue with a text label/icon.
+- Text, muted and secondary copy must maintain at least 4.5:1 against occupied surfaces. Decorative is only for redundant nonessential marks, never readable labels.
+- Controls, handles, connections and focus use functional colors with at least 3:1 against adjacent surfaces. Focus is a 2px outline with 3px offset; the clipped full-bleed canvas uses -3px inset so it remains visible. Selection also retains semantic state.
+- Primary default, hover and pressed fills must maintain at least 4.5:1 with their theme's on-primary text. Unknown/unavailable states must never be projected as successful.
 
 ## Typography
 

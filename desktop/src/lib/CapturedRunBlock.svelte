@@ -32,14 +32,14 @@
   {:else}<p>Selected block is unavailable in this captured definition.</p>{/if}
 </section>
 <style>
-  .captured-block { color: var(--color-text, #EDF0E8); min-width: 0; font-size: 14px; }
+  .captured-block { color: var(--color-text, #EDF1F8); min-width: 0; font-size: 14px; }
   h3 { font-size: 18px; margin: 4px 0 8px; overflow-wrap: anywhere; }
   h4 { font-size: 14px; margin: 24px 0 8px; }
   p { margin: 8px 0; overflow-wrap: anywhere; }
-  .eyebrow { color: var(--color-secondary, #8A9485); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
-  .identity, .secondary { color: var(--color-muted, #A0A89D); font-size: 13px; }
-  pre { font: 13px/1.6 var(--font-mono, FreeMono, monospace); white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--color-canvas, #141615); border-radius: 6px; }
+  .eyebrow { color: var(--color-secondary, #97A5BE); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+  .identity, .secondary { color: var(--color-muted, #A6B0C3); font-size: 13px; }
+  pre { font: 13px/1.6 var(--font-mono, FreeMono, monospace); white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; background: var(--color-canvas, #141824); border-radius: 6px; }
   details { margin-top: 24px; }
   summary { cursor: pointer; padding: 8px 0; }
-  summary:focus-visible { outline: 2px solid var(--color-accent, #D1F56A); outline-offset: 3px; }
+  summary:focus-visible { outline: 2px solid var(--color-accent, #8DAEFF); outline-offset: 3px; }
 </style>

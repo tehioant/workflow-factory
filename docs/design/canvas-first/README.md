@@ -1,6 +1,6 @@
 # Canvas-first design references
 
-These three original static concepts define one shared design direction. All data is illustrative; they are not application screenshots or execution evidence. The [behavior spec](../../specs/canvas-first-redesign.md) and [DESIGN.md](../../../DESIGN.md) clarify behavior and correct accessibility/data limitations without changing the composition.
+These three original static concepts document the historical green palette and shared composition, not the current blue themes. All data is illustrative; they are not application screenshots or execution evidence. The [behavior spec](../../specs/canvas-first-redesign.md) and [DESIGN.md](../../../DESIGN.md) clarify behavior and correct accessibility/data limitations without changing the composition.
 
 1. **Workflow editor:** central sequential graph, workflow browser, workflow-properties inspector and collapsed run strip.
    ![Workflow editor](01-workflow-editor.png)
@@ -11,4 +11,4 @@ These three original static concepts define one shared design direction. All dat
 
 The PNGs remain byte-identical to those supplied in the design discussion. Verify with `sha256sum -c SHA256SUMS` from this directory. Each is 1920 × 1200 pixels. The concept footer, sample workflows/results/revisions/durations, temporary avatar/mark and pictured rich reference chip are not production requirements; see the specs for their treatment.
 
-The design tokens are normative in DESIGN.md. `theme.css` is a generated Tailwind v4 token export; `tokens.json` is a generated W3C DTCG export. They are documentation artifacts and are not imported by the app. Derived exports are regenerated when DESIGN.md changes.
+The design tokens are normative in DESIGN.md. `theme.css` is a generated Tailwind v4 token export; `tokens.json` is a generated W3C DTCG export. `light-theme.css` and `light-theme.tokens.json` provide the explicit Light overrides, including primary states and white primary text. They are documentation artifacts and are not imported by the app. Derived exports are regenerated when DESIGN.md changes.
