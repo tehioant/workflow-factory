@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import RunInspection from './RunInspection.svelte';
+  import CapturedRunBlock from './CapturedRunBlock.svelte';
   import type { Commands } from './commands.ts';
   import type { HistoryPage, RunDetail } from './transport.ts';
   import { runStateLabel } from './run-presentation.ts';
@@ -61,20 +62,21 @@
     {#if detailError}<p role="alert">{detailError}</p><button onclick={()=>selectRun(selected)}>Retry captured read</button>{/if}
     {#if detail && !onselect}
       <p>{detail.state} · Cleanup pending: {detail.cleanupPending?'yes':'no'}</p>
-      <p>Captured definition: {detail.definition.definition.name} · revision {detail.definition.revision} · isolation {detail.definition.definition.isolation}</p>
-      <p>Captured image: {detail.imageId}</p>
+      {@const direct = detail.blocks.some(block => block.configuration && 'kind' in block.configuration.config && block.configuration.config.kind === 'directModel')}
+      <p>Captured definition: {detail.definition.definition.name} · revision {detail.definition.revision}</p>
+      {#if direct}<p>Native direct inference · no tools or container isolation. No workspace artifacts are produced.</p>{:else}<p>Legacy Codex isolation {detail.definition.definition.isolation}</p><p>Captured image: {detail.imageId}</p>{/if}
       <h4>Captured inputs</h4>{#each Object.entries(detail.inputs.values) as [name,value]}<p>{name}</p><pre>{value}</pre>{/each}
       <h4>Captured definition prompts</h4>{#each detail.definition.definition.blocks as block}<p>{block.name} · {block.id}</p><pre>{block.prompt}</pre><p>Input-prepared prompt (not proof of execution)</p><pre>{detail.inputs.prompts[block.id]??'Unavailable'}</pre>{/each}
       <h4>Captured connections and input declarations</h4>
       {#each detail.definition.definition.connections as connection}<p>{connection.source} → {connection.target}</p>{/each}
       {#each detail.definition.definition.inputs as input}<p>{input.name} · required: {input.required?'yes':'no'} · default: {input.default??'Unavailable'}</p>{/each}
-      {#if detail.legacy}<p>Legacy capture: per-block settings and executed prompts unavailable.</p>{#if detail.legacyConfiguration}<p>Legacy captured configuration: {detail.legacyConfiguration.config.name} · revision {detail.legacyConfiguration.revision} · {detail.legacyConfiguration.config.model} / {detail.legacyConfiguration.config.reasoning}</p>{/if}{/if}
+      {#if detail.legacy}<p>Legacy capture: per-block settings and executed prompts unavailable.</p>{#if detail.legacyConfiguration && !('kind' in detail.legacyConfiguration.config)}<p>Legacy captured configuration: {detail.legacyConfiguration.config.name} · revision {detail.legacyConfiguration.revision} · {detail.legacyConfiguration.config.model} / {detail.legacyConfiguration.config.reasoning}</p>{/if}{/if}
       {#each detail.blocks as block}
         <h4>Block {block.blockId}</h4>
-        {#if block.configuration}<p>Captured configuration: {block.configuration.config.name} · revision {block.configuration.revision} · {block.configuration.config.model} / {block.configuration.config.reasoning}</p>{:else}<p>Per-block configuration unavailable</p>{/if}
+        <CapturedRunBlock {detail} blockId={block.blockId} />
         {#if block.result}<p>{block.result.state} · Actual retained resolved prompt</p><pre>{block.result.resolvedPrompt}</pre><p>Durable block response</p><pre>{block.result.finalResponse??'Unavailable'}</pre>{:else}<p>{detail.legacy?'Execution evidence unavailable':'Not executed: no retained block result or executed prompt'}</p>{/if}
       {/each}
-      {#key detail.id}<RunInspection {commands} {definitionId} runId={detail.id}/>{/key}
+      {#if !direct}{#key detail.id}<RunInspection {commands} {definitionId} runId={detail.id}/>{/key}{/if}
       <h4>Retained final response</h4><pre>{detail.finalResponse??'Unavailable'}</pre>
       <h4>Retained diagnostic</h4><pre>{detail.diagnostic||'None captured'}</pre>
     {/if}

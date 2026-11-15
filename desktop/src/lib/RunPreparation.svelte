@@ -58,7 +58,7 @@
       {/if}
       {#if error}<p role="alert">{error}</p>{/if}
       {#if admissionError}<p role="alert">{admissionError}</p>{/if}
-      <p class="muted">Execution still requires native runtime, supported managed authentication and containment approval. A saved configuration is not a credential.</p>
+      <p class="muted">Direct models use the selected API key and native per-run charge confirmation; API usage is separately billed from chat subscriptions. Direct calls are prompt → response with no tools, shell, files, workspace or container. Legacy Codex uses native runtime, supported managed authentication and containment approval. A run cannot mix legacy Codex and direct models; all-direct runs may mix providers. A saved configuration is not a credential or proof of model access.</p>
       <button disabled={working || locked} onclick={onsettings}>Open Settings / readiness</button>
     </div>
   </div>

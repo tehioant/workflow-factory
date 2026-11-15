@@ -25,6 +25,8 @@ export function createCommands(invoke: Invoke) {
     retryRunOutput: (id: string) => invoke<import('./transport.ts').RunStatus>('retry_run_output', {id}),
     stopRun: (id: string) => invoke<import('./transport.ts').RunStatus>('stop_run', {id}),
     managedSessionStatus: () => invoke<import('./transport.ts').ManagedSessionStatus>('managed_session_status'),
+    providerDescriptors: () => invoke<import('./transport.ts').ProviderDescriptor[]>('provider_descriptors'),
+    providerReadiness: (provider: import('./transport.ts').DirectProviderId) => invoke<import('./transport.ts').ProviderReadiness>('provider_readiness', {provider}),
     runtimeReadiness: () => invoke<Readiness>('runtime_readiness'),
     runtimeSetupPlan: () => invoke<SetupPlan>('runtime_setup_plan'),
     authReadiness:()=>invoke<AuthReadiness>('auth_readiness'),

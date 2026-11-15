@@ -17,7 +17,7 @@ test('configuration navigation exposes its destination without a domain mutation
   const calls: string[] = [];
   (globalThis as any).__canvasShellCommands = new Proxy({}, {
     get(_target, name: string) {
-      if (['list', 'listConfigurations'].includes(name)) return async () => { calls.push(name); return []; };
+      if (['list', 'listConfigurations', 'providerDescriptors'].includes(name)) return async () => { calls.push(name); return []; };
       if (name === 'queueStatus') return async () => ({settings:{active:2,waiting:16},occupied:0,waiting:0,entries:[]});
       if (name === 'saveQueueSettings') return async (value:unknown) => { calls.push(JSON.stringify(value)); };
       if (name === 'runStatus') return async () => { calls.push(name); return null; };
@@ -52,7 +52,7 @@ test('configuration navigation exposes its destination without a domain mutation
     trigger.click();
     await settle();
     assert.equal(trigger.getAttribute('aria-current'), 'page');
-    const destination = target.querySelector('[aria-label="Reusable Codex configurations"]');
+    const destination = target.querySelector('[aria-label="Reusable model configurations"]');
     assert.ok(destination, 'The real configuration manager is reachable');
     assert.equal(destination.closest('[hidden]'), null);
     assert.deepEqual(calls, before, 'Destination selection is presentation-only');

@@ -27,9 +27,13 @@
   });
 </script>
 <div class="property-group"><label for="block-name">Block name</label><input id="block-name" {disabled} value={block.name} oninput={event => onpatch({ name: event.currentTarget.value })} /></div>
-<div class="property-group"><label for="block-config">Codex configuration</label><select id="block-config" aria-invalid={configError ? true : undefined} aria-describedby={configError ? 'block-config-error' : undefined} {disabled} value={block.configurationId ?? ''} onchange={event => onpatch({ configurationId: event.currentTarget.value || null })}><option value="">Not configured</option>{#each configurations as saved}<option value={saved.config.id}>{saved.config.name}</option>{/each}</select>
-  <p class="muted">Model and reasoning come from the saved reusable configuration, not credentials.</p>
-  {#if configError}<p id="block-config-error" role="alert">{configError}</p>{:else}{@const config = configurations.find(saved => saved.config.id === block.configurationId)!}<p class="muted">{config.config.model} · {config.config.reasoning} · revision {config.revision}</p>{/if}
+<div class="property-group"><label for="block-config">Model configuration</label><select id="block-config" aria-invalid={configError ? true : undefined} aria-describedby={configError ? 'block-config-error' : undefined} {disabled} value={block.configurationId ?? ''} onchange={event => onpatch({ configurationId: event.currentTarget.value || null })}><option value="">Not configured</option>{#each configurations as saved}<option value={saved.config.id}>{saved.config.name} · {'kind' in saved.config ? 'Direct model' : 'Legacy Codex'}</option>{/each}</select>
+  <p class="muted">Settings come from the saved reusable configuration. Runs may mix direct providers, but cannot mix direct models and legacy Codex agents.</p>
+  {#if configError}<p id="block-config-error" role="alert">{configError}</p>{:else}{@const config = configurations.find(saved => saved.config.id === block.configurationId)!}
+    {#if 'kind' in config.config && config.config.kind === 'directModel'}<p class="muted">{config.config.provider} · {config.config.model} · max output tokens {config.config.maxOutputTokens} · revision {config.revision}. Prompt → response, no tools.</p>
+    {:else if !('kind' in config.config)}<p class="muted">Legacy Codex agent · {config.config.model} · {config.config.reasoning} · revision {config.revision}</p>
+    {:else}<p role="alert">Unsupported configuration kind.</p>{/if}
+  {/if}
 </div>
 <div class="property-group"><div class="field-heading"><label for="prompt">Prompt</label><PromptReferences {definition} blockId={block.id} {field} {disabled} onprompt={prompt => onpatch({ prompt })} /></div><textarea bind:this={field} id="prompt" aria-invalid={promptError ? true : undefined} aria-describedby={promptError ? 'prompt-error' : 'prompt-guidance'} class="prompt-editor" rows="12" {disabled} value={block.prompt} oninput={event => onpatch({ prompt: event.currentTarget.value })}></textarea>
   <p id="prompt-guidance" class="muted">References resolve when the run starts. Connected blocks forward only explicitly referenced final responses.</p>
