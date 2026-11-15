@@ -633,7 +633,7 @@ fn dispatch_reserved(
                         .filter_map(|b| b
                             .configuration
                             .as_ref()
-                            .map(|c| (&c.config.id, c.revision)))
+                            .map(|c| (c.config.id(), c.revision)))
                         .collect::<Vec<_>>()
                 );
                     let result = run_host::execute_confirmed(

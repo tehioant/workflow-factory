@@ -643,7 +643,7 @@ fn p2_prepared_successor_invokes_once_with_captured_prompt_and_same_resources() 
                 calls += 1;
                 assert!(std::ptr::eq(same, &resources));
                 assert_eq!(plan.block_id, "b");
-                assert_eq!(plan.configuration.config.model, "captured-model");
+                assert_eq!(plan.configuration.config.model(), "captured-model");
                 assert_eq!(prompt, "B own $ 雪 / A literal {{input.topic}} <img>");
                 if scenario == "execution-failed" {
                     return Err(workflow_engine::Error::Validation {
@@ -1688,7 +1688,7 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
     );
     assert!(detail.blocks[0].result.is_none());
     assert_eq!(
-        detail.legacy_configuration.unwrap().config.model,
+        detail.legacy_configuration.unwrap().config.model(),
         "captured-model"
     );
     assert_eq!(
@@ -1842,7 +1842,7 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
             .as_ref()
             .unwrap()
             .config
-            .model,
+            .model(),
         "second-model"
     );
     assert_eq!(

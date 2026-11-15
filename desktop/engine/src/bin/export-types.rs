@@ -1,4 +1,5 @@
 use ts_rs::TS;
+use workflow_engine::providers::*;
 use workflow_engine::runtime::{IsolationEvidence, Readiness, RuntimeStatus, SetupPlan};
 use workflow_engine::{
     AiBlock, AuthReadiness, CodexConfiguration, Definition, Error, GraphConnection, Position,
@@ -41,6 +42,18 @@ fn main() {
         WorkflowInput::decl(&config),
         PreparedInputs::decl(&config),
         CodexConfiguration::decl(&config),
+        workflow_engine::Configuration::decl(&config),
+        DirectModelConfiguration::decl(&config),
+        DirectProviderId::decl(&config),
+        CredentialVariable::decl(&config),
+        EnvironmentKind::decl(&config),
+        EnvironmentCredential::decl(&config),
+        DirectModelKind::decl(&config),
+        ProviderAuth::decl(&config),
+        ProviderSetting::decl(&config),
+        ProviderDescriptor::decl(&config),
+        CredentialReadiness::decl(&config),
+        ProviderReadiness::decl(&config),
         Reasoning::decl(&config),
         SavedConfiguration::decl(&config),
         SaveConfiguration::decl(&config),

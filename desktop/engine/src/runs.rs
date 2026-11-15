@@ -534,6 +534,9 @@ impl Store {
                 configuration,
             });
         }
+        for plan in &plans {
+            plan.configuration.config.as_codex()?;
+        }
         let configuration = plans[0].configuration.clone();
         let snapshot = Snapshot {
             definition,

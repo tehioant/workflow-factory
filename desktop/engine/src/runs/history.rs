@@ -284,14 +284,14 @@ fn validated_capture(
             .ok_or_else(unavailable)?;
         let expected = request
             .expected_configuration_revisions
-            .get(&plan.configuration.config.id)
+            .get(plan.configuration.config.id())
             .copied()
             .or_else(|| {
                 (order.len() == 1 && request.expected_configuration_revisions.is_empty())
                     .then_some(request.expected_configuration_revision)
             });
         if &plan.block_id != block_id
-            || block.configuration_id.as_ref() != Some(&plan.configuration.config.id)
+            || block.configuration_id.as_ref() != Some(plan.configuration.config.id())
             || expected != Some(plan.configuration.revision)
         {
             return Err(unavailable());
@@ -316,7 +316,7 @@ fn validated_capture(
     }
     if legacy && order.len() == 1 {
         let block = &d.blocks[0];
-        if block.configuration_id.as_ref() != Some(&snapshot.configuration.config.id) {
+        if block.configuration_id.as_ref() != Some(snapshot.configuration.config.id()) {
             return Err(unavailable());
         }
     }

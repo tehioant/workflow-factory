@@ -452,7 +452,7 @@ pub fn execute(
                     cancel.check()?;
                     let identity=workflow_engine::output::DiagnosticIdentity{run_id:id.clone(),block_id:plan.block_id.clone(),epoch:resources.started_at.clone().ok_or_else(||workflow_engine::Error::Validation{message:"Diagnostic epoch unavailable.".into()})?};
                     let mut live=workflow_engine::runs::inspection::LiveJournal::new(&directory,identity)?;
-                    let execution = sandbox.execute(resources,prompt,&plan.configuration.config,&cancel,&plan.block_id,&mut |chunk|live.push(chunk,||crate::inspection_host::notify(&directory,&id)));
+                    let execution = sandbox.execute(resources,prompt,plan.configuration.config.as_codex()?,&cancel,&plan.block_id,&mut |chunk|live.push(chunk,||crate::inspection_host::notify(&directory,&id)));
                     // Even on Codex error, export its CURRENT cache before stopping the keeper.
                     if execution.is_err() {
                         sandbox.stop_writers(resources)?;

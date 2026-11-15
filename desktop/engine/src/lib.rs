@@ -2,6 +2,8 @@ pub mod auth;
 pub mod auth_file;
 pub mod output;
 pub mod prompts;
+pub mod providers;
+pub use providers::{DirectModelConfiguration, DirectProviderId};
 pub mod runs;
 pub mod runtime;
 pub mod sandbox;
@@ -327,13 +329,13 @@ pub enum Reasoning {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SavedConfiguration {
-    pub config: CodexConfiguration,
+    pub config: Configuration,
     pub revision: u32,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SaveConfiguration {
-    pub config: CodexConfiguration,
+    pub config: Configuration,
     pub expected_revision: Option<u32>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
@@ -372,17 +374,111 @@ pub fn credential_readiness(availability: auth::CredentialAvailability) -> AuthR
     };
     AuthReadiness { execution_enabled:false, credential_source:if availability==A::NotInspected {CredentialSourceKind::NotInspected} else {CredentialSourceKind::CodexFile}, credential_availability:availability, status:ContainerAuthSupport::UnsupportedConcurrentAuth, guidance:format!("{setup} Execution blocked: this host-file inspector does not authorize the separate app-owned managed-session route. That gated source route still requires trusted-private workload authorization and native secure-store, staging, paging/dump and provider-containment qualification in #29. No login, refresh, host-auth write, paid API-key fallback or model call is performed.") }
 }
-fn validate_configuration(c: &CodexConfiguration) -> Result<(), Error> {
-    if c.id.len() != 36
-        || uuid::Uuid::parse_str(&c.id).is_err()
-        || c.name.trim().is_empty()
-        || c.name.len() > 200
-        || c.model.is_empty()
-        || c.model.len() > 100
-        || !c
-            .model
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(untagged)]
+pub enum Configuration {
+    Codex(CodexConfiguration),
+    DirectModel(DirectModelConfiguration),
+}
+impl<'de> Deserialize<'de> for Configuration {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ConfigurationObject;
+        impl<'de> serde::de::Visitor<'de> for ConfigurationObject {
+            type Value = serde_json::Value;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a configuration object")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> Result<Self::Value, M::Error> {
+                let mut object = serde_json::Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if object.contains_key(&key) {
+                        return Err(serde::de::Error::custom("Duplicate configuration field."));
+                    }
+                    let value = if key == "credential" {
+                        let credential = map
+                            .next_value::<providers::EnvironmentCredential>()
+                            .map_err(|_| serde::de::Error::custom("Invalid credential binding."))?;
+                        serde_json::to_value(credential)
+                            .map_err(|_| serde::de::Error::custom("Invalid credential binding."))?
+                    } else {
+                        map.next_value()?
+                    };
+                    object.insert(key, value);
+                }
+                Ok(serde_json::Value::Object(object))
+            }
+        }
+        let value = deserializer.deserialize_map(ConfigurationObject)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| serde::de::Error::custom("Invalid configuration."))?;
+        if object.contains_key("schemaVersion") || object.contains_key("kind") {
+            if object.get("schemaVersion") != Some(&serde_json::json!(2))
+                || object.get("kind").and_then(|v| v.as_str()) != Some("directModel")
+            {
+                return Err(serde::de::Error::custom(
+                    "Unsupported configuration version or kind.",
+                ));
+            }
+            serde_json::from_value(value)
+                .map(Self::DirectModel)
+                .map_err(|_| serde::de::Error::custom("Invalid direct model configuration."))
+        } else {
+            serde_json::from_value(value)
+                .map(Self::Codex)
+                .map_err(|_| serde::de::Error::custom("Invalid Codex configuration."))
+        }
+    }
+}
+impl From<CodexConfiguration> for Configuration {
+    fn from(value: CodexConfiguration) -> Self {
+        Self::Codex(value)
+    }
+}
+impl Configuration {
+    pub fn id(&self) -> &String {
+        match self {
+            Self::Codex(c) => &c.id,
+            Self::DirectModel(c) => &c.id,
+        }
+    }
+    pub fn model(&self) -> &str {
+        match self {
+            Self::Codex(c) => &c.model,
+            Self::DirectModel(c) => &c.model,
+        }
+    }
+    pub fn as_codex(&self) -> Result<&CodexConfiguration, Error> {
+        match self {
+            Self::Codex(c) => Ok(c),
+            Self::DirectModel(_) => Err(validation(
+                "Direct model execution is not implemented in this path.",
+            )),
+        }
+    }
+}
+fn validate_configuration(config: &Configuration) -> Result<(), Error> {
+    let (id, name, model) = match config {
+        Configuration::Codex(c) => (&c.id, &c.name, &c.model),
+        Configuration::DirectModel(c) => (&c.id, &c.name, &c.model),
+    };
+    if let Configuration::DirectModel(c) = config {
+        providers::validate(c)?;
+    }
+    if id.len() != 36
+        || uuid::Uuid::parse_str(id).is_err()
+        || name.trim().is_empty()
+        || name.len() > 200
+        || model.is_empty()
+        || model.len() > 100
+        || !model.bytes().all(|c| {
+            c.is_ascii_alphanumeric()
+                || b"-_.".contains(&c)
+                || (matches!(config, Configuration::DirectModel(_)) && c == b':')
+        })
     {
         return Err(validation("Configuration needs a UUID, name (1–200 bytes), model identifier (1–100 ASCII letters/digits/-_.) and supported reasoning setting. Never enter credentials."));
     }
@@ -427,8 +523,8 @@ fn stored_definition(id: &str, revision: u32, body: &str) -> Result<SavedDefinit
     })
 }
 fn stored_configuration(id: &str, revision: u32, body: &str) -> Result<SavedConfiguration, Error> {
-    let config: CodexConfiguration = serde_json::from_str(body).map_err(storage)?;
-    if config.id != id || revision == 0 {
+    let config: Configuration = serde_json::from_str(body).map_err(storage)?;
+    if config.id() != id || revision == 0 {
         return Err(storage("stored identity/revision"));
     }
     validate_configuration(&config).map_err(|_| storage("invalid stored configuration"))?;
@@ -615,7 +711,7 @@ impl Store {
         let tx = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
-        let current = read_configuration(&tx, &c.id)?.map(|saved| saved.revision);
+        let current = read_configuration(&tx, c.id())?.map(|saved| saved.revision);
         if current.is_none() {
             enforce_capacity(&tx, "configurations")?;
         }
@@ -629,7 +725,7 @@ impl Store {
             .checked_add(1)
             .ok_or_else(|| storage("revision exhausted"))?;
         let body = serde_json::to_string(c).map_err(storage)?;
-        tx.execute("INSERT INTO configurations(id,revision,body) VALUES (?1,?2,?3) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,body=excluded.body",params![c.id,revision,body]).map_err(storage)?;
+        tx.execute("INSERT INTO configurations(id,revision,body) VALUES (?1,?2,?3) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,body=excluded.body",params![c.id(),revision,body]).map_err(storage)?;
         tx.commit().map_err(storage)?;
         Ok(SavedConfiguration {
             config: request.config,
