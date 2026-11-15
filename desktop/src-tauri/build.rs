@@ -18,6 +18,8 @@ fn main() {
             "save_configuration",
             "delete_configuration",
             "auth_readiness",
+            "provider_descriptors",
+            "provider_readiness",
             "runtime_readiness",
             "runtime_setup_plan",
             "queue_status",

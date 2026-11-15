@@ -39,6 +39,7 @@ pub struct CapturedBlock {
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RunDetail {
+    pub execution_kind: super::ExecutionKind,
     pub id: String,
     pub definition_id: String,
     pub definition: crate::SavedDefinition,
@@ -158,7 +159,7 @@ impl HistoryReader {
         let version: u32 = c
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(storage)?;
-        if !(3..=4).contains(&version) {
+        if !(3..=5).contains(&version) {
             return Err(unavailable());
         }
         // Confirm SQLite's resolved name still identifies the checked descriptor.
@@ -212,6 +213,7 @@ fn validated_capture(
     let request: StartRun = serde_json::from_str(&request).map_err(|_| unavailable())?;
     let snapshot: Snapshot = serde_json::from_str(&snapshot).map_err(|_| unavailable())?;
     let status: RunStatus = serde_json::from_str(&status).map_err(|_| unavailable())?;
+    snapshot.validate_kind().map_err(|_| unavailable())?;
     identity(&request_id)?;
     let d = &snapshot.definition.definition;
     if request_id != request.request_id
@@ -270,7 +272,8 @@ fn validated_capture(
         || (!legacy && snapshot.plans.len() != order.len())
         || status.blocks.len() > order.len()
         || (legacy && !status.blocks.is_empty())
-        || snapshot.image_id.is_empty()
+        || (snapshot.image_id.is_empty()
+            && snapshot.execution_kind != super::ExecutionKind::DirectModel)
         || snapshot.image_id.len() > 200
     {
         return Err(unavailable());
@@ -369,6 +372,7 @@ pub(crate) fn detail(c: &Connection, workflow: &str, id: &str) -> Result<RunDeta
         })
         .collect();
     Ok(RunDetail {
+        execution_kind: snapshot.execution_kind,
         id: id.into(),
         definition_id: workflow.into(),
         definition: snapshot.definition,

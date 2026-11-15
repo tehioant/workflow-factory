@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod direct_model_host;
 mod inspection_commands;
 mod inspection_host;
 mod lifecycle;
@@ -95,6 +96,103 @@ impl Drop for CleanupClaim {
 }
 #[cfg(test)]
 mod stop_tests {
+    #[test]
+    fn prepared_direct_dispatch_preserves_reservation_consent_and_worker_return() {
+        use std::cell::RefCell;
+        use workflow_engine::runs::direct::{DirectReservation, ExecutionReservation};
+        for mode in [
+            "approved",
+            "declined",
+            "cancel-confirm",
+            "cancel-authorize",
+            "stale",
+            "frozen",
+            "no-permit",
+        ] {
+            let active = super::ActiveRuns::default();
+            let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+            let held = (mode == "no-permit").then(|| permits.clone().try_acquire_owned().unwrap());
+            if mode == "frozen" {
+                active.1.store(true, std::sync::atomic::Ordering::Release);
+            }
+            let events = RefCell::new(Vec::new());
+            super::reservation_dispatch(
+                || Ok(None),
+                || {
+                    Ok(vec![workflow_engine::runs::queue::QueueEntry {
+                        id: "direct".into(),
+                        definition_id: "prepared".into(),
+                        state: workflow_engine::runs::RunState::AuthorizationRequired,
+                        diagnostic: String::new(),
+                        cleanup_pending: false,
+                    }])
+                },
+                Some("direct"),
+                &active,
+                permits.clone(),
+                |id| {
+                    assert_eq!(id, "direct");
+                    Ok(Some(ExecutionReservation::Direct(DirectReservation {
+                        run_id: id.into(),
+                        sequence: 71,
+                    })))
+                },
+                |id, cancel, permit, reservation| {
+                    let ExecutionReservation::Direct(r) = reservation else {
+                        panic!("no Codex lease")
+                    };
+                    assert_eq!((&r.run_id, r.sequence), (&id, 71));
+                    let result = super::run_host::execute_confirmed(
+                        &cancel,
+                        || {
+                            events.borrow_mut().push("confirm");
+                            if mode == "cancel-confirm" {
+                                cancel.request();
+                            }
+                            if mode == "declined" {
+                                Err(workflow_engine::Error::Validation {
+                                    message: "prepared decline".into(),
+                                })
+                            } else {
+                                Ok(())
+                            }
+                        },
+                        || {
+                            events.borrow_mut().push("authorize-exact");
+                            if mode == "cancel-authorize" {
+                                cancel.request();
+                            }
+                            Ok(mode != "stale")
+                        },
+                        || {
+                            assert_eq!(permits.available_permits(), 0);
+                            events.borrow_mut().push("execute");
+                        },
+                    );
+                    assert_eq!(
+                        result.is_err(),
+                        matches!(mode, "declined" | "cancel-confirm" | "cancel-authorize")
+                    );
+                    assert_eq!(permits.available_permits(), 0);
+                    active.worker_return(&id, permit, || {
+                        events.borrow_mut().push("returned");
+                    });
+                    Ok(())
+                },
+            )
+            .unwrap();
+            let expected: &[&str] = match mode {
+                "approved" => &["confirm", "authorize-exact", "execute", "returned"],
+                "declined" | "cancel-confirm" => &["confirm", "returned"],
+                "stale" | "cancel-authorize" => &["confirm", "authorize-exact", "returned"],
+                _ => &[],
+            };
+            assert_eq!(events.borrow().as_slice(), expected, "{mode}");
+            assert!(active.0.lock().unwrap().is_empty());
+            drop(held);
+            assert_eq!(permits.available_permits(), 1);
+        }
+    }
     #[test]
     fn c17_stop_signals_only_exact_worker_despite_storage_refusal() {
         let authority = std::sync::Arc::new(super::ActiveRuns::default());
@@ -218,10 +316,18 @@ mod stop_tests {
                 permits.clone(),
                 |id| {
                     assert_eq!(id, "selected");
-                    Ok(Some(reservation.clone()))
+                    Ok(Some(
+                        workflow_engine::runs::direct::ExecutionReservation::Codex(
+                            reservation.clone(),
+                        ),
+                    ))
                 },
                 |id, cancel, permit, lease| {
                     count.set(count.get() + 1);
+                    let workflow_engine::runs::direct::ExecutionReservation::Codex(lease) = lease
+                    else {
+                        panic!("legacy fixture")
+                    };
                     assert_eq!(
                         (
                             id.as_str(),
@@ -292,13 +398,23 @@ mod stop_tests {
                             permits.clone(),
                             |id| {
                                 assert_eq!(id, "waiter");
-                                Ok(Some(workflow_engine::sessions::Lease {
-                                    slot: "wake-slot".into(),
-                                    owner: id.into(),
-                                    generation: 7,
-                                }))
+                                Ok(Some(
+                                    workflow_engine::runs::direct::ExecutionReservation::Codex(
+                                        workflow_engine::sessions::Lease {
+                                            slot: "wake-slot".into(),
+                                            owner: id.into(),
+                                            generation: 7,
+                                        },
+                                    ),
+                                ))
                             },
                             |id, cancel, permit, lease| {
+                                let workflow_engine::runs::direct::ExecutionReservation::Codex(
+                                    lease,
+                                ) = lease
+                                else {
+                                    panic!("legacy fixture")
+                                };
                                 assert_eq!(
                                     (
                                         id.as_str(),
@@ -510,6 +626,16 @@ async fn auth_readiness(app: tauri::AppHandle) -> Result<workflow_engine::AuthRe
 }
 
 struct WorkerPermits(Arc<tokio::sync::Semaphore>);
+#[tauri::command]
+fn provider_descriptors() -> Vec<workflow_engine::providers::ProviderDescriptor> {
+    workflow_engine::providers::descriptors()
+}
+#[tauri::command]
+fn provider_readiness(
+    provider: workflow_engine::providers::DirectProviderId,
+) -> workflow_engine::providers::ProviderReadiness {
+    direct_model_host::readiness_with(provider, |name| std::env::var(name).ok())
+}
 fn reserve_before_projection<T>(
     mut reserve: impl FnMut() -> Result<Option<String>, Error>,
     dispatch: impl FnOnce() -> Result<T, Error>,
@@ -527,12 +653,15 @@ fn reservation_dispatch(
     selected: Option<&str>,
     active: &ActiveRuns,
     permits: Arc<tokio::sync::Semaphore>,
-    mut lease: impl FnMut(&str) -> Result<Option<workflow_engine::sessions::Lease>, Error>,
+    mut lease: impl FnMut(
+        &str,
+    )
+        -> Result<Option<workflow_engine::runs::direct::ExecutionReservation>, Error>,
     mut submit: impl FnMut(
         String,
         workflow_engine::sandbox::Cancel,
         tokio::sync::OwnedSemaphorePermit,
-        workflow_engine::sessions::Lease,
+        workflow_engine::runs::direct::ExecutionReservation,
     ) -> Result<(), Error>,
 ) -> Result<(), Error> {
     for entry in reserve_before_projection(reserve, entries)? {
@@ -608,7 +737,7 @@ fn dispatch_reserved(
         selected.as_deref(),
         &active,
         app.state::<WorkerPermits>().0.clone(),
-        |id| store.execution_reservation(id),
+        |id| store.worker_reservation(id),
         |id, cancel, permit, lease| {
             let app = app.clone();
             let directory = directory.clone();
@@ -636,16 +765,43 @@ fn dispatch_reserved(
                             .map(|c| (c.config.id(), c.revision)))
                         .collect::<Vec<_>>()
                 );
+                    let scope = if captured.execution_kind
+                        == workflow_engine::runs::ExecutionKind::DirectModel
+                    {
+                        run_host::direct_scope(&captured)?
+                    } else {
+                        scope
+                    };
                     let result = run_host::execute_confirmed(
                         &cancel,
                         || {
-                            run_host::confirm(&format!("Data: {}\nRequest: {request}\nRun: {id}\nSession: {} generation {}\n{scope}\nOne execution only; no failover or automatic retry.",directory.display(),lease.slot,lease.generation))
+                            let scope=format!("Request: {request}\nRun: {id}\n{scope}\nOne execution only; no failover or automatic retry.");
+                            match &lease {
+                                workflow_engine::runs::direct::ExecutionReservation::Direct(_) => {
+                                    run_host::confirm_direct(&scope)
+                                }
+                                workflow_engine::runs::direct::ExecutionReservation::Codex(
+                                    lease,
+                                ) => run_host::confirm(&format!(
+                                    "Data: {}\nSession: {} generation {}\n{scope}",
+                                    directory.display(),
+                                    lease.slot,
+                                    lease.generation
+                                )),
+                            }
                         },
-                        || store.authorize_reserved_run(&lease),
-                        || run_host::execute(directory.clone(), id.clone(), cancel.clone()),
+                        || store.authorize_execution(&lease),
+                        || match &lease {
+                            workflow_engine::runs::direct::ExecutionReservation::Direct(r) => {
+                                run_host::execute_direct(&store, r, &cancel)
+                            }
+                            workflow_engine::runs::direct::ExecutionReservation::Codex(_) => {
+                                run_host::execute(directory.clone(), id.clone(), cancel.clone())
+                            }
+                        },
                     );
                     if result.is_err() {
-                        store.defer_run_authorization(&lease)?;
+                        store.defer_execution(&lease)?;
                     }
                     Ok(())
                 })();
@@ -767,11 +923,22 @@ async fn start_run(
     if let Some(original) = database(&state, move |s| s.recorded_run(&retry)).await? {
         return Ok(original);
     }
-    let admission = tauri::async_runtime::spawn_blocking(run_host::admission)
-        .await
-        .map_err(|_| Error::Busy {
-            message: "Native preflight interrupted; retry same request.".into(),
-        })?;
+    let candidate = request.clone();
+    let kind = database(&state, move |s| s.request_execution_kind(&candidate)).await?;
+    let admission = tauri::async_runtime::spawn_blocking(move || {
+        if kind == workflow_engine::runs::ExecutionKind::DirectModel {
+            workflow_engine::runs::Admission {
+                image_id: String::new(),
+                blocker: None,
+            }
+        } else {
+            run_host::admission()
+        }
+    })
+    .await
+    .map_err(|_| Error::Busy {
+        message: "Native preflight interrupted; retry same request.".into(),
+    })?;
     let status = database(&state, move |s| s.admit_run(request, admission)).await?;
     let directory = state.directory.clone();
     tauri::async_runtime::spawn_blocking(move || dispatch_reserved(&app, directory, None))
@@ -1079,6 +1246,8 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            provider_descriptors,
+            provider_readiness,
             inspection_commands::inspect_workflow,
             inspection_commands::inspect_subscribe,
             inspection_commands::inspect_page,

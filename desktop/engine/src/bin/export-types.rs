@@ -26,6 +26,7 @@ fn main() {
         workflow_engine::runs::history::CapturedBlock::decl(&config),
         workflow_engine::runs::history::RunDetail::decl(&config),
         workflow_engine::runs::RunState::decl(&config),
+        workflow_engine::runs::ExecutionKind::decl(&config),
         workflow_engine::runs::BlockResult::decl(&config),
         workflow_engine::runs::RunStatus::decl(&config),
         workflow_engine::sessions::ManagedSessionStatus::decl(&config),

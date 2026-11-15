@@ -1,4 +1,5 @@
 //! Durable sequential admission. External effects never occur inside a transaction.
+pub mod direct;
 pub mod history;
 pub mod inspection;
 pub mod queue;
@@ -65,12 +66,56 @@ pub struct BlockPlan {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    #[serde(default = "legacy_capture_version")]
+    pub capture_version: u32,
+    #[serde(default)]
+    pub execution_kind: ExecutionKind,
     pub definition: crate::SavedDefinition,
     pub configuration: crate::SavedConfiguration,
     pub inputs: crate::PreparedInputs,
     pub image_id: String,
     #[serde(default)]
     pub plans: Vec<BlockPlan>,
+}
+fn legacy_capture_version() -> u32 {
+    1
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ExecutionKind {
+    #[default]
+    Codex,
+    DirectModel,
+}
+impl ExecutionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::DirectModel => "directModel",
+        }
+    }
+}
+impl Snapshot {
+    pub fn validate_kind(&self) -> Result<(), Error> {
+        let direct = self.execution_kind == ExecutionKind::DirectModel;
+        if !(1..=2).contains(&self.capture_version)
+            || (direct
+                && (self.capture_version != 2
+                    || self.plans.is_empty()
+                    || !self.image_id.is_empty()))
+            || (!direct && self.image_id.is_empty())
+            || matches!(
+                self.configuration.config,
+                crate::Configuration::DirectModel(_)
+            ) != direct
+            || self.plans.iter().any(|p| {
+                matches!(p.configuration.config, crate::Configuration::DirectModel(_)) != direct
+            })
+        {
+            return Err(validation("Capture kind, configuration or image mismatch; mixed direct/agent runs are unsupported."));
+        }
+        Ok(())
+    }
 }
 /// Backend-only observations, never deserialized from IPC.
 pub struct Admission {
@@ -83,7 +128,7 @@ impl Store {
     pub fn execute_next_block<R>(
         &self,
         id: &str,
-        lease: &crate::sessions::Lease,
+        authority: impl Into<direct::ExecutionReservation>,
         resources: &R,
         cancel: &crate::sandbox::Cancel,
         invoke: impl FnOnce(&R, &BlockPlan, &str) -> Result<String, Error>,
@@ -93,6 +138,7 @@ impl Store {
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
+        crate::lifecycle::admit(&tx)?;
         let (body, snapshot): (String, String) = tx
             .query_row(
                 "SELECT status,snapshot FROM runs WHERE id=?1 AND active=1",
@@ -101,9 +147,12 @@ impl Store {
             )
             .map_err(storage)?;
         let mut status: RunStatus = serde_json::from_str(&body).map_err(storage)?;
-        let owned: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM managed_sessions WHERE id=?1 AND owner=?2 AND generation=?3 AND state='leased')", params![lease.slot,id,lease.generation], |r| r.get(0)).map_err(storage)?;
+        let (owned, owner) = match authority.into() {
+            direct::ExecutionReservation::Codex(lease) => (tx.query_row("SELECT EXISTS(SELECT 1 FROM managed_sessions WHERE id=?1 AND owner=?2 AND generation=?3 AND state='leased')", params![lease.slot,id,lease.generation], |r| r.get::<_,bool>(0)).map_err(storage)?, lease.owner),
+            direct::ExecutionReservation::Direct(r) => { direct::checked(&tx,&r)?; (true, r.run_id) },
+        };
         if status.id != id
-            || lease.owner != id
+            || owner != id
             || !owned
             || status.state != RunState::Running
             || status.cleanup_pending
@@ -471,14 +520,7 @@ impl Store {
             }
             return serde_json::from_str(&status).map_err(storage);
         }
-        if admission.blocker.is_none()
-            && !queue::can_reserve(&tx)?
-            && queue::counts(&tx)?.1 >= queue::settings(&tx)?.waiting
-        {
-            return Err(Error::Busy {
-                message: "Waiting queue is full. No run was accepted.".into(),
-            });
-        }
+
         let row: Option<(u32, String)> = tx
             .query_row(
                 "SELECT revision,body FROM revisions WHERE id=?1 ORDER BY revision DESC LIMIT 1",
@@ -534,17 +576,33 @@ impl Store {
                 configuration,
             });
         }
-        for plan in &plans {
-            plan.configuration.config.as_codex()?;
+        let execution_kind = if matches!(
+            plans[0].configuration.config,
+            crate::Configuration::DirectModel(_)
+        ) {
+            ExecutionKind::DirectModel
+        } else {
+            ExecutionKind::Codex
+        };
+        if admission.blocker.is_none()
+            && !queue::can_reserve(&tx, execution_kind)?
+            && queue::counts(&tx)?.1 >= queue::settings(&tx)?.waiting
+        {
+            return Err(Error::Busy {
+                message: "Waiting queue is full. No run was accepted.".into(),
+            });
         }
         let configuration = plans[0].configuration.clone();
         let snapshot = Snapshot {
+            capture_version: 2,
+            execution_kind,
             definition,
             configuration,
             inputs,
             image_id: admission.image_id,
             plans,
         };
+        snapshot.validate_kind()?;
         let blocked = admission.blocker.is_some();
         let status = RunStatus {
             id: uuid::Uuid::new_v4().to_string(),
@@ -562,8 +620,8 @@ impl Store {
         tx.execute("INSERT INTO runs(id,request_id,request,snapshot,status,active) VALUES(?1,?2,?3,?4,?5,?6)",params![status.id,status.request_id,payload,serde_json::to_string(&snapshot).map_err(storage)?,serde_json::to_string(&status).map_err(storage)?,!blocked]).map_err(storage)?;
         if !blocked {
             tx.execute(
-                "INSERT INTO run_queue(run_id,phase) VALUES(?1,'waiting')",
-                [&status.id],
+                "INSERT INTO run_queue(run_id,phase,execution_kind) VALUES(?1,'waiting',?2)",
+                params![status.id, execution_kind.as_str()],
             )
             .map_err(storage)?;
             queue::reserve(&tx)?;
@@ -606,6 +664,37 @@ impl Store {
         let mut s: RunStatus = serde_json::from_str(&body).map_err(storage)?;
         if s.id != id {
             return Err(storage("run identity"));
+        }
+        let direct_sequence:Option<i64>=tx.query_row("SELECT sequence FROM run_queue WHERE run_id=?1 AND phase='occupied' AND execution_kind='directModel' AND slot IS NULL AND generation IS NULL",[id],|r|r.get(0)).optional().map_err(storage)?;
+        if let Some(sequence) = direct_sequence {
+            let r = direct::DirectReservation {
+                run_id: id.into(),
+                sequence,
+            };
+            direct::checked(&tx, &r)?;
+            if matches!(
+                s.state,
+                RunState::AuthorizationRequired | RunState::Admitted
+            ) || (matches!(s.state, RunState::Held | RunState::Cancelling)
+                && matches!(
+                    s.diagnostic.as_str(),
+                    direct::RESTART_HOLD | direct::STOP_STORAGE_HOLD
+                ))
+            {
+                s.state = RunState::Cancelling;
+                s.cleanup_pending = false;
+                s.diagnostic = direct::STOP_STORAGE_HOLD.into();
+                tx.execute(
+                    "UPDATE runs SET status=?1 WHERE id=?2",
+                    params![serde_json::to_string(&s).map_err(storage)?, id],
+                )
+                .map_err(storage)?;
+                tx.commit().map_err(storage)?;
+                let chosen=self.retained_direct_settlement(id)?.unwrap_or(direct::DirectSettlement{reservation:r,text:s.final_response.clone(),diagnostic:"Stopped with no local HTTP worker. A previously sent request may already have been processed and billed; no remote cancellation claim.".into(),success:false});
+                self.retain_direct_settlement(&chosen)?;
+                self.settle_direct(&chosen)?;
+                return self.run_status(id);
+            }
         }
         let intent: bool = tx
             .query_row(
@@ -677,8 +766,8 @@ impl Store {
             RunState::Admitted | RunState::Running | RunState::Held | RunState::Cancelling
         ) {
             s.state = RunState::Cancelling;
-            s.cleanup_pending = true;
-            s.diagnostic="Stop requested. Ownership/secure-cache cleanup must be confirmed; session remains withheld.".into();
+            s.cleanup_pending = direct_sequence.is_none();
+            s.diagnostic=if direct_sequence.is_some(){"Stop requested; waiting for the owned HTTP operation to return and durable direct settlement. Remote processing and charges may already have occurred."}else{"Stop requested. Ownership/secure-cache cleanup must be confirmed; session remains withheld."}.into();
             tx.execute(
                 "UPDATE runs SET status=?1 WHERE id=?2 AND active=1",
                 params![serde_json::to_string(&s).map_err(storage)?, id],
@@ -704,6 +793,27 @@ impl Store {
         };
         for (body, phase) in bodies {
             let mut s: RunStatus = serde_json::from_str(&body).map_err(storage)?;
+            let direct_sequence:Option<i64>=tx.query_row("SELECT sequence FROM run_queue WHERE run_id=?1 AND phase='occupied' AND execution_kind='directModel' AND slot IS NULL AND generation IS NULL",[&s.id],|r|r.get(0)).optional().map_err(storage)?;
+            if let Some(sequence) = direct_sequence {
+                direct::checked(
+                    &tx,
+                    &direct::DirectReservation {
+                        run_id: s.id.clone(),
+                        sequence,
+                    },
+                )?;
+                if s.state != RunState::Cancelling {
+                    s.state = RunState::Held;
+                }
+                s.cleanup_pending = false;
+                s.diagnostic = direct::RESTART_HOLD.into();
+                tx.execute(
+                    "UPDATE runs SET status=?1 WHERE id=?2",
+                    params![serde_json::to_string(&s).map_err(storage)?, s.id],
+                )
+                .map_err(storage)?;
+                continue;
+            }
             // Durable queue-only authority survives repeated startup. Inconsistent
             // state/phase pairs and existing cleanup holds remain fail-closed.
             let waiting = !s.cleanup_pending

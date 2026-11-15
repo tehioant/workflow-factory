@@ -188,7 +188,7 @@ fn discriminated_configs_refuse_duplicate_fields_and_unsupported_standalone_vers
     assert!(serde_json::from_value::<workflow_engine::DirectModelConfiguration>(invalid).is_err());
 }
 #[test]
-fn old_execution_admission_refuses_prepared_direct_configuration_without_writes() {
+fn direct_execution_admission_refuses_agent_image_without_writes() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
     let db = rusqlite::Connection::open(dir.path().join("definitions.sqlite3")).unwrap();
@@ -206,7 +206,7 @@ fn old_execution_admission_refuses_prepared_direct_configuration_without_writes(
     .unwrap();
     let request=serde_json::from_value(serde_json::json!({"requestId":"00000000-0000-4000-8000-000000000001","definitionId":id,"expectedRevision":1,"expectedConfigurationRevision":1,"supplied":{}})).unwrap();
     assert!(
-        matches!(store.admit_run(request, workflow_engine::runs::Admission { image_id:"synthetic".into(),blocker:None }), Err(workflow_engine::Error::Validation { message }) if message.contains("Direct model execution is not implemented"))
+        matches!(store.admit_run(request, workflow_engine::runs::Admission { image_id:"synthetic".into(),blocker:None }), Err(workflow_engine::Error::Validation { message }) if message.contains("Capture kind"))
     );
     for table in ["runs", "run_queue", "managed_sessions"] {
         assert_eq!(

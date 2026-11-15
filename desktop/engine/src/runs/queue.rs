@@ -56,9 +56,9 @@ pub(super) fn counts(c: &Connection) -> Result<(u32, u32), Error> {
     let waiting=c.query_row("SELECT COUNT(*) FROM runs r JOIN run_queue q ON q.run_id=r.id WHERE r.active=1 AND q.phase IN ('waiting','withheld')",[],|r|r.get(0)).map_err(storage)?;
     Ok((occupied, waiting))
 }
-pub(super) fn can_reserve(c: &Connection) -> Result<bool, Error> {
+pub(super) fn can_reserve(c: &Connection, kind: super::ExecutionKind) -> Result<bool, Error> {
     let (occupied, waiting) = counts(c)?;
-    let available:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM managed_sessions s WHERE state='available' AND NOT EXISTS(SELECT 1 FROM run_queue q WHERE q.phase='occupied' AND q.slot=s.id))",[],|r|r.get(0)).map_err(storage)?;
+    let available = kind == super::ExecutionKind::DirectModel || c.query_row("SELECT EXISTS(SELECT 1 FROM managed_sessions s WHERE state='available' AND NOT EXISTS(SELECT 1 FROM run_queue q WHERE q.phase='occupied' AND q.slot=s.id))",[],|r|r.get::<_,bool>(0)).map_err(storage)?;
     Ok(waiting == 0 && occupied < settings(c)?.active && available)
 }
 /// Called only inside the caller's IMMEDIATE transaction. Reserve at most one head.
@@ -74,15 +74,25 @@ pub(super) fn reserve(c: &Connection) -> Result<Option<String>, Error> {
     if status.id != id || status.state != RunState::Queued {
         return Err(storage("FIFO head identity/state"));
     }
-    let slot:Option<(String,u32)>=c.query_row("SELECT id,generation FROM managed_sessions s WHERE state='available' AND NOT EXISTS(SELECT 1 FROM run_queue q WHERE q.phase='occupied' AND q.slot=s.id) ORDER BY id LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(storage)?;
-    let Some((slot, generation)) = slot else {
-        return Ok(None);
-    };
-    if c.execute("UPDATE managed_sessions SET state='leased',owner=?1 WHERE id=?2 AND generation=?3 AND state='available'",params![id,slot,generation]).map_err(storage)?!=1{return Err(storage("FIFO session reservation"));}
-    c.execute("UPDATE run_queue SET phase='occupied',slot=?1,generation=?2 WHERE run_id=?3 AND phase='waiting'",params![slot,generation,id]).map_err(storage)?;
+    let (kind, snapshot): (String, String) = c.query_row("SELECT q.execution_kind,r.snapshot FROM run_queue q JOIN runs r ON r.id=q.run_id WHERE q.run_id=?1 AND length(CAST(r.snapshot AS BLOB))<=2097152",[&id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(storage)?;
+    let snapshot: super::Snapshot = serde_json::from_str(&snapshot).map_err(storage)?;
+    snapshot.validate_kind()?;
+    if kind != snapshot.execution_kind.as_str() {
+        return Err(storage("reservation capture kind"));
+    }
+    if snapshot.execution_kind == super::ExecutionKind::DirectModel {
+        c.execute("UPDATE run_queue SET phase='occupied' WHERE run_id=?1 AND phase='waiting' AND slot IS NULL AND generation IS NULL",[&id]).map_err(storage)?;
+    } else {
+        let slot:Option<(String,u32)>=c.query_row("SELECT id,generation FROM managed_sessions s WHERE state='available' AND NOT EXISTS(SELECT 1 FROM run_queue q WHERE q.phase='occupied' AND q.slot=s.id) ORDER BY id LIMIT 1",[],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(storage)?;
+        let Some((slot, generation)) = slot else {
+            return Ok(None);
+        };
+        if c.execute("UPDATE managed_sessions SET state='leased',owner=?1 WHERE id=?2 AND generation=?3 AND state='available'",params![id,slot,generation]).map_err(storage)?!=1{return Err(storage("FIFO session reservation"));}
+        c.execute("UPDATE run_queue SET phase='occupied',slot=?1,generation=?2 WHERE run_id=?3 AND phase='waiting'",params![slot,generation,id]).map_err(storage)?;
+    }
     status.state = RunState::AuthorizationRequired;
     status.diagnostic =
-        "Exact reserved session requires single-use native execution confirmation.".into();
+        "Exact reservation requires single-use native execution confirmation.".into();
     c.execute(
         "UPDATE runs SET status=?1 WHERE id=?2",
         params![serde_json::to_string(&status).map_err(storage)?, id],

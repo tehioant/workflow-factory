@@ -2,8 +2,12 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use workflow_engine::runs::Admission;
+mod direct;
+use direct::persist_direct;
+pub use direct::{confirm_direct, direct_scope, execute_direct};
 struct Claim {
     finality: Mutex<Option<workflow_engine::runs::settlement::FinalSettlement>>,
+    direct: Mutex<Option<workflow_engine::runs::direct::DirectSettlement>>,
     // 0: no failure; 1: cleanup unconfirmed; 2: positive cleanup receipt.
     persistence_failure: std::sync::atomic::AtomicU8,
 }
@@ -57,6 +61,7 @@ fn final_claim(id: &str) -> Result<FinalClaim, workflow_engine::Error> {
     }
     let claim = Arc::new(Claim {
         finality: Mutex::new(None),
+        direct: Mutex::new(None),
         persistence_failure: std::sync::atomic::AtomicU8::new(0),
     });
     claims.insert(id.into(), claim.clone());
@@ -275,6 +280,9 @@ pub fn retry_outputs(
             Some(block) => store.retain_block_output(id, block, text),
             None => store.retain_run_output(id, text),
         })?;
+        if let Some(chosen) = store.retained_direct_settlement(selected)? {
+            return store.settle_direct(&chosen);
+        }
         if let Some(chosen) = store.retained_final_settlement(selected)? {
             return store.settle_run(&chosen);
         }
@@ -285,7 +293,18 @@ pub fn retry_outputs(
         return Ok(());
     };
     let mut finality = claim.lock().map_err(|_| output_hold())?;
+    let direct_chosen = claim.direct.lock().map_err(|_| output_hold())?.clone();
+    if let Some(chosen) = direct_chosen {
+        persist_direct(store, &claim, &chosen)?;
+        *claim.direct.lock().map_err(|_| output_hold())? = None;
+        final_claims()
+            .lock()
+            .map_err(|_| output_hold())?
+            .remove(selected);
+        return Ok(());
+    }
     if let Some(receipt) = finality.as_ref() {
+        // Codex finality remains independent of direct HTTP return authority.
         persist_final(store, selected, &claim, receipt)?;
         *finality = None;
         recoveries()
@@ -758,8 +777,8 @@ fn native_prerequisites() -> Result<(), String> {
 }
 /// No IPC approval Boolean: the host owns the question, text and direct native
 /// user response. Approval is consumed by this exact caller, never cached/reused.
+static CONFIRMATION: Mutex<()> = Mutex::new(());
 pub fn confirm(scope: &str) -> Result<(), workflow_engine::Error> {
-    static CONFIRMATION: Mutex<()> = Mutex::new(());
     let _dialog = CONFIRMATION
         .lock()
         .map_err(|_| workflow_engine::Error::Busy {
@@ -793,7 +812,7 @@ pub fn shutdown_pending() -> Result<bool, workflow_engine::Error> {
 
 #[cfg(test)]
 mod tests {
-    static FINALITY_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(super) static FINALITY_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
     #[test]
     fn d14_selected_interrupted_native_cleanup_uses_exact_durable_provenance() {
         let _serial = FINALITY_TEST.lock().unwrap();

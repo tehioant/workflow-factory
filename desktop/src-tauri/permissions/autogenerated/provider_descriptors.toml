@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-provider-descriptors"
+description = "Enables the provider_descriptors command without any pre-configured scope."
+commands.allow = ["provider_descriptors"]
+
+[[permission]]
+identifier = "deny-provider-descriptors"
+description = "Denies the provider_descriptors command without any pre-configured scope."
+commands.deny = ["provider_descriptors"]

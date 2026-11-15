@@ -312,7 +312,7 @@ fn d11_prepared_admission_bounds_snapshot_and_idempotency() {
                 r.get(0)
             })
             .unwrap();
-        c.execute_batch("DROP TABLE run_queue; DROP TABLE queue_settings; CREATE UNIQUE INDEX one_active_run ON runs(active) WHERE active=1; PRAGMA user_version=3;").unwrap();
+        c.execute_batch("DROP TABLE direct_run_settlements; DROP TABLE run_queue; DROP TABLE queue_settings; CREATE UNIQUE INDEX one_active_run ON runs(active) WHERE active=1; PRAGMA user_version=3;").unwrap();
         let migrated = Store::open(dir.path()).unwrap();
         assert_eq!(migrated.queue_settings().unwrap().active, 2);
         assert_eq!(
@@ -1572,7 +1572,7 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
         legacy
             .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        4
+        5
     );
     let rejected = Connection::open_with_flags(
         &db_path,
@@ -1662,7 +1662,7 @@ fn fhistory_prepared_rows_project_scoped_bounded_immutable_capture() {
     assert_eq!(
         c.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        4
+        5
     );
     let missing = tempfile::tempdir().unwrap();
     assert!(workflow_engine::runs::history::HistoryReader::open(missing.path()).is_err());
