@@ -18,12 +18,13 @@
   draft={schemaVersion:2,kind:'directModel',id:crypto.randomUUID(),name:'New configuration',provider:provider.id,model:'',maxOutputTokens:1024,credential:{kind:'environment',variable:provider.credentialVariable}};revision=null;dirty=true;error='';
  }
  const validation=$derived.by(()=>{
-  if(!draft)return '';
-  if(!draft.name.trim()||!draft.model)return 'Enter a configuration name and an explicit model identifier.';
-  if('kind' in draft){
-   const provider=providers.find(p=>p.id===draft.provider);
-   if(!provider||draft.credential.kind!=='environment'||draft.credential.variable!==provider.credentialVariable)return 'The selected provider binding is unavailable or incompatible.';
-   if(!Number.isInteger(draft.maxOutputTokens)||draft.maxOutputTokens<1||draft.maxOutputTokens>65536)return 'Maximum output tokens must be an integer from 1 to 65536.';
+  const config=draft;
+  if(!config)return '';
+  if(!config.name.trim()||!config.model)return 'Enter a configuration name and an explicit model identifier.';
+  if('kind' in config){
+   const provider=providers.find(p=>p.id===config.provider);
+   if(!provider||config.credential.kind!=='environment'||config.credential.variable!==provider.credentialVariable)return 'The selected provider binding is unavailable or incompatible.';
+   if(!Number.isInteger(config.maxOutputTokens)||config.maxOutputTokens<1||config.maxOutputTokens>65536)return 'Maximum output tokens must be an integer from 1 to 65536.';
   }
   return '';
  });
