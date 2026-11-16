@@ -450,6 +450,7 @@ fn d11_prepared_release_reserves_oldest_once_and_retains_holds() {
         "no-session",
         "persistence-failure",
         "wrong-generation",
+        "invalid-capture",
     ] {
         let (_dir, store, c) = prepared();
         let owner = uuid::Uuid::new_v4().to_string();
@@ -486,6 +487,26 @@ fn d11_prepared_release_reserves_oldest_once_and_retains_holds() {
             ],
         )
         .unwrap();
+        let definition: String = c
+            .query_row(
+                "SELECT body FROM revisions WHERE id=?1 AND revision=1",
+                [DEFINITION],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let configuration: String = c
+            .query_row(
+                "SELECT body FROM configurations WHERE id=?1 AND revision=2",
+                [CONFIG],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let snapshot = serde_json::json!({
+            "definition": {"definition": serde_json::from_str::<serde_json::Value>(&definition).unwrap(), "revision": 1},
+            "configuration": {"config": serde_json::from_str::<serde_json::Value>(&configuration).unwrap(), "revision": 2},
+            "inputs": {"values": request().supplied, "prompts": {"a": "Hello literal $HOME"}},
+            "imageId": "prepared-image"
+        });
         for id in [&oldest, &later] {
             let mut wait = status();
             wait.id = id.clone();
@@ -493,6 +514,21 @@ fn d11_prepared_release_reserves_oldest_once_and_retains_holds() {
             wait.state = RunState::Queued;
             wait.final_response = None;
             seed_run(&c, &wait, true);
+            let mut captured_request = request();
+            captured_request.request_id = wait.request_id;
+            c.execute(
+                "UPDATE runs SET request=?1,snapshot=?2 WHERE id=?3",
+                params![
+                    serde_json::to_string(&captured_request).unwrap(),
+                    if scenario == "invalid-capture" {
+                        "{}".into()
+                    } else {
+                        snapshot.to_string()
+                    },
+                    id
+                ],
+            )
+            .unwrap();
             c.execute(
                 "INSERT INTO run_queue(run_id,phase) VALUES(?1,'waiting')",
                 [id],
