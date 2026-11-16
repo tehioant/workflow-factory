@@ -227,12 +227,10 @@ fn direct_settlement_is_exact_durable_storage_only_and_atomic() {
         assert!(retained.unwrap() == f, "literal payload must round trip");
         c.execute_batch("CREATE TRIGGER refuse_settle BEFORE UPDATE OF phase ON run_queue WHEN NEW.phase='settled' BEGIN SELECT RAISE(FAIL,'prepared'); END;").unwrap();
         assert!(store.settle_direct(&f).is_err());
-        assert_eq!(
-            c.query_row("SELECT active FROM runs WHERE id=?1", [&id], |r| r
+        assert!(c
+            .query_row("SELECT active FROM runs WHERE id=?1", [&id], |r| r
                 .get::<_, bool>(0))
-                .unwrap(),
-            true
-        );
+            .unwrap());
         c.execute_batch("DROP TRIGGER refuse_settle;").unwrap();
         // A new Store has no volatile worker/finality claim: recovery is storage only.
         let restarted = Store::open(dir.path()).unwrap();
