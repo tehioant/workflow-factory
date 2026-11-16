@@ -284,7 +284,7 @@ mod tests {
             assert_eq!(prompt, "Hello");
             Ok("redacted result".into())
         });
-        assert_eq!(result.unwrap(), true);
+        assert!(result.unwrap());
         assert_eq!(calls, 1);
         assert_eq!(
             store.run_status(&r.run_id).unwrap().blocks[0]
